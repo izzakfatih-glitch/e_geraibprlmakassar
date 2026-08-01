@@ -32,8 +32,16 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+
+print(f"[startup] BASE_DIR = {BASE_DIR}")
+print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
+tpl_dir = os.path.join(BASE_DIR, "templates")
+if os.path.isdir(tpl_dir):
+    print(f"[startup] Isi folder templates = {os.listdir(tpl_dir)}")
+else:
+    print(f"[startup] PERINGATAN: folder templates TIDAK DITEMUKAN di {tpl_dir}")
 
 
 @app.route("/", methods=["GET"])
