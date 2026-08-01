@@ -83,7 +83,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>\U0001F4C4 Penggabung Proposal PKKPRL</h1>
+  <h1>\U0001F4C4 Generate Draft Proposal PKKPRL</h1>
   <p class="sub">Unggah Draft Proposal PKKPRL dan Laporan Kondisi/Hidro-Oseanografi (PDF) &mdash; dokumen Word final otomatis dibuat dan bisa langsung diunduh.</p>
 
   {% if error %}
@@ -92,13 +92,13 @@ UPLOAD_HTML = """<!DOCTYPE html>
 
   <div class="card">
     <form method="POST" action="/generate" enctype="multipart/form-data" id="genForm">
-      <label>1. Draft Proposal PKKPRL (PDF)</label>
+      <label>1. Draft Proposal PKKPRL e_GeRAI (PDF)</label>
       <input type="file" name="proposal" accept="application/pdf" required>
 
       <label>2. Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF)</label>
       <input type="file" name="laporan" accept="application/pdf" required>
 
-      <button type="submit">Gabungkan &amp; Unduh Dokumen Word</button>
+      <button type="submit">Generate e_GeRAI &amp; Unduh Dokumen Word</button>
       <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
     </form>
   </div>
