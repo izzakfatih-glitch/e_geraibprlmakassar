@@ -1,5 +1,5 @@
 """
-Aplikasi Web Penggabung Proposal PKKPRL
+Aplikasi Web e-GeRAI Layanan BPRL Makassar
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
