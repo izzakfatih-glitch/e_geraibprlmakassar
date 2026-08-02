@@ -41,11 +41,9 @@ PROPOSAL_HEADINGS = [
 ]
 
 
-def extract_proposal(pdf_path):
-    doc = fitz.open(pdf_path)
-    full_text_raw = "\n".join(page.get_text() for page in doc)
-    full_text = norm(full_text_raw)
-
+def _parse_proposal_text(full_text, full_text_raw):
+    """Semua regex parsing Draft Proposal PKKPRL (field teks, lokasi, koordinat,
+    investasi, dst), dipakai bersama baik sumbernya PDF maupun DOCX."""
     data = {}
 
     for idx, label in enumerate(PROPOSAL_LABELS):
@@ -106,8 +104,23 @@ def extract_proposal(pdf_path):
     data["non_reklamasi"] = "tanpa reklamasi" in full_text.lower()
     data["kegiatan_berusaha"] = "kegiatan berusaha" in full_text.lower()
     data["non_strategis"] = "non-strategis nasional" in full_text.lower()
+    return data
 
-    # ---------------- IMAGES (sequential heading-tracking) ----------------
+
+def _tag_proposal_image(current_section, section_img_count):
+    if current_section == "terumbu_karang_section":
+        return "foto_pantai" if section_img_count == 0 else "foto_karang_insitu"
+    return current_section or "lainnya"
+
+
+def extract_proposal(pdf_path):
+    doc = fitz.open(pdf_path)
+    full_text_raw = "\n".join(page.get_text() for page in doc)
+    full_text = norm(full_text_raw)
+
+    data = _parse_proposal_text(full_text, full_text_raw)
+
+    # ---------------- IMAGES (sequential heading-tracking per halaman) ----------------
     seen_hash = set()
     images = []
     current_section = None
@@ -138,10 +151,7 @@ def extract_proposal(pdf_path):
             if w < 150 or ht < 150:
                 continue
 
-            if current_section == "terumbu_karang_section":
-                tag = "foto_pantai" if section_img_count == 0 else "foto_karang_insitu"
-            else:
-                tag = current_section or "lainnya"
+            tag = _tag_proposal_image(current_section, section_img_count)
             section_img_count += 1
 
             if h in seen_hash:
@@ -157,6 +167,66 @@ def extract_proposal(pdf_path):
     return data, images
 
 
+def extract_proposal_docx(docx_path):
+    """Versi ekstraksi Draft Proposal PKKPRL dari file Word (.docx). Menelusuri
+    paragraf secara berurutan (mirip pelacakan per-halaman pada versi PDF,
+    tapi di sini per-paragraf -- resolusinya malah lebih presisi karena docx
+    tidak punya batas halaman yang tetap)."""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+
+    parts = [p.text for p in doc.paragraphs]
+    full_text_raw = "\n".join(parts)
+    full_text = norm(full_text_raw)
+    data = _parse_proposal_text(full_text, full_text_raw)
+
+    # ---------------- IMAGES (pelacakan section per-paragraf) ----------------
+    seen_hash = set()
+    images = []
+    current_section = None
+    section_img_count = 0
+
+    for para in doc.paragraphs:
+        para_text_norm = norm(para.text)
+        if para_text_norm:
+            matches = []
+            for pattern, tag in PROPOSAL_HEADINGS:
+                for mm in re.finditer(pattern, para_text_norm, re.IGNORECASE):
+                    matches.append((mm.start(), tag))
+            if matches:
+                matches.sort(key=lambda x: x[0])
+                new_section = matches[-1][1]
+                if new_section != current_section:
+                    current_section = new_section
+                    section_img_count = 0
+
+        for run in para.runs:
+            blips = run._element.findall(".//" + qn("a:blip"))
+            for blip in blips:
+                rId = blip.get(qn("r:embed"))
+                if not rId:
+                    continue
+                try:
+                    image_part = doc.part.related_parts[rId]
+                except KeyError:
+                    continue
+                data_bytes = image_part.blob
+                h = hashlib.md5(data_bytes).hexdigest()
+                if h in seen_hash:
+                    continue
+                seen_hash.add(h)
+
+                tag = _tag_proposal_image(current_section, section_img_count)
+                section_img_count += 1
+
+                ext = image_part.content_type.split("/")[-1] if "/" in image_part.content_type else "png"
+                images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
+
+    return data, images
+
+
 # ----------------------------------------------------------------------
 # LAPORAN HIDRO-OSEANOGRAFI PDF
 # ----------------------------------------------------------------------
@@ -168,10 +238,10 @@ def extract_proposal(pdf_path):
 LAPORAN_IMAGE_ORDER = ["mawar_gelombang", "mawar_arus", "siklus_pasut", "peta_ekosistem", "profil_batimetri"]
 
 
-def extract_laporan(pdf_path):
-    doc = fitz.open(pdf_path)
-    full_text_raw = "\n".join(page.get_text() for page in doc)
-    full_text = norm(full_text_raw)
+def _parse_laporan_text(full_text):
+    """Semua regex parsing Laporan Hidro-Oseanografi, dipakai bersama baik
+    sumbernya PDF maupun DOCX -- karena keduanya sama-sama sudah berupa teks
+    biasa pada titik ini, regex tidak peduli asalnya dari format file apa."""
     data = {}
 
     m = re.search(r"LOKASI TITIK PUSAT RENCANA KEGIATAN\s*(.+?)\s*I\.\s*PENDAHULUAN", full_text)
@@ -232,6 +302,14 @@ def extract_laporan(pdf_path):
     data["eko_jarak_terdekat_km"] = m.group(1) if m else ""
 
     data["ada_lamun"] = "padang lamun teridentifikasi" in full_text.lower()
+    return data
+
+
+def extract_laporan(pdf_path):
+    doc = fitz.open(pdf_path)
+    full_text_raw = "\n".join(page.get_text() for page in doc)
+    full_text = norm(full_text_raw)
+    data = _parse_laporan_text(full_text)
 
     # ---------------- IMAGES ----------------
     seen_hash = set()
@@ -258,6 +336,50 @@ def extract_laporan(pdf_path):
     return data, images
 
 
+def extract_laporan_docx(docx_path):
+    """Versi ekstraksi Laporan Hidro-Oseanografi dari file Word (.docx).
+    Dipakai sebagai alternatif PDF -- dokumen Word cenderung lebih stabil
+    dibaca dibanding PDF (tidak ada masalah urutan/pemotongan kata saat
+    di-convert ke teks), sehingga regex lebih jarang gagal."""
+    from docx import Document
+    import zipfile
+
+    doc = Document(docx_path)
+
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.append(cell.text)
+    full_text_raw = "\n".join(parts)
+    full_text = norm(full_text_raw)
+    data = _parse_laporan_text(full_text)
+
+    # ---------------- IMAGES ----------------
+    # Ambil semua gambar yang tertanam di file docx (folder word/media/ di dalam zip),
+    # urut berdasarkan nama file (biasanya sesuai urutan penyisipan: image1, image2, dst)
+    # lalu tandai sesuai urutan yang sama seperti versi PDF.
+    seen_hash = set()
+    images = []
+    with zipfile.ZipFile(docx_path) as z:
+        media_files = sorted(
+            [n for n in z.namelist() if n.startswith("word/media/")],
+            key=lambda n: n
+        )
+        for name in media_files:
+            data_bytes = z.read(name)
+            h = hashlib.md5(data_bytes).hexdigest()
+            if h in seen_hash:
+                continue
+            seen_hash.add(h)
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else "png"
+            order_idx = len(images)
+            tag = LAPORAN_IMAGE_ORDER[order_idx] if order_idx < len(LAPORAN_IMAGE_ORDER) else "lainnya"
+            images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
+
+    return data, images
+
+
 if __name__ == "__main__":
     import sys
     import json
@@ -278,19 +400,29 @@ if __name__ == "__main__":
 
 def extract_proposal_with_fallback(pdf_path, use_llm=True, log=print):
     """Sama seperti extract_proposal(), tapi field yang gagal dibaca regex
-    akan dicoba diisi ulang lewat Claude API (jika ANTHROPIC_API_KEY diset)."""
+    akan dicoba diisi ulang lewat Claude API (jika ANTHROPIC_API_KEY diset).
+    Mendukung file sumber PDF maupun Word (.docx), dideteksi dari ekstensi."""
     import fitz
     from llm_fallback import llm_fill_missing_fields, PROPOSAL_FIELD_HINTS, api_key_available
 
-    data, images = extract_proposal(pdf_path)
+    is_docx = pdf_path.lower().endswith(".docx")
+    if is_docx:
+        data, images = extract_proposal_docx(pdf_path)
+    else:
+        data, images = extract_proposal(pdf_path)
 
     missing = [k for k in PROPOSAL_FIELD_HINTS if not data.get(k)]
     if missing and use_llm:
         if api_key_available():
             log(f"      -> {len(missing)} field kosong, mencoba fallback Claude API: {missing}")
-            doc = fitz.open(pdf_path)
-            full_text = "\n".join(p.get_text() for p in doc)
-            doc.close()
+            if is_docx:
+                from docx import Document
+                d = Document(pdf_path)
+                full_text = "\n".join(p.text for p in d.paragraphs)
+            else:
+                doc = fitz.open(pdf_path)
+                full_text = "\n".join(p.get_text() for p in doc)
+                doc.close()
             filled = llm_fill_missing_fields(full_text, missing, PROPOSAL_FIELD_HINTS)
             for k, v in filled.items():
                 if v:
@@ -306,15 +438,24 @@ def extract_laporan_with_fallback(pdf_path, use_llm=True, log=print):
     import fitz
     from llm_fallback import llm_fill_missing_fields, LAPORAN_FIELD_HINTS, api_key_available
 
-    data, images = extract_laporan(pdf_path)
+    is_docx = pdf_path.lower().endswith(".docx")
+    if is_docx:
+        data, images = extract_laporan_docx(pdf_path)
+    else:
+        data, images = extract_laporan(pdf_path)
 
     missing = [k for k in LAPORAN_FIELD_HINTS if not data.get(k)]
     if missing and use_llm:
         if api_key_available():
             log(f"      -> {len(missing)} field kosong, mencoba fallback Claude API: {missing}")
-            doc = fitz.open(pdf_path)
-            full_text = "\n".join(p.get_text() for p in doc)
-            doc.close()
+            if is_docx:
+                from docx import Document
+                d = Document(pdf_path)
+                full_text = "\n".join(p.text for p in d.paragraphs)
+            else:
+                doc = fitz.open(pdf_path)
+                full_text = "\n".join(p.get_text() for p in doc)
+                doc.close()
             filled = llm_fill_missing_fields(full_text, missing, LAPORAN_FIELD_HINTS)
             for k, v in filled.items():
                 if v:

@@ -1,5 +1,5 @@
 """
-Aplikasi Web e_GeRAI Gennerate dan Asistensi Layanan PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -17,8 +17,9 @@ import os
 import uuid
 import shutil
 import traceback
-from flask import Flask, request, render_template_string, send_file, after_this_request
+from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for
 import mammoth
+from authlib.integrations.flask_client import OAuth
 
 from extract import extract_proposal_with_fallback, extract_laporan_with_fallback
 from generate_docx import build_document
@@ -37,6 +38,22 @@ MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+# SECRET_KEY wajib diset (lewat environment variable di Railway) supaya session login
+# tidak reset setiap kali server restart/redeploy. Kalau belum diset, pakai fallback
+# acak per-proses (login tetap jalan tapi akan ke-reset saat redeploy).
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24).hex()
+
+# ---- Konfigurasi OAuth Google (Sign in with Google) ----
+# GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET wajib diisi lewat environment variable
+# di Railway (dibuat lewat Google Cloud Console -> OAuth 2.0 Client IDs).
+oauth = OAuth(app)
+google_oauth = oauth.register(
+    name="google",
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
 
 print(f"[startup] BASE_DIR = {BASE_DIR}")
 print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
@@ -123,6 +140,12 @@ a { text-decoration:none; }
   border-radius:999px; white-space:nowrap; }
 .login-btn svg { width:16px; height:16px; }
 .login-btn:hover { background:#e8f1fd; }
+.user-badge { display:flex; align-items:center; gap:10px; font-size:13.5px; }
+.user-avatar { width:32px; height:32px; border-radius:50%; border:2px solid #e8f1fd; flex:none; }
+.user-greet { font-weight:700; color:var(--navy); white-space:nowrap; }
+.logout-link { font-size:12px; font-weight:700; color:var(--blue); border:1.5px solid #cfe0f5;
+  background:#f3f8ff; padding:7px 14px; border-radius:999px; white-space:nowrap; }
+.logout-link:hover { background:#e8f1fd; }
 @media (max-width: 1180px) { .navbar { order:3; width:100%; justify-content:center; padding-top:10px;
   border-top:1px solid var(--line); } }
 
@@ -287,7 +310,15 @@ HEADER_HTML = """
     <a href="#" class="nav-link" onclick="return false;">""" + ICONS["chart-bar"] + """ Laporan</a>
   </nav>
 
-  <a href="#" class="login-btn" onclick="return false;">""" + ICONS["user"] + """ Login</a>
+  {% if session.user %}
+  <div class="user-badge">
+    {% if session.user.picture %}<img src="{{ session.user.picture }}" class="user-avatar" alt="">{% endif %}
+    <span class="user-greet">Halo, {{ session.user.name }}</span>
+    <a href="/logout" class="logout-link">Keluar</a>
+  </div>
+  {% else %}
+  <a href="/login" class="login-btn">""" + ICONS["user"] + """ Login</a>
+  {% endif %}
 </header>
 """
 
@@ -319,15 +350,15 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-num">1</div>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
-        <div class="step-title">Draft Proposal PKKPRL (PDF)</div>
-        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan. Belum punya file-nya?
+        <div class="step-title">Draft Proposal PKKPRL (PDF/Word)</div>
+        <div class="step-desc">Unggah file PDF atau Word proposal yang akan digabungkan. Belum punya file-nya?
         <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
-          <div class="dz-title">Drag &amp; Drop PDF di sini</div>
+          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
           <div class="dz-sub">atau klik untuk memilih file</div>
-          <div class="dz-max">Maksimum 10 MB</div>
-          <input type="file" name="proposal" id="proposal" accept="application/pdf" required>
+          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+          <input type="file" name="proposal" id="proposal" accept="application/pdf,.docx" required>
         </div>
         <div class="file-chip" id="chip1">
           <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="name1"></span></div>
@@ -341,14 +372,14 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-num">2</div>
           <div class="step-icon">""" + ICONS["wave"] + """</div>
         </div>
-        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF)</div>
-        <div class="step-desc">Unggah file PDF laporan hidro-oseanografi.</div>
+        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word)</div>
+        <div class="step-desc">Unggah file PDF atau Word laporan hidro-oseanografi.</div>
         <div class="dropzone" id="dz2">
           """ + ICONS["cloud"] + """
-          <div class="dz-title">Drag &amp; Drop PDF di sini</div>
+          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
           <div class="dz-sub">atau klik untuk memilih file</div>
-          <div class="dz-max">Maksimum 10 MB</div>
-          <input type="file" name="laporan" id="laporan" accept="application/pdf" required>
+          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+          <input type="file" name="laporan" id="laporan" accept="application/pdf,.docx" required>
         </div>
         <div class="file-chip" id="chip2">
           <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="name2"></span></div>
@@ -361,7 +392,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
         <h3>Alur Proses</h3>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["cloud"] + """</div>
-          <div class="flow-body"><div class="ft">Upload Draft Proposal</div><div class="fd">Unggah file PDF Draft Proposal PKKPRL</div></div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["wave"] + """</div>
@@ -378,7 +409,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen Word</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -785,16 +816,16 @@ def render_manual_form_page(error=None):
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
     <div class="manual-upload-card">
-      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF)</h3>
+      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word)</h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
       <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut</a>,
-      unduh hasil PDF-nya, lalu unggah di bawah ini.</div>
+      unduh hasilnya (PDF atau Word), lalu unggah di bawah ini.</div>
       <div class="dropzone" id="dzManual">
         """ + ICONS["cloud"] + """
-        <div class="dz-title">Drag &amp; Drop PDF di sini</div>
+        <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
         <div class="dz-sub">atau klik untuk memilih file</div>
-        <div class="dz-max">Maksimum 10 MB</div>
-        <input type="file" name="laporan" id="laporanManual" accept="application/pdf" required>
+        <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+        <input type="file" name="laporan" id="laporanManual" accept="application/pdf,.docx" required>
       </div>
       <div class="file-chip" id="chipManual">
         <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="nameManual"></span></div>
@@ -1327,23 +1358,61 @@ def health():
     return {"status": "ok"}
 
 
+@app.route("/login")
+def login():
+    try:
+        redirect_uri = url_for("auth_callback", _external=True)
+        return google_oauth.authorize_redirect(redirect_uri)
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(UPLOAD_HTML, error=(
+            "Login Google belum bisa diproses. Kemungkinan GOOGLE_CLIENT_ID / "
+            "GOOGLE_CLIENT_SECRET belum diisi di environment variable server."
+        ))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    try:
+        token = google_oauth.authorize_access_token()
+        user_info = token.get("userinfo") or {}
+        session["user"] = {
+            "name": user_info.get("name", "Pengguna"),
+            "email": user_info.get("email", ""),
+            "picture": user_info.get("picture", ""),
+        }
+    except Exception:
+        traceback.print_exc()
+    return redirect(url_for("index"))
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("index"))
+
+
 @app.route("/review", methods=["POST"])
 def review():
     proposal_file = request.files.get("proposal")
     laporan_file = request.files.get("laporan")
 
     if not proposal_file or not laporan_file or proposal_file.filename == "" or laporan_file.filename == "":
-        return render_template_string(UPLOAD_HTML, error="Mohon unggah kedua file PDF (proposal & laporan)."), 400
-    if not proposal_file.filename.lower().endswith(".pdf") or not laporan_file.filename.lower().endswith(".pdf"):
-        return render_template_string(UPLOAD_HTML, error="Kedua file harus berformat PDF."), 400
+        return render_template_string(UPLOAD_HTML, error="Mohon unggah kedua file (proposal & laporan)."), 400
+    if not proposal_file.filename.lower().endswith((".pdf", ".docx")):
+        return render_template_string(UPLOAD_HTML, error="File Draft Proposal harus berformat PDF atau Word (.docx)."), 400
+    proposal_ext = ".docx" if proposal_file.filename.lower().endswith(".docx") else ".pdf"
+    laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+    if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
+        return render_template_string(UPLOAD_HTML, error="File Laporan harus berformat PDF atau Word (.docx)."), 400
 
     job_store.cleanup_old_jobs(JOBS_DIR)
 
     job_id = uuid.uuid4().hex[:12]
     tmp_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(tmp_dir, exist_ok=True)
-    proposal_path = os.path.join(tmp_dir, "proposal.pdf")
-    laporan_path = os.path.join(tmp_dir, "laporan.pdf")
+    proposal_path = os.path.join(tmp_dir, "proposal" + proposal_ext)
+    laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
     proposal_file.save(proposal_path)
     laporan_file.save(laporan_path)
 
@@ -1363,7 +1432,7 @@ def review():
         job_store.delete_job(JOBS_DIR, job_id)
         return render_template_string(
             UPLOAD_HTML,
-            error="Terjadi kesalahan saat memproses dokumen. Pastikan kedua file adalah PDF yang valid.",
+            error="Terjadi kesalahan saat memproses dokumen. Pastikan file Proposal dan Laporan adalah PDF/Word yang valid.",
         ), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1380,16 +1449,17 @@ def proposal_manual_form():
 def proposal_manual_submit():
     laporan_file = request.files.get("laporan")
     if not laporan_file or laporan_file.filename == "":
-        return render_manual_form_page(error="Mohon unggah file PDF Laporan Hidro-Oseanografi."), 400
-    if not laporan_file.filename.lower().endswith(".pdf"):
-        return render_manual_form_page(error="File Laporan harus berformat PDF."), 400
+        return render_manual_form_page(error="Mohon unggah file Laporan Hidro-Oseanografi (PDF atau Word)."), 400
+    if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
+        return render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx)."), 400
+    laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
 
     job_store.cleanup_old_jobs(JOBS_DIR)
 
     job_id = uuid.uuid4().hex[:12]
     tmp_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(tmp_dir, exist_ok=True)
-    laporan_path = os.path.join(tmp_dir, "laporan.pdf")
+    laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
     laporan_file.save(laporan_path)
 
     try:
@@ -1487,7 +1557,7 @@ def proposal_manual_submit():
         traceback.print_exc()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         job_store.delete_job(JOBS_DIR, job_id)
-        return render_manual_form_page(error="Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF yang valid."), 500
+        return render_manual_form_page(error="Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF/Word yang valid."), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
