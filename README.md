@@ -5,22 +5,27 @@ Versi web dari aplikasi penggabung proposal PKKPRL. Bisa diakses dari
 perangkat pengguna), dan **aman dipakai bersamaan oleh banyak orang**
 sekaligus.
 
+**Alur pemakaian:**
+1. Unggah Draft Proposal PKKPRL + Laporan Kondisi/Hidro-Oseanografi (PDF)
+2. Muncul halaman **Review**: pratinjau dokumen lengkap (semua teks &
+   gambar) + form untuk mengoreksi data yang salah
+3. Klik **"Generate Dokumen Final & Unduh"** → dokumen Word final terunduh
+
 ---
 
 ## Isi Folder
 
 ```
 webapp/
-├── app.py               <- server web (Flask)
+├── app.py               <- server web (Flask) + HTML tertanam di dalamnya
 ├── extract.py           <- mesin pembaca/pengekstrak PDF (+ fallback Claude API)
 ├── generate_docx.py     <- mesin penyusun dokumen Word
+├── review_fields.py     <- daftar field yang bisa dikoreksi di halaman review
+├── job_store.py         <- penyimpanan sementara antara tahap review & finalize
 ├── llm_fallback.py      <- pemanggil Claude API untuk field yang gagal dibaca regex
 ├── requirements.txt     <- daftar library yang dibutuhkan
 ├── Procfile             <- konfigurasi untuk platform hosting (Render/Railway)
-├── templates/
-│   └── upload.html      <- halaman form unggah
-├── uploads/              <- folder sementara (kosong, otomatis terisi & dibersihkan)
-└── outputs/              <- folder sementara hasil (kosong, otomatis terisi & dibersihkan)
+├── uploads/, outputs/, jobs/  <- folder sementara (otomatis terisi & dibersihkan)
 ```
 
 ---

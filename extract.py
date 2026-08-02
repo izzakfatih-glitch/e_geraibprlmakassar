@@ -72,8 +72,11 @@ def extract_proposal(pdf_path):
     if m:
         data["Nama Perusahaan/Instansi"] = norm(m.group(0))
 
+    # Titik koordinat: dokumen sumber kadang memakai notasi "BT"/"LS"
+    # (Bujur Timur/Lintang Selatan), kadang notasi internasional "E"/"S"
+    # (East/South). Regex ini menangkap keduanya, dan berapapun jumlah titiknya.
     koord = re.findall(
-        r"(\d)\s+(\d+°\s*\d+'\s*[\d,]+\"\s*BT)\s+(\d+°\s*\d+'\s*[\d,]+\"\s*LS)",
+        r"(\d+)\s+(\d+°\s*\d+'\s*[\d,]+\"\s*(?:BT|E))\s+(\d+°\s*\d+'\s*[\d,]+\"\s*(?:LS|S))",
         full_text,
     )
     data["koordinat"] = koord
