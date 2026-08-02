@@ -1,5 +1,5 @@
 """
-Aplikasi Web Penggabung Proposal PKKPRL
+Aplikasi Web Generate dan Asistensi Dokumen Draft Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -294,7 +294,7 @@ HEADER_HTML = """
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>e-GeRAI KKPRL &mdash; Penggabung Proposal PKKPRL</title>
+<title>e-GeRAI KKPRL &mdash; Generate dan Asistensi Layanan PKKPRL</title>
 <style>""" + LANDING_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -373,7 +373,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
