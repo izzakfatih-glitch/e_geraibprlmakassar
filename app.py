@@ -294,7 +294,7 @@ HEADER_HTML = """
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>e-GeRAI KKPRL &mdash; Penggabung Proposal PKKPRL</title>
+<title>e-GeRAI KKPRL &mdash; e-GeRAI Generate Asisten Layanan BPRL Makassar</title>
 <style>""" + LANDING_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
