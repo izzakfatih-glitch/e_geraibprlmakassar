@@ -93,6 +93,17 @@ class Builder:
         set_font(r, size=11, italic=italic)
         return para
 
+    def labeled(self, label, text):
+        para = self.doc.add_paragraph()
+        para.paragraph_format.space_after = Pt(8)
+        para.paragraph_format.line_spacing = 1.25
+        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r1 = para.add_run(label + ": ")
+        set_font(r1, size=11, bold=True)
+        r2 = para.add_run(text)
+        set_font(r2, size=11)
+        return para
+
     def bullet(self, text):
         para = self.doc.add_paragraph(style="List Bullet")
         r = para.add_run(text)
@@ -244,6 +255,15 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.h2("A. Rencana Kegiatan Utama dan Penunjang")
     b.h3("1. Uraian Kegiatan")
     b.p(f"Kegiatan yang dimohonkan adalah {jenis_kegiatan}, dengan kebutuhan ruang laut seluas {luas}.")
+    deskripsi_keg = prop.get("deskripsi_kegiatan", "")
+    if deskripsi_keg:
+        b.labeled("Deskripsi Kegiatan", deskripsi_keg)
+    manfaat_keg = prop.get("manfaat_kegiatan", "")
+    if manfaat_keg:
+        b.labeled("Manfaat Kegiatan", manfaat_keg)
+    tujuan_keg = prop.get("tujuan_kegiatan", "")
+    if tujuan_keg:
+        b.labeled("Tujuan Kegiatan", tujuan_keg)
     invest = g(prop, "investasi")
     invest_str = f"Rp{invest}" if invest != NA else NA
     tenaga = g(prop, "tenaga_kerja")
@@ -251,6 +271,21 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p(f"Rencana tenaga kerja yang digunakan berjumlah {tenaga} orang per siklus, dengan tenaga kerja asing "
         f"berjumlah {tenaga_asing}. Total komitmen pendanaan investasi kegiatan ini sebesar {invest_str}, "
         f"mencakup perencanaan teknis, pengadaan sarana-prasarana, operasional, serta pengelolaan lingkungan hidup.")
+
+    instalasi_bangunan = prop.get("instalasi_bangunan", "")
+    instalasi_posisi = prop.get("instalasi_posisi", "")
+    if instalasi_bangunan or instalasi_posisi:
+        posisi_txt = f", berada pada {instalasi_posisi.lower()}" if instalasi_posisi else ""
+        bangunan_txt = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
+        b.p(f"Instalasi bangunan menetap di laut yang direncanakan berupa {bangunan_txt}{posisi_txt}.")
+
+    jadwal = prop.get("jadwal_kegiatan", "")
+    if jadwal:
+        b.labeled("Jadwal Kegiatan", jadwal)
+
+    dukung = prop.get("dokumen_data_dukung", "")
+    if dukung:
+        b.p(f"Dokumen data dukung yang telah dimiliki oleh pelaku usaha meliputi: {dukung}.")
 
     h3_2 = b.h3("2. Kegiatan Eksisting atau Rencana yang Akan Dimohonkan")
     status_map = {
@@ -272,6 +307,12 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.image_missing("siteplan")
         b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
     img_no += 1
+
+    dok_kegiatan_img = get_image_bytes(prop_imgs, "dok_kegiatan_eksisting")
+    if dok_kegiatan_img:
+        b.image(dok_kegiatan_img, width_cm=13)
+        b.caption(f"Gambar {img_no}. Dokumentasi Kegiatan Eksisting/Rencana yang Dimohonkan.")
+        img_no += 1
 
     b.h3("3. Reklamasi / Non-Reklamasi")
     reklamasi_txt = "tanpa reklamasi" if prop.get("non_reklamasi") else "dengan reklamasi"
@@ -321,6 +362,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p("Berdasarkan hasil survei/pengamatan langsung, tidak terdapat pemanfaatan ruang laut oleh pihak lain "
         "di sekitar lokasi permohonan. Rencana kegiatan disusun dengan memperhatikan kepentingan nelayan "
         "tradisional dan masyarakat, serta tidak menghalangi akses pelayaran yang sudah ada.")
+    deskripsi_sekitar = prop.get("deskripsi_pemanfaatan_sekitar", "")
+    if deskripsi_sekitar:
+        b.p(deskripsi_sekitar)
 
     foto_pantai_list = [im for im in prop_imgs if im["tag"] == "foto_pantai"]
     if foto_pantai_list:
@@ -334,6 +378,12 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.caption(f"Gambar {img_no}. Kondisi Eksisting Perairan dan Garis Pantai di Sekitar Lokasi Permohonan.")
         img_no += 1
 
+    dok_sekitar_list = [im for im in prop_imgs if im["tag"] == "dok_pemanfaatan_sekitar"]
+    for im in dok_sekitar_list:
+        b.image(im["bytes"], width_cm=11)
+        b.caption(f"Gambar {img_no}. Dokumentasi Kegiatan Pemanfaatan Ruang Laut Sekitar.")
+        img_no += 1
+
     b.page_break()
 
     # ================= BAB III =================
@@ -341,12 +391,17 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     b.h2("A. Ekosistem Sekitar")
     b.h3("1. Mangrove")
-    spesies = g(prop, "mangrove_spesies")
-    persen_mgv = g(prop, "mangrove_persen")
-    kondisi_mgv = g(prop, "mangrove_kondisi")
-    b.p(f"Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, terdapat ekosistem "
-        f"mangrove yang didominasi oleh jenis {spesies}, dengan persentase tutupan mencapai {persen_mgv}% "
-        f"pada kondisi {kondisi_mgv}.")
+    mangrove_ada = prop.get("mangrove_ada", "")
+    if mangrove_ada == "Tidak terdapat ekosistem mangrove":
+        b.p("Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, tidak "
+            "teridentifikasi keberadaan ekosistem mangrove pada area yang dimohonkan.")
+    else:
+        spesies = g(prop, "mangrove_spesies")
+        persen_mgv = g(prop, "mangrove_persen")
+        kondisi_mgv = g(prop, "mangrove_kondisi")
+        b.p(f"Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, terdapat ekosistem "
+            f"mangrove yang didominasi oleh jenis {spesies}, dengan persentase tutupan mencapai {persen_mgv}% "
+            f"pada kondisi {kondisi_mgv}.")
     mgv_img = get_image_bytes(prop_imgs, "foto_mangrove")
     if mgv_img:
         b.image(mgv_img, width_cm=11)
@@ -368,6 +423,19 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     else:
         b.p("Berdasarkan data sekunder perairan di sekitar lokasi kegiatan, tidak teridentifikasi keberadaan "
             "ekosistem lamun (seagrass) pada area yang dimohonkan.")
+
+    lamun_ada_manual = prop.get("lamun_ada_manual", "")
+    if lamun_ada_manual == "Terdapat ekosistem lamun":
+        lamun_spesies = g(prop, "lamun_spesies")
+        lamun_persen = g(prop, "lamun_persen")
+        lamun_kondisi = g(prop, "lamun_kondisi")
+        b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem lamun yang didominasi "
+            f"oleh jenis {lamun_spesies}, dengan persentase tutupan mencapai {lamun_persen}% pada kondisi {lamun_kondisi}.")
+        lamun_img = get_image_bytes(prop_imgs, "foto_lamun")
+        if lamun_img:
+            b.image(lamun_img, width_cm=11)
+            b.caption(f"Gambar {img_no}. Dokumentasi Ekosistem Lamun di Sekitar Lokasi Kegiatan.")
+            img_no += 1
 
     b.h3("3. Terumbu Karang")
     karang_ha = g(lap, "eko_karang_ha")
@@ -392,6 +460,18 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         ],
     )
     b.caption("Tabel 2. Rincian Tutupan Ekosistem pada Area Kajian Spasial di Sekitar Titik Pusat Rencana Kegiatan.")
+
+    karang_ada_manual = prop.get("karang_ada", "")
+    if karang_ada_manual == "Terdapat ekosistem terumbu karang":
+        karang_spesies_m = g(prop, "karang_spesies")
+        karang_persen_m = g(prop, "karang_persen_manual")
+        karang_kondisi_m = g(prop, "karang_kondisi")
+        b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem terumbu karang yang "
+            f"didominasi oleh jenis {karang_spesies_m}, dengan persentase tutupan mencapai {karang_persen_m}% "
+            f"pada kondisi {karang_kondisi_m}.")
+    elif karang_ada_manual == "Tidak terdapat ekosistem terumbu karang":
+        b.p("Berdasarkan hasil pengamatan pemohon di lapangan, tidak teridentifikasi keberadaan ekosistem "
+            "terumbu karang secara langsung pada area yang dimohonkan.")
 
     karang_img = get_image_bytes(prop_imgs, "foto_karang_insitu")
     if karang_img:
@@ -484,13 +564,30 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     img_no += 1
 
     b.h2("D. Kondisi Sosial Ekonomi Masyarakat")
-    b.p(f"Berdasarkan data sekunder Badan Pusat Statistik, {desa} memiliki luas wilayah {g(prop,'desa_luas_ha')} "
+    sumber_sosek = prop.get("sumber_data_sosek", "") or "Badan Pusat Statistik"
+    tahun_sosek = prop.get("tahun_data_sosek", "")
+    tahun_txt = f" tahun {tahun_sosek}" if tahun_sosek else ""
+    b.p(f"Berdasarkan data sekunder {sumber_sosek}{tahun_txt}, {desa} memiliki luas wilayah {g(prop,'desa_luas_ha')} "
         f"Ha dengan jumlah penduduk sebanyak {g(prop,'desa_penduduk')} jiwa. Kehadiran rencana kegiatan ini "
         f"diharapkan dapat mendukung struktur sosial-ekonomi kawasan secara harmonis dan melibatkan konsultasi "
         f"publik dengan kelompok nelayan setempat sebelum pelaksanaan konstruksi.")
+    mata_pencaharian = prop.get("mata_pencaharian", "")
+    if mata_pencaharian:
+        b.labeled("Mata Pencaharian Masyarakat Desa", mata_pencaharian)
 
     b.h2("E. Aksesibilitas Lokasi dan Sekitarnya")
-    b.p(f"Aksesibilitas menuju lokasi kegiatan di {lokasi_lengkap} dapat ditempuh melalui jalur darat maupun laut.")
+    aksesibilitas_manual = prop.get("aksesibilitas_lokasi", "")
+    if aksesibilitas_manual:
+        b.p(aksesibilitas_manual)
+    else:
+        b.p(f"Aksesibilitas menuju lokasi kegiatan di {lokasi_lengkap} dapat ditempuh melalui jalur darat maupun laut.")
+
+    akses_img = get_image_bytes(prop_imgs, "gambar_aksesibilitas")
+    if akses_img:
+        b.image(akses_img, width_cm=13)
+        b.caption(f"Gambar {img_no}. Peta Aksesibilitas Menuju Lokasi Kegiatan.")
+        img_no += 1
+
     pola_img = get_image_bytes(prop_imgs, "peta_pola_ruang")
     if pola_img:
         b.image(pola_img, width_cm=13)
@@ -506,6 +603,25 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.bullet("Dokumen identitas dan legalitas pemohon/perusahaan.")
     b.bullet("Dokumentasi survei lapangan kondisi eksisting lokasi.")
     b.bullet("Peta pendukung (peta lokasi, peta site plan, dan peta pola ruang wilayah).")
+
+    sertifikat_img = get_image_bytes(prop_imgs, "sertifikat_lahan")
+    if sertifikat_img:
+        b.image(sertifikat_img, width_cm=13)
+        b.caption(f"Gambar {img_no}. Sertifikat Kepemilikan Lahan Darat.")
+        img_no += 1
+
+    sosialisasi_img = get_image_bytes(prop_imgs, "dok_sosialisasi")
+    if sosialisasi_img:
+        b.image(sosialisasi_img, width_cm=13)
+        b.caption(f"Gambar {img_no}. Dokumen Hasil Sosialisasi dengan Masyarakat Sekitar.")
+        img_no += 1
+
+    pendukung_lain_list = [im for im in prop_imgs if im["tag"] == "dok_pendukung_lainnya"]
+    for im in pendukung_lain_list:
+        b.image(im["bytes"], width_cm=13)
+        b.caption(f"Gambar {img_no}. Dokumen Pendukung Lainnya.")
+        img_no += 1
+
     b.p(f"Demikian proposal teknis ini disusun sebagai bagian dari kelengkapan administrasi dan teknis "
         f"permohonan PKKPRL atas nama {perusahaan}.", italic=True)
     b.p("Catatan: Dokumen ini dibangkitkan otomatis oleh aplikasi penggabung proposal PKKPRL dari dua sumber "

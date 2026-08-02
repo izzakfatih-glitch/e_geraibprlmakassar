@@ -1,5 +1,5 @@
 """
-Aplikasi Web e_GeRAI Generate dan Asistensi layanan Proposal PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -320,7 +320,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
         <div class="step-title">Draft Proposal PKKPRL (PDF)</div>
-        <div class="step-desc">Unggah file PDF Draft Proposal yang akan digabungkan. Belum punya file-nya?
+        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan. Belum punya file-nya?
         <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
@@ -361,7 +361,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
         <h3>Alur Proses</h3>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["cloud"] + """</div>
-          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Draft Proposal PKKPRL</div></div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["wave"] + """</div>
@@ -378,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -601,7 +601,71 @@ SELECT_FIELDS = {
                      "Sulawesi Tenggara", "Gorontalo", "Bali", "Nusa Tenggara Barat", "Nusa Tenggara Timur"],
         "allow_other": False,
     },
+    ("prop", "Jenis Kegiatan"): {
+        "options": ["Pemanfaatan Air Laut untuk Budi Daya", "Keramba Jaring Apung", "Dermaga"],
+        "allow_other": True,
+    },
+    ("prop", "mangrove_kondisi"): {
+        "options": ["Sangat Padat", "Sedang", "Jarang"],
+        "allow_other": False,
+    },
+    ("prop", "instalasi_posisi"): {
+        "options": ["Permukaan Laut", "Kolom Laut", "Dasar Laut"],
+        "allow_other": False,
+    },
+    ("prop", "mangrove_ada"): {
+        "options": ["Terdapat ekosistem mangrove", "Tidak terdapat ekosistem mangrove"],
+        "allow_other": False,
+    },
+    ("prop", "lamun_ada_manual"): {
+        "options": ["Terdapat ekosistem lamun", "Tidak terdapat ekosistem lamun"],
+        "allow_other": False,
+    },
+    ("prop", "lamun_kondisi"): {
+        "options": ["Sangat kaya", "Kurang Sehat", "Miskin"],
+        "allow_other": False,
+    },
+    ("prop", "karang_ada"): {
+        "options": ["Terdapat ekosistem terumbu karang", "Tidak terdapat ekosistem terumbu karang"],
+        "allow_other": False,
+    },
+    ("prop", "karang_kondisi"): {
+        "options": ["Sangat Baik", "Baik", "Sedang"],
+        "allow_other": False,
+    },
 }
+
+
+def render_select_html(fname, options, allow_other=False):
+    opts_html = ['<option value="">-- Pilih --</option>']
+    for opt in options:
+        opts_html.append(f'<option value="{opt}">{opt}</option>')
+    other_html = ""
+    if allow_other:
+        opts_html.append('<option value="__other__">Lainnya...</option>')
+        other_html = f'<input type="text" class="select-other-input" id="{fname}_other" placeholder="Isi lainnya" data-for="{fname}">'
+    return (
+        f'<select class="select-field" name="{fname}" id="{fname}" data-allow-other="{str(allow_other).lower()}">'
+        f'{"".join(opts_html)}</select>{other_html}'
+    )
+
+
+def img_field_html(field_name, label, desc="", multiple=False, note=""):
+    desc_html = f'<div class="ff-hint" style="margin-bottom:6px;">{desc}</div>' if desc else ""
+    multi_attr = " multiple" if multiple else ""
+    note_html = f'<span style="font-weight:400;color:var(--muted);"> {note}</span>' if note else ""
+    return (
+        f'<div class="file-field-row">'
+        f'<label>{label}{note_html}</label>{desc_html}'
+        f'<div class="img-input-row">'
+        f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
+        f'<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>'
+        f'<button type="button" class="img-upload-btn" data-field="{field_name}">{ICONS["doc"]} Upload File</button>'
+        f'</div>'
+        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/*"{multi_attr} style="display:none">'
+        f'<div class="img-preview-list" id="{field_name}_preview"></div>'
+        f'</div>'
+    )
 
 
 def render_manual_form_page(error=None):
@@ -709,6 +773,63 @@ def render_manual_form_page(error=None):
       """ + "".join(groups_html) + """
 
       <details class="acc-item">
+        <summary>Deskripsi Kegiatan</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Deskripsi Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi kegiatan yang akan dilakukan.</div>
+            <textarea name="deskripsi_kegiatan" id="deskripsi_kegiatan" rows="4" placeholder="Isi deskripsi kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Kegiatan usaha yang diusulkan adalah pembesaran biota laut budidaya, melalui pengoperasian keramba jaring apung (KJA) sebagai sarana penampungan dan pemeliharaan sementara ikan hidup sebelum dipasarkan. Biota Laut memiliki nilai ekonomi tinggi dengan peluang pasar yang masih terbuka, sehingga kegiatan ini berpotensi memberikan nilai tambah hasil perikanan serta menjadi alternatif diversifikasi usaha bagi nelayan setempat. Pelaksanaan kegiatan diharapkan dapat meningkatkan pendapatan dan kesejahteraan masyarakat pesisir serta mengurangi ketergantungan terhadap jenis ikan lainnya.</span>
+            <button type="button" class="ex-fill" data-target="deskripsi_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Manfaat Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi manfaat dari kegiatan yang akan dilakukan.</div>
+            <textarea name="manfaat_kegiatan" id="manfaat_kegiatan" rows="4" placeholder="Isi manfaat kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Kegiatan pembangunan dan operasional fasilitas budidaya udang vannamei bertujuan untuk mendukung peningkatan produksi perikanan budidaya secara berkelanjutan melalui pemanfaatan ruang laut yang optimal dan sesuai dengan ketentuan yang berlaku. Selain memberikan nilai tambah bagi sektor perikanan, kegiatan ini juga diharapkan dapat mendorong pertumbuhan ekonomi daerah, membuka peluang kerja bagi masyarakat sekitar, serta mendukung penerapan budidaya yang produktif dan berwawasan lingkungan.</span>
+            <button type="button" class="ex-fill" data-target="manfaat_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Tujuan Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi tujuan dari kegiatan yang akan dilakukan.</div>
+            <textarea name="tujuan_kegiatan" id="tujuan_kegiatan" rows="4" placeholder="Isi tujuan kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Tujuan pemanfaatan ruang laut yang diajukan adalah untuk pembangunan fasilitas pemanfaatan air laut bagi kegiatan budidaya, yang berfungsi sebagai sarana penunjang usaha pembudidayaan ikan bersirip (selain ikan hias) serta biota air payau lainnya yang tidak dilindungi. Kegiatan utama perusahaan adalah budidaya udang vannamei. Dalam mendukung pelaksanaan kegiatan utama tersebut, direncanakan pembangunan fasilitas pendukung yang meliputi Instalasi Pengolahan Air Limbah (IPAL), instalasi penyediaan air bersih, dan instalasi kelistrikan.</span>
+            <button type="button" class="ex-fill" data-target="tujuan_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Instalasi Bangunan Menetap Di Laut</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Contoh: Saluran Inlet atau Outlet</div>
+            <input type="text" name="instalasi_bangunan" id="instalasi_bangunan" placeholder="Isi instalasi bangunan menetap di laut">
+          </div>
+
+          <div class="field-row">
+            <label>Instalasi Bangunan Laut Berada Pada</label>
+            """ + render_select_html("instalasi_posisi", SELECT_FIELDS[("prop", "instalasi_posisi")]["options"]) + """
+          </div>
+
+          <div class="field-row">
+            <label>Deskripsi Jadwal Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Tuliskan rincian kegiatan dan waktu pelaksanaannya, format: [Nama Kegiatan] : [Bulan/Tahun Pelaksanaan]</div>
+            <textarea name="jadwal_kegiatan" id="jadwal_kegiatan" rows="4" placeholder="Isi jadwal kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Pengurusan PKKPRL : Bulan 1 - Bulan 3. Pemasangan Keramba Jaring Apung : Bulan 3 - Bulan 5. Operasional Keramba Jaring Apung : Bulan 5 - Bulan 12.</span>
+            <button type="button" class="ex-fill" data-target="jadwal_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Dokumen Data Dukung</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Dokumen data dukung yang dimiliki oleh pelaku usaha (centang yang sesuai)</div>
+            <div class="checkbox-row"><input type="checkbox" name="dukung_nib" id="dd1"><label for="dd1">NIB</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="dukung_sertifikat" id="dd2"><label for="dd2">Sertifikat Kepemilikan Lahan Darat</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="dukung_izin_lingkungan" id="dd3"><label for="dd3">Surat Izin Lingkungan</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="dukung_ba_sosialisasi" id="dd4"><label for="dd4">Berita Acara Sosialisasi</label></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item">
         <summary>Status Kegiatan</summary>
         <div class="acc-body">
           <div class="field-row">
@@ -724,6 +845,90 @@ def render_manual_form_page(error=None):
           <div class="checkbox-row"><input type="checkbox" name="non_reklamasi" id="cb1"><label for="cb1">Kegiatan tanpa reklamasi</label></div>
           <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk kegiatan berusaha</label></div>
           <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3"><label for="cb3">Termasuk kegiatan non-strategis nasional</label></div>
+        </div>
+      </details>
+
+      <details class="acc-item">
+        <summary>Data Ekosistem Tambahan (Opsional)</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Mangrove</label>
+            """ + render_select_html("mangrove_ada", SELECT_FIELDS[("prop", "mangrove_ada")]["options"]) + """
+          </div>
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Lamun</label>
+            """ + render_select_html("lamun_ada_manual", SELECT_FIELDS[("prop", "lamun_ada_manual")]["options"]) + """
+          </div>
+          <div class="field-row">
+            <label>Spesies Lamun</label>
+            <input type="text" name="lamun_spesies" id="lamun_spesies" placeholder="Isi spesies lamun">
+          </div>
+          <div class="field-row">
+            <label>Persentase Tutupan Lamun</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Dilampirkan dalam bentuk persentase (%)</div>
+            <input type="text" name="lamun_persen" id="lamun_persen" placeholder="Isi persentase tutupan lamun">
+          </div>
+          <div class="field-row">
+            <label>Kondisi Lamun</label>
+            """ + render_select_html("lamun_kondisi", SELECT_FIELDS[("prop", "lamun_kondisi")]["options"]) + """
+          </div>
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Terumbu Karang</label>
+            """ + render_select_html("karang_ada", SELECT_FIELDS[("prop", "karang_ada")]["options"]) + """
+          </div>
+          <div class="field-row">
+            <label>Spesies Terumbu Karang</label>
+            <input type="text" name="karang_spesies" id="karang_spesies" placeholder="Isi spesies terumbu karang">
+          </div>
+          <div class="field-row">
+            <label>Persentase Tutupan Terumbu Karang</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Dicantumkan dalam bentuk %</div>
+            <input type="text" name="karang_persen_manual" id="karang_persen_manual" placeholder="Isi persentase tutupan terumbu karang">
+          </div>
+          <div class="field-row">
+            <label>Kondisi Terumbu Karang</label>
+            """ + render_select_html("karang_kondisi", SELECT_FIELDS[("prop", "karang_kondisi")]["options"]) + """
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item">
+        <summary>Pemanfaatan Ruang Laut Sekitar (Opsional)</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Deskripsi Kegiatan Pemanfaatan Ruang Laut Sekitar</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Gambaran singkat mengenai kegiatan pemanfaatan ruang laut di sekitar lokasi.</div>
+            <textarea name="deskripsi_pemanfaatan_sekitar" id="deskripsi_pemanfaatan_sekitar" rows="4" placeholder="Isi deskripsi pemanfaatan ruang laut sekitar"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Pemanfaatan ruang laut di sekitar lokasi permohonan didominasi oleh aktivitas penangkapan ikan skala kecil di seluruh penjuru arah mata angin. Di sebelah utara, lokasi berbatasan dengan area penangkapan ikan skala kecil serta kawasan pemukiman dan tempat tambat labuh nelayan yang berjarak sekitar 1 km. Pada sisi timur, kawasan berbatasan dengan area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km.</span>
+            <button type="button" class="ex-fill" data-target="deskripsi_pemanfaatan_sekitar">Pakai contoh ini</button></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item">
+        <summary>Sosial Ekonomi &amp; Aksesibilitas Lanjutan (Opsional)</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Mata Pencaharian Masyarakat Desa</label>
+            <textarea name="mata_pencaharian" id="mata_pencaharian" rows="4" placeholder="Isi mata pencaharian masyarakat desa"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Mata pencaharian masyarakat desa didominasi oleh aktivitas yang berkaitan dengan karakter pesisir. Nelayan menjadi salah satu pekerjaan utama, didukung oleh potensi perairan yang memiliki sumber daya ikan, biota laut, padang lamun, mangrove, dan terumbu karang.</span>
+            <button type="button" class="ex-fill" data-target="mata_pencaharian">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Sumber Data Sosek</label>
+            <input type="text" name="sumber_data_sosek" id="sumber_data_sosek" placeholder="Isi sumber data sosial ekonomi">
+            <div class="field-example">Contoh: <span class="ex-text">Badan Pusat Statistik</span>
+            <button type="button" class="ex-fill" data-target="sumber_data_sosek">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Tahun Data Sosek</label>
+            <input type="text" name="tahun_data_sosek" id="tahun_data_sosek" placeholder="Isi tahun data">
+          </div>
+          <div class="field-row">
+            <label>Aksesibilitas Lokasi</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Deskripsi aksesibilitas dari titik poin lokasi yang mudah dikenali ke lokasi area yang dimohonkan, termasuk jarak dan waktu tempuh.</div>
+            <textarea name="aksesibilitas_lokasi" id="aksesibilitas_lokasi" rows="4" placeholder="Isi aksesibilitas lokasi"></textarea>
+          </div>
         </div>
       </details>
 
@@ -812,6 +1017,23 @@ def render_manual_form_page(error=None):
             <input type="file" name="img_peta_pola_ruang" id="img_peta_pola_ruang" accept="image/*" style="display:none">
             <div class="img-preview-list" id="img_peta_pola_ruang_preview"></div>
           </div>
+
+          """ + img_field_html("img_dok_kegiatan", "Dokumentasi Kegiatan Eksisting/Rencana",
+                                "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.") + """
+
+          """ + img_field_html("img_dok_pemanfaatan_sekitar", "Dokumentasi Pemanfaatan Ruang Laut Sekitar",
+                                "Maksimal 3 dokumentasi.", multiple=True, note="(bisa lebih dari 1)") + """
+
+          """ + img_field_html("img_foto_lamun", "Dokumentasi Ekosistem Lamun") + """
+
+          """ + img_field_html("img_aksesibilitas", "Gambar Peta Aksesibilitas Menuju Lokasi") + """
+
+          """ + img_field_html("img_sertifikat_lahan", "Sertifikat Kepemilikan Lahan Darat") + """
+
+          """ + img_field_html("img_dok_sosialisasi", "Dokumen Hasil Sosialisasi",
+                                "Berita acara atau surat pernyataan tidak keberatan dari masyarakat.") + """
+
+          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", multiple=True, note="(bisa lebih dari 1)") + """
         </div>
       </details>
     </div>
@@ -1101,6 +1323,38 @@ def proposal_manual_submit():
         prop_data["non_strategis"] = "non_strategis" in request.form
         prop_data["kegiatan_status"] = request.form.get("kegiatan_status", "")
         prop_data["sumber_peta"] = request.form.get("sumber_peta", "")
+        prop_data["deskripsi_kegiatan"] = request.form.get("deskripsi_kegiatan", "")
+        prop_data["manfaat_kegiatan"] = request.form.get("manfaat_kegiatan", "")
+        prop_data["tujuan_kegiatan"] = request.form.get("tujuan_kegiatan", "")
+        prop_data["instalasi_bangunan"] = request.form.get("instalasi_bangunan", "")
+        prop_data["instalasi_posisi"] = request.form.get("instalasi_posisi", "")
+        prop_data["jadwal_kegiatan"] = request.form.get("jadwal_kegiatan", "")
+        dukung_list = []
+        if "dukung_nib" in request.form:
+            dukung_list.append("NIB")
+        if "dukung_sertifikat" in request.form:
+            dukung_list.append("Sertifikat Kepemilikan Lahan Darat")
+        if "dukung_izin_lingkungan" in request.form:
+            dukung_list.append("Surat Izin Lingkungan")
+        if "dukung_ba_sosialisasi" in request.form:
+            dukung_list.append("Berita Acara Sosialisasi")
+        prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
+
+        prop_data["mangrove_ada"] = request.form.get("mangrove_ada", "")
+        prop_data["lamun_ada_manual"] = request.form.get("lamun_ada_manual", "")
+        prop_data["lamun_spesies"] = request.form.get("lamun_spesies", "")
+        prop_data["lamun_persen"] = request.form.get("lamun_persen", "")
+        prop_data["lamun_kondisi"] = request.form.get("lamun_kondisi", "")
+        prop_data["karang_ada"] = request.form.get("karang_ada", "")
+        prop_data["karang_spesies"] = request.form.get("karang_spesies", "")
+        prop_data["karang_persen_manual"] = request.form.get("karang_persen_manual", "")
+        prop_data["karang_kondisi"] = request.form.get("karang_kondisi", "")
+
+        prop_data["deskripsi_pemanfaatan_sekitar"] = request.form.get("deskripsi_pemanfaatan_sekitar", "")
+        prop_data["mata_pencaharian"] = request.form.get("mata_pencaharian", "")
+        prop_data["sumber_data_sosek"] = request.form.get("sumber_data_sosek", "")
+        prop_data["tahun_data_sosek"] = request.form.get("tahun_data_sosek", "")
+        prop_data["aksesibilitas_lokasi"] = request.form.get("aksesibilitas_lokasi", "")
 
         koordinat = []
         for line in request.form.get("koordinat_manual", "").splitlines():
@@ -1130,6 +1384,11 @@ def proposal_manual_submit():
             ("img_foto_mangrove", "foto_mangrove"),
             ("img_foto_karang_insitu", "foto_karang_insitu"),
             ("img_peta_pola_ruang", "peta_pola_ruang"),
+            ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
+            ("img_foto_lamun", "foto_lamun"),
+            ("img_aksesibilitas", "gambar_aksesibilitas"),
+            ("img_sertifikat_lahan", "sertifikat_lahan"),
+            ("img_dok_sosialisasi", "dok_sosialisasi"),
         ]
         for field_name, tag in single_image_fields:
             f = request.files.get(field_name)
@@ -1138,6 +1397,12 @@ def proposal_manual_submit():
         for f in request.files.getlist("img_foto_pantai"):
             if f and f.filename:
                 prop_images.append({"tag": "foto_pantai", "bytes": f.read(), "ext": file_ext(f.filename)})
+        for f in request.files.getlist("img_dok_pemanfaatan_sekitar"):
+            if f and f.filename:
+                prop_images.append({"tag": "dok_pemanfaatan_sekitar", "bytes": f.read(), "ext": file_ext(f.filename)})
+        for f in request.files.getlist("img_dok_pendukung_lainnya"):
+            if f and f.filename:
+                prop_images.append({"tag": "dok_pendukung_lainnya", "bytes": f.read(), "ext": file_ext(f.filename)})
 
         lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
 
