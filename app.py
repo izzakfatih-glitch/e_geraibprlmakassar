@@ -1,5 +1,5 @@
 """
-Aplikasi Web e-GeRAI Layanan BPRL Makassar
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -223,7 +223,7 @@ a { text-decoration:none; }
 .flow-step:nth-child(1) .flow-dot { background:var(--blue); }
 .flow-step:nth-child(2) .flow-dot { background:#3fa7d6; }
 .flow-step:nth-child(3) .flow-dot { background:#7e5bd6; }
-.flow-step:nth-child(4) .flow-dot { background:var(--green); }
+.flow-step:nth-child(4) .flow-dot { background:linear-gradient(135deg,#ffc857,#ff8a00); }
 .flow-body .ft { font-size:13px; font-weight:800; color:var(--navy); }
 .flow-body .fd { font-size:11.5px; color:var(--muted); margin-top:2px; line-height:1.4; }
 
@@ -294,7 +294,7 @@ HEADER_HTML = """
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>e-GeRAI KKPRL &mdash; e-GeRAI Generate Asisten Layanan BPRL Makassar</title>
+<title>e-GeRAI KKPRL &mdash; Penggabung Proposal PKKPRL</title>
 <style>""" + LANDING_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -368,12 +368,12 @@ UPLOAD_HTML = """<!DOCTYPE html>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["download"] + """</div>
-          <div class="flow-body"><div class="ft">Download Word</div><div class="fd">Dokumen Word siap diunduh dan diedit</div></div>
+          <div class="flow-body"><div class="ft">Download Dokumen</div><div class="fd">Dokumen Word siap diunduh dan diedit</div></div>
         </div>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen Proposal</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
