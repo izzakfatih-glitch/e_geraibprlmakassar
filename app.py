@@ -1,5 +1,5 @@
 """
-Aplikasi Web Genertae dan Asisistensi Dokumen PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -320,7 +320,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
         <div class="step-title">Draft Proposal PKKPRL (PDF)</div>
-        <div class="step-desc">Unggah file PDF Draft proposal yang akan digabungkan. Belum punya file-nya?
+        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan. Belum punya file-nya?
         <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
@@ -361,7 +361,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
         <h3>Alur Proses</h3>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["cloud"] + """</div>
-          <div class="flow-body"><div class="ft">Upload Draft Proposal</div><div class="fd">Unggah file PDF Draft Proposal PKKPRL</div></div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["wave"] + """</div>
@@ -378,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -524,29 +524,47 @@ REVIEW_CSS = """
 """
 
 
+FIELD_HELP = {
+    ("prop", "Nama Pemohon"): "Mohon isi nama perwakilan perusahaan/instansi (Kepala) sebagai PIC yang bertanggung jawab dalam permohonan KKPRL.",
+    ("prop", "Jabatan Pemohon"): "Jabatan dari perwakilan perusahaan/instansi (Kepala) yang bertanggung jawab dalam permohonan KKPRL.",
+    ("prop", "Nama Perusahaan/Instansi"): "Ditulis dengan benar, tanpa disingkat.",
+    ("prop", "NIB"): "Jika tidak ada, isi dengan tanda -",
+    ("prop", "NPWP"): "NPWP milik perusahaan/Instansi, atau milik pemohon jika perseorangan.",
+    ("prop", "Nomor Telepon Selular"): "Nomor yang dapat dihubungi untuk informasi lebih lanjut.",
+    ("prop", "Surat Elektronik"): "Email aktif — akan dipakai untuk mengirim Draft Proposal yang telah selesai.",
+    ("prop", "Luas Kebutuhan Ruang"): "Isi berupa angka (dalam hektar).",
+    ("prop_loc", "0"): "Nama Desa/Kelurahan dari lokasi yang dimohonkan.",
+    ("prop_loc", "1"): "Nama Kecamatan dari lokasi yang dimohonkan.",
+    ("prop_loc", "2"): "Nama Kabupaten/Kota dari lokasi yang dimohonkan.",
+    ("prop", "mangrove_persen"): "Dilampirkan dalam bentuk persentase (%).",
+    ("prop", "desa_luas_ha"): "Luas penduduk desa atau desa terdekat dari lokasi yang dimohonkan.",
+    ("prop", "desa_penduduk"): "Jumlah penduduk desa atau desa terdekat dari lokasi yang dimohonkan.",
+    ("prop", "tenaga_kerja_asing"): "Jika tidak ada, isi dengan 0.",
+}
+
 EXAMPLE_HINTS = {
     ("prop", "Nama Pemohon"): "Andi Wijaya, S.T., M.M.",
     ("prop", "Jabatan Pemohon"): "Direktur Utama",
     ("prop", "Nama Perusahaan/Instansi"): "PT. Bahari Sejahtera Makassar",
-    ("prop", "NIB"): "1234567891234",
+    ("prop", "NIB"): "-",
     ("prop", "NPWP"): "01.234.567.8-901.000",
     ("prop", "Nomor Telepon Selular"): "081234567890",
     ("prop", "Surat Elektronik"): "info@baharisejahteramks.co.id",
-    ("prop", "Jenis Kegiatan"): "Pembangunan Dermaga dan Fasilitas Wisata Bahari",
+    ("prop", "Jenis Kegiatan"): "Keramba Jaring Apung",
     ("prop", "Nama Perairan"): "Selat Makassar",
-    ("prop", "Luas Kebutuhan Ruang"): "5,2 Ha",
+    ("prop", "Luas Kebutuhan Ruang"): "0.59 Ha",
     ("prop", "KBLI"): "50121 - Angkutan Laut Wisata Dalam Negeri",
     ("prop", "Tanggal Penyusunan"): "02 Agustus 2026",
     ("prop_loc", "0"): "Desa Bontolebang",
     ("prop_loc", "1"): "Kecamatan Ujung Tanah",
     ("prop_loc", "2"): "Kabupaten Pangkajene dan Kepulauan",
     ("prop_loc", "3"): "Sulawesi Selatan",
-    ("prop", "investasi"): "15000000000",
-    ("prop", "tenaga_kerja"): "35",
-    ("prop", "tenaga_kerja_asing"): "0",
+    ("prop", "investasi"): "200.000.0000",
+    ("prop", "tenaga_kerja"): "15 Orang",
+    ("prop", "tenaga_kerja_asing"): "2 Orang",
     ("prop", "mangrove_spesies"): "Rhizophora mucronata",
     ("prop", "mangrove_persen"): "65",
-    ("prop", "mangrove_kondisi"): "baik/rapat",
+    ("prop", "mangrove_kondisi"): "Sangat Padat",
     ("prop", "desa_luas_ha"): "250",
     ("prop", "desa_penduduk"): "3400",
 }
@@ -564,6 +582,8 @@ def render_manual_form_page(error=None):
         rows = []
         for source, key, label in fields:
             fname = form_field_name(source, key)
+            help_text = FIELD_HELP.get((source, key), "")
+            help_html = f'<div class="ff-hint" style="margin:2px 0 6px;">{help_text}</div>' if help_text else ""
             example = EXAMPLE_HINTS.get((source, key), "")
             example_html = ""
             if example:
@@ -572,7 +592,7 @@ def render_manual_form_page(error=None):
                     f'<button type="button" class="ex-fill" data-target="{fname}">Pakai contoh ini</button></div>'
                 )
             rows.append(
-                f'<div class="field-row"><label>{label}</label>'
+                f'<div class="field-row"><label>{label}</label>{help_html}'
                 f'<input type="text" name="{fname}" id="{fname}" placeholder="Isi {label.lower()}">'
                 f'{example_html}</div>'
             )
@@ -600,6 +620,12 @@ def render_manual_form_page(error=None):
 </section>
 
 <div class="review-wrap">
+  <div class="error-banner" style="margin-bottom:16px;background:#eaf1fc;border-color:#cfe0f5;color:var(--navy);">
+    <b>\U0001F4CC Petunjuk Pengisian:</b> Sebelum mengisi formulir ini, pemohon diwajibkan mengakses portal
+    <b>Gerai Pelayanan Balai Penataan Ruang Laut</b> melalui tautan
+    <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL</a>
+    untuk memperoleh data Hidro-Oseanografi. Dokumen PDF hasil analisis dari link tersebut diunduh, lalu diunggah pada bagian "Laporan Kondisi Eksisting / Hidro-Oseanografi" di bawah.
+  </div>
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
     <div class="manual-upload-card">
@@ -639,8 +665,9 @@ def render_manual_form_page(error=None):
         <summary>Titik Koordinat Batas Area (Opsional)</summary>
         <div class="acc-body">
           <div class="field-row">
-            <label>Satu titik per baris, format: Nomor | Longitude | Latitude</label>
-            <textarea name="koordinat_manual" rows="4" placeholder="1 | 106&deg;49&#39;30.5&quot; BT | 06&deg;54&#39;52.5&quot; LS&#10;2 | 106&deg;49&#39;35.2&quot; BT | 06&deg;54&#39;48.1&quot; LS"></textarea>
+            <label>Satu titik per baris &mdash; format: Longitude [spasi] Latitude (nomor titik otomatis)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi. Contoh:</div>
+            <textarea name="koordinat_manual" rows="4" placeholder="122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114"></textarea>
           </div>
         </div>
       </details>
@@ -962,9 +989,19 @@ def proposal_manual_submit():
 
         koordinat = []
         for line in request.form.get("koordinat_manual", "").splitlines():
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) == 3 and any(parts):
-                koordinat.append(parts)
+            line = line.strip()
+            if not line:
+                continue
+            if "|" in line:
+                # format lama: Nomor | Longitude | Latitude
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 3 and any(parts):
+                    koordinat.append(parts)
+            else:
+                # format resmi: Longitude [spasi/tab] Latitude -> nomor titik otomatis
+                parts = line.split()
+                if len(parts) == 2:
+                    koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
         prop_data["koordinat"] = koordinat
 
         def file_ext(filename):
