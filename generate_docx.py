@@ -253,8 +253,15 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"mencakup perencanaan teknis, pengadaan sarana-prasarana, operasional, serta pengelolaan lingkungan hidup.")
 
     h3_2 = b.h3("2. Kegiatan Eksisting atau Rencana yang Akan Dimohonkan")
+    status_map = {
+        "Eksisting": "merupakan kegiatan yang sudah berjalan (eksisting)",
+        "Rencana": "merupakan kegiatan yang baru akan direncanakan",
+        "Eksisting dan Pengembangan": "merupakan kegiatan eksisting yang akan dikembangkan lebih lanjut",
+    }
+    status_txt = status_map.get(prop.get("kegiatan_status", ""), "")
+    status_sentence = f" Kegiatan ini {status_txt}." if status_txt else ""
     b.p(f"Kegiatan rencana yang dimohonkan adalah {jenis_kegiatan} yang berada di {lokasi_lengkap}, menggunakan "
-        f"perairan {perairan} dengan total kebutuhan luas ruang laut sebesar {luas}. Pengajuan PKKPRL dilakukan "
+        f"perairan {perairan} dengan total kebutuhan luas ruang laut sebesar {luas}.{status_sentence} Pengajuan PKKPRL dilakukan "
         f"dalam rangka pemenuhan perizinan dasar di lokasi yang dimohonkan sebelum mengajukan perizinan lanjutan.")
     img_no = 1
     site_img = get_image_bytes(prop_imgs, "siteplan")
@@ -296,6 +303,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.image_missing("peta_lokasi")
     b.caption(f"Gambar {img_no}. Peta Lokasi dan Sebaran Titik Koordinat Rencana Kegiatan.")
     img_no += 1
+    sumber_peta = prop.get("sumber_peta", "")
+    if sumber_peta:
+        b.caption(f"Sumber Peta: {sumber_peta}")
 
     b.h2("E. Deskripsi Luas/Panjang yang Dibutuhkan")
     b.p(f"Luas perairan yang dimohonkan KKPRL adalah seluas {luas} yang terletak di perairan {perairan}, "
