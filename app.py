@@ -373,7 +373,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Draft Dokumen</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -388,7 +388,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
     <div class="trust-item"><div class="ic">""" + ICONS["cloud"] + """</div><div><div class="tt">Akses Mudah</div><div class="td">Proses cepat, kapan saja dan di mana saja.</div></div></div>
     <div class="trust-brand">
       """ + ICONS["boat"] + """
-      <div><div class="tt">e-GeRAI KKPRL</div><div class="td">Layanan Arahan dan Informasi Pemanfaatan Ruang Laut</div></div>
+      <div><div class="tt">e-GeRAI KKPRL</div><div class="td">Ruang Layanan Digital untuk Konsultasi, Asistensi, Analisis Spasial, dan Generate Dokumen</div></div>
     </div>
   </div>
 </div>
