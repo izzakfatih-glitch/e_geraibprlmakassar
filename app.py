@@ -1,5 +1,5 @@
 """
-Aplikasi Web e_GeRAI Generate dan Asisten Layanan PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -361,7 +361,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
         <h3>Alur Proses</h3>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["cloud"] + """</div>
-          <div class="flow-body"><div class="ft">Upload Draft Proposal</div><div class="fd">Unggah file PDF Draft Proposal PKKPRL</div></div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["wave"] + """</div>
@@ -378,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Review Dokumen Word</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -502,10 +502,10 @@ REVIEW_CSS = """
 .field-row textarea { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
   font-size:12.5px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:80px; }
 .field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
-.field-example { font-size:11px; color:var(--muted); margin-top:4px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.field-example { font-size:22px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
 .field-example .ex-text { font-style:italic; }
-.field-example .ex-fill { font-size:10.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
-  border:1px solid #cfe0f5; border-radius:6px; padding:2px 8px; cursor:pointer; white-space:nowrap; }
+.field-example .ex-fill { font-size:14px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  border:1px solid #cfe0f5; border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
 .field-example .ex-fill:hover { background:#dcebfa; }
 
 .img-paste-zone { border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:14px;
@@ -522,19 +522,21 @@ REVIEW_CSS = """
   background:rgba(0,0,0,.55); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer;
   display:flex; align-items:center; justify-content:center; }
 
-.img-input-row { display:flex; gap:8px; align-items:stretch; }
-.img-upload-btn { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; background:#fff;
-  border:1.5px solid var(--line); border-radius:10px; padding:0 14px; height:40px;
+.img-input-row { display:flex; gap:8px; align-items:stretch; justify-content:center; max-width:30%; margin:0 auto; }
+.img-upload-btn { flex:none; width:110px; display:flex; align-items:center; justify-content:center; gap:6px; background:#fff;
+  border:1.5px solid var(--line); border-radius:10px; padding:0 10px; height:40px;
   font-size:12.5px; font-weight:700; color:var(--navy); cursor:pointer; white-space:nowrap; }
 .img-upload-btn:hover { background:#f3f8ff; border-color:#cfe0f5; }
 .img-upload-btn svg { width:16px; height:16px; color:var(--blue); flex:none; }
-.img-paste-target { flex:none; width:120px; height:40px; border:2px dashed #b9cbe0; border-radius:10px;
+.img-paste-target { flex:none; width:90px; height:40px; border:2px dashed #b9cbe0; border-radius:10px;
   background:#f7fafd; padding:0 10px; cursor:text; outline:none; transition:.15s;
   display:flex; align-items:center; justify-content:center; gap:5px; }
 .img-paste-target:hover, .img-paste-target:focus, .img-paste-target.dragover { border-color:var(--blue); background:#eef5fd; }
 .img-paste-target svg { width:15px; height:15px; color:var(--blue); flex:none; }
 .img-paste-target .ipt-text { font-size:11px; color:var(--muted); line-height:1.25; white-space:nowrap; }
 .img-paste-target .ipt-text b { color:var(--navy); }
+
+@media (max-width: 700px) { .img-input-row { max-width:80%; } }
 
 .select-field { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
   font-size:13px; color:var(--ink); background:#fff; }
@@ -1101,9 +1103,9 @@ document.getElementById('manualForm').addEventListener('submit', function() {
 });
 
 // Datalist bertingkat Provinsi -> Kabupaten -> Kecamatan -> Desa/Kelurahan
-// menggunakan API publik https://wilayah.id (dirancang khusus untuk dropdown alamat bertingkat)
+// menggunakan API publik https://kodewilayah.web.id (punya demo interaktif serupa di situsnya sendiri)
 (function() {
-  var WILAYAH_API = 'https://wilayah.id/api';
+  var WILAYAH_API = 'https://api.kodewilayah.web.id';
   var provSel = document.getElementById('prop_loc__3');
   var kabInput = document.getElementById('prop_loc__2');
   var kecInput = document.getElementById('prop_loc__1');
@@ -1141,9 +1143,10 @@ document.getElementById('manualForm').addEventListener('submit', function() {
     var opt = provSel.selectedOptions[0];
     var bpsId = opt ? opt.dataset.bpsId : '';
     if (!bpsId) return;
-    fetch(WILAYAH_API + '/regencies/' + bpsId + '.json')
+    fetch(WILAYAH_API + '/regencies/' + bpsId)
       .then(function(r) { return r.json(); })
       .then(function(res) {
+        if (!res.success) return;
         cacheRegencies = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
         fillDatalist(dlKabupaten, cacheRegencies.map(function(d) { return d.name; }));
       })
@@ -1155,9 +1158,10 @@ document.getElementById('manualForm').addEventListener('submit', function() {
     kecInput.value = ''; desaInput.value = '';
     var match = cacheRegencies.find(function(d) { return d.name.toLowerCase() === kabInput.value.trim().toLowerCase(); });
     if (!match) return;
-    fetch(WILAYAH_API + '/districts/' + match.code + '.json')
+    fetch(WILAYAH_API + '/districts/' + match.code)
       .then(function(r) { return r.json(); })
       .then(function(res) {
+        if (!res.success) return;
         cacheDistricts = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
         fillDatalist(dlKecamatan, cacheDistricts.map(function(d) { return d.name; }));
       })
@@ -1169,14 +1173,16 @@ document.getElementById('manualForm').addEventListener('submit', function() {
     desaInput.value = '';
     var match = cacheDistricts.find(function(d) { return d.name.toLowerCase() === kecInput.value.trim().toLowerCase(); });
     if (!match) return;
-    fetch(WILAYAH_API + '/villages/' + match.code + '.json')
+    fetch(WILAYAH_API + '/villages/' + match.code)
       .then(function(r) { return r.json(); })
       .then(function(res) {
+        if (!res.success) return;
         fillDatalist(dlDesa, res.data.map(function(d) { return titleCase(d.name); }));
       })
       .catch(function() {});
   });
 })();
+
 
 // Field gambar: area Paste (khusus Ctrl+V + drag-drop, TIDAK membuka file browser saat diklik)
 // terpisah dari tombol Upload File (eksplisit membuka file browser). Kedua cara SELALU menambah
@@ -1327,7 +1333,7 @@ def review():
     laporan_file = request.files.get("laporan")
 
     if not proposal_file or not laporan_file or proposal_file.filename == "" or laporan_file.filename == "":
-        return render_template_string(UPLOAD_HTML, error="Mohon unggah kedua file PDF Draft (proposal & laporan)."), 400
+        return render_template_string(UPLOAD_HTML, error="Mohon unggah kedua file PDF (proposal & laporan)."), 400
     if not proposal_file.filename.lower().endswith(".pdf") or not laporan_file.filename.lower().endswith(".pdf"):
         return render_template_string(UPLOAD_HTML, error="Kedua file harus berformat PDF."), 400
 
