@@ -220,10 +220,10 @@ a { text-decoration:none; }
 .flow-dot { width:32px; height:32px; border-radius:50%; flex:none; display:flex; align-items:center;
   justify-content:center; font-weight:800; font-size:13px; color:#fff; z-index:1; }
 .flow-dot svg { width:16px; height:16px; }
-.flow-step:nth-child(1) .flow-dot { background:var(--blue); }
-.flow-step:nth-child(2) .flow-dot { background:#3fa7d6; }
-.flow-step:nth-child(3) .flow-dot { background:#7e5bd6; }
-.flow-step:nth-child(4) .flow-dot { background:linear-gradient(135deg,#ffc857,#ff8a00); }
+.flow-step:nth-of-type(1) .flow-dot { background:var(--blue); }
+.flow-step:nth-of-type(2) .flow-dot { background:#3fa7d6; }
+.flow-step:nth-of-type(3) .flow-dot { background:#7e5bd6; }
+.flow-step:nth-of-type(4) .flow-dot { background:linear-gradient(135deg,#ffc857,#ff8a00); }
 .flow-body .ft { font-size:13px; font-weight:800; color:var(--navy); }
 .flow-body .fd { font-size:11.5px; color:var(--muted); margin-top:2px; line-height:1.4; }
 
