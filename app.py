@@ -1,5 +1,5 @@
 """
-Aplikasi Web e_GeRAI Gennerate ddan Asistensi Layanan PKKPRL
+Aplikasi Web e_GeRAI Gennerate dan Asistensi Layanan PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
