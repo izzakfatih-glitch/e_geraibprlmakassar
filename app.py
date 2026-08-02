@@ -1,5 +1,5 @@
 """
-Aplikasi Web Generate dan Asistensi Dokumen Draft Proposal PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -294,7 +294,11 @@ HEADER_HTML = """
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>e-GeRAI KKPRL &mdash; Generate dan Asistensi Layanan PKKPRL</title>
+<title>e-GeRAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL</title>
+<meta name="description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
+<meta property="og:title" content="e-GeRAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL">
+<meta property="og:description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
+<meta property="og:type" content="website">
 <style>""" + LANDING_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -316,7 +320,8 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
         <div class="step-title">Draft Proposal PKKPRL (PDF)</div>
-        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan.</div>
+        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan. Belum punya file-nya?
+        <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
           <div class="dz-title">Drag &amp; Drop PDF di sini</div>
@@ -373,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -480,7 +485,185 @@ REVIEW_CSS = """
 .preview-box td { border:1px solid #c7d1db; padding:5px 8px; vertical-align:top; }
 .preview-box img { max-width:100%; height:auto; margin:8px 0; }
 .preview-box p { margin:6px 0; }
+
+.checkbox-row { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.checkbox-row input[type=checkbox] { width:18px; height:18px; accent-color:var(--blue); flex:none; }
+.checkbox-row label { font-size:13px; font-weight:600; color:var(--ink); }
+.manual-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%); padding:26px 32px 34px; }
+.manual-hero h1 { font-size:24px; font-weight:800; color:var(--navy); margin:0 0 6px; }
+.manual-hero p { font-size:13.5px; color:#33495e; margin:0; max-width:640px; line-height:1.5; }
+.manual-upload-card { background:#fff; border-radius:16px; padding:22px 24px; box-shadow:0 6px 24px rgba(18,58,99,.08); margin-bottom:18px; }
+
+.file-field-row { margin-bottom:16px; }
+.file-field-row label { display:block; font-size:12.5px; font-weight:700; color:var(--navy); margin-bottom:3px; }
+.file-field-row .ff-hint { font-size:11px; color:var(--muted); margin-bottom:6px; }
+.file-field-row input[type=file] { width:100%; font-size:12.5px; padding:8px; border:1px solid #d3dde7;
+  border-radius:8px; background:#f7fafd; }
+.field-row textarea { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:12.5px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:80px; }
+.field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 """
+
+
+def render_manual_form_page(error=None):
+    prop_groups = []
+    for group_title, fields in FIELD_GROUPS:
+        prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
+        if prop_fields:
+            prop_groups.append((group_title, prop_fields))
+
+    groups_html = []
+    for i, (group_title, fields) in enumerate(prop_groups):
+        rows = []
+        for source, key, label in fields:
+            fname = form_field_name(source, key)
+            rows.append(
+                f'<div class="field-row"><label>{label}</label>'
+                f'<input type="text" name="{fname}" placeholder="Isi {label.lower()}"></div>'
+            )
+        groups_html.append(
+            f'<details class="acc-item"{" open" if i == 0 else ""}>'
+            f"<summary>{group_title}</summary>"
+            f'<div class="acc-body">{"".join(rows)}</div></details>'
+        )
+
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Isi Formulir Draft Proposal &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="manual-hero">
+  <h1>\U0001F4DD Isi Formulir Draft Proposal PKKPRL</h1>
+  <p>Belum punya file Draft Proposal PKKPRL siap pakai? Isi data di bawah ini secara manual, lalu unggah
+  Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF). Sistem akan menggabungkan otomatis menjadi
+  1 dokumen Word final &mdash; sama seperti alur upload 2 PDF.</p>
+</section>
+
+<div class="review-wrap">
+  """ + error_html + """
+  <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
+    <div class="manual-upload-card">
+      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF)</h3>
+      <div class="dropzone" id="dzManual">
+        """ + ICONS["cloud"] + """
+        <div class="dz-title">Drag &amp; Drop PDF di sini</div>
+        <div class="dz-sub">atau klik untuk memilih file</div>
+        <div class="dz-max">Maksimum 10 MB</div>
+        <input type="file" name="laporan" id="laporanManual" accept="application/pdf" required>
+      </div>
+      <div class="file-chip" id="chipManual">
+        <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="nameManual"></span></div>
+        <span class="fc-size" id="sizeManual"></span>
+        <button type="button" class="fc-remove" data-target="Manual">""" + ICONS["x"] + """</button>
+      </div>
+    </div>
+
+    <div class="sticky-bar">
+      <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+    </div>
+
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Data Draft Proposal PKKPRL</h3>
+      """ + "".join(groups_html) + """
+
+      <details class="acc-item">
+        <summary>Status Kegiatan</summary>
+        <div class="acc-body">
+          <div class="checkbox-row"><input type="checkbox" name="non_reklamasi" id="cb1"><label for="cb1">Kegiatan tanpa reklamasi</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk kegiatan berusaha</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3"><label for="cb3">Termasuk kegiatan non-strategis nasional</label></div>
+        </div>
+      </details>
+
+      <details class="acc-item">
+        <summary>Titik Koordinat Batas Area (Opsional)</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Satu titik per baris, format: Nomor | Longitude | Latitude</label>
+            <textarea name="koordinat_manual" rows="4" placeholder="1 | 106&deg;49&#39;30.5&quot; BT | 06&deg;54&#39;52.5&quot; LS&#10;2 | 106&deg;49&#39;35.2&quot; BT | 06&deg;54&#39;48.1&quot; LS"></textarea>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item">
+        <summary>Lampiran Gambar (Opsional)</summary>
+        <div class="acc-body">
+          <div class="file-field-row">
+            <label>Peta Rencana Tapak (Site Plan)</label>
+            <div class="ff-hint">Gambar/foto peta rencana tapak kegiatan.</div>
+            <input type="file" name="img_siteplan" accept="image/*">
+          </div>
+          <div class="file-field-row">
+            <label>Peta Lokasi &amp; Sebaran Titik Koordinat</label>
+            <div class="ff-hint">Peta lokasi kegiatan beserta plotting titik koordinat.</div>
+            <input type="file" name="img_peta_lokasi" accept="image/*">
+          </div>
+          <div class="file-field-row">
+            <label>Foto Kondisi Perairan &amp; Garis Pantai</label>
+            <div class="ff-hint">Bisa unggah lebih dari 1 foto sekaligus.</div>
+            <input type="file" name="img_foto_pantai" accept="image/*" multiple>
+          </div>
+          <div class="file-field-row">
+            <label>Foto Kondisi Mangrove</label>
+            <div class="ff-hint">Dokumentasi tutupan vegetasi mangrove di sekitar lokasi.</div>
+            <input type="file" name="img_foto_mangrove" accept="image/*">
+          </div>
+          <div class="file-field-row">
+            <label>Foto Survei Terumbu Karang</label>
+            <div class="ff-hint">Dokumentasi in-situ koloni terumbu karang.</div>
+            <input type="file" name="img_foto_karang_insitu" accept="image/*">
+          </div>
+          <div class="file-field-row">
+            <label>Peta Rencana Pola Ruang Wilayah</label>
+            <div class="ff-hint">Peta pola ruang wilayah dan posisi lokasi permohonan.</div>
+            <input type="file" name="img_peta_pola_ruang" accept="image/*">
+          </div>
+        </div>
+      </details>
+    </div>
+  </form>
+
+  <a href="/" class="back-link">&larr; Kembali ke halaman utama (unggah 2 PDF)</a>
+</div>
+
+<script>
+function fmtSize(bytes) {
+  if (bytes >= 1024*1024) return (bytes/(1024*1024)).toFixed(2) + " MB";
+  return Math.ceil(bytes/1024) + " KB";
+}
+(function() {
+  var dz = document.getElementById('dzManual');
+  var input = document.getElementById('laporanManual');
+  var chip = document.getElementById('chipManual');
+  var nameEl = document.getElementById('nameManual');
+  var sizeEl = document.getElementById('sizeManual');
+  function showFile(file) {
+    if (!file) { chip.classList.remove('show'); dz.style.display = 'block'; return; }
+    nameEl.textContent = file.name;
+    nameEl.title = file.name;
+    sizeEl.textContent = fmtSize(file.size);
+    chip.classList.add('show');
+    dz.style.display = 'none';
+  }
+  dz.addEventListener('click', function(e) { if (!e.target.closest('.file-chip')) input.click(); });
+  input.addEventListener('change', function() { if (input.files[0]) showFile(input.files[0]); });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; showFile(input.files[0]); }
+  });
+  document.querySelector('.fc-remove[data-target="Manual"]').addEventListener('click', function() {
+    input.value = ''; dz.style.display = 'block'; chip.classList.remove('show');
+  });
+})();
+</script>
+</body></html>"""
 
 
 def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
@@ -594,6 +777,80 @@ def review():
             UPLOAD_HTML,
             error="Terjadi kesalahan saat memproses dokumen. Pastikan kedua file adalah PDF yang valid.",
         ), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return render_review_page(job_id, prop_data, lap_data, preview_html)
+
+
+@app.route("/proposal-manual", methods=["GET"])
+def proposal_manual_form():
+    return render_manual_form_page()
+
+
+@app.route("/proposal-manual", methods=["POST"])
+def proposal_manual_submit():
+    laporan_file = request.files.get("laporan")
+    if not laporan_file or laporan_file.filename == "":
+        return render_manual_form_page(error="Mohon unggah file PDF Laporan Hidro-Oseanografi."), 400
+    if not laporan_file.filename.lower().endswith(".pdf"):
+        return render_manual_form_page(error="File Laporan harus berformat PDF."), 400
+
+    job_store.cleanup_old_jobs(JOBS_DIR)
+
+    job_id = uuid.uuid4().hex[:12]
+    tmp_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(tmp_dir, exist_ok=True)
+    laporan_path = os.path.join(tmp_dir, "laporan.pdf")
+    laporan_file.save(laporan_path)
+
+    try:
+        prop_data = {}
+        prop_data, _ = apply_form_values(request.form, prop_data, {})
+        prop_data["non_reklamasi"] = "non_reklamasi" in request.form
+        prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in request.form
+        prop_data["non_strategis"] = "non_strategis" in request.form
+
+        koordinat = []
+        for line in request.form.get("koordinat_manual", "").splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) == 3 and any(parts):
+                koordinat.append(parts)
+        prop_data["koordinat"] = koordinat
+
+        def file_ext(filename):
+            ext = os.path.splitext(filename)[1].lstrip(".").lower()
+            return ext if ext in ("jpg", "jpeg", "png", "webp", "gif", "bmp") else "jpg"
+
+        prop_images = []
+        single_image_fields = [
+            ("img_siteplan", "siteplan"),
+            ("img_peta_lokasi", "peta_lokasi"),
+            ("img_foto_mangrove", "foto_mangrove"),
+            ("img_foto_karang_insitu", "foto_karang_insitu"),
+            ("img_peta_pola_ruang", "peta_pola_ruang"),
+        ]
+        for field_name, tag in single_image_fields:
+            f = request.files.get(field_name)
+            if f and f.filename:
+                prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
+        for f in request.files.getlist("img_foto_pantai"):
+            if f and f.filename:
+                prop_images.append({"tag": "foto_pantai", "bytes": f.read(), "ext": file_ext(f.filename)})
+
+        lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+
+        job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
+
+        preview_docx_path = os.path.join(tmp_dir, "preview.docx")
+        build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
+        with open(preview_docx_path, "rb") as f:
+            preview_html = mammoth.convert_to_html(f).value
+    except Exception:
+        traceback.print_exc()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        job_store.delete_job(JOBS_DIR, job_id)
+        return render_manual_form_page(error="Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF yang valid."), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
