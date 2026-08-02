@@ -1,5 +1,5 @@
 """
-Aplikasi Web Genertae dan Asisistensi Dokumen PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -378,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -502,7 +502,54 @@ REVIEW_CSS = """
 .field-row textarea { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
   font-size:12.5px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:80px; }
 .field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.field-example { font-size:11px; color:var(--muted); margin-top:4px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.field-example .ex-text { font-style:italic; }
+.field-example .ex-fill { font-size:10.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  border:1px solid #cfe0f5; border-radius:6px; padding:2px 8px; cursor:pointer; white-space:nowrap; }
+.field-example .ex-fill:hover { background:#dcebfa; }
+
+.img-paste-zone { border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:14px;
+  cursor:pointer; transition:.15s; outline:none; }
+.img-paste-zone:hover, .img-paste-zone:focus, .img-paste-zone.dragover { border-color:var(--blue); background:#eef5fd; }
+.img-paste-placeholder { font-size:11.5px; color:var(--muted); text-align:center; }
+.img-paste-placeholder svg { width:18px; height:18px; display:block; margin:0 auto 4px; color:var(--blue); }
+.img-preview-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.img-preview-list:empty { margin-top:0; }
+.img-thumb { position:relative; width:64px; height:64px; border-radius:8px; overflow:hidden;
+  border:1px solid var(--line); flex:none; }
+.img-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.img-thumb .img-remove { position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%;
+  background:rgba(0,0,0,.55); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; }
 """
+
+
+EXAMPLE_HINTS = {
+    ("prop", "Nama Pemohon"): "Andi Wijaya, S.T., M.M.",
+    ("prop", "Jabatan Pemohon"): "Direktur Utama",
+    ("prop", "Nama Perusahaan/Instansi"): "PT. Bahari Sejahtera Makassar",
+    ("prop", "NIB"): "1234567891234",
+    ("prop", "NPWP"): "01.234.567.8-901.000",
+    ("prop", "Nomor Telepon Selular"): "081234567890",
+    ("prop", "Surat Elektronik"): "info@baharisejahteramks.co.id",
+    ("prop", "Jenis Kegiatan"): "Pembangunan Dermaga dan Fasilitas Wisata Bahari",
+    ("prop", "Nama Perairan"): "Selat Makassar",
+    ("prop", "Luas Kebutuhan Ruang"): "5,2 Ha",
+    ("prop", "KBLI"): "50121 - Angkutan Laut Wisata Dalam Negeri",
+    ("prop", "Tanggal Penyusunan"): "02 Agustus 2026",
+    ("prop_loc", "0"): "Desa Bontolebang",
+    ("prop_loc", "1"): "Kecamatan Ujung Tanah",
+    ("prop_loc", "2"): "Kabupaten Pangkajene dan Kepulauan",
+    ("prop_loc", "3"): "Sulawesi Selatan",
+    ("prop", "investasi"): "15000000000",
+    ("prop", "tenaga_kerja"): "35",
+    ("prop", "tenaga_kerja_asing"): "0",
+    ("prop", "mangrove_spesies"): "Rhizophora mucronata",
+    ("prop", "mangrove_persen"): "65",
+    ("prop", "mangrove_kondisi"): "baik/rapat",
+    ("prop", "desa_luas_ha"): "250",
+    ("prop", "desa_penduduk"): "3400",
+}
 
 
 def render_manual_form_page(error=None):
@@ -517,9 +564,17 @@ def render_manual_form_page(error=None):
         rows = []
         for source, key, label in fields:
             fname = form_field_name(source, key)
+            example = EXAMPLE_HINTS.get((source, key), "")
+            example_html = ""
+            if example:
+                example_html = (
+                    f'<div class="field-example">Contoh: <span class="ex-text">{example}</span>'
+                    f'<button type="button" class="ex-fill" data-target="{fname}">Pakai contoh ini</button></div>'
+                )
             rows.append(
                 f'<div class="field-row"><label>{label}</label>'
-                f'<input type="text" name="{fname}" placeholder="Isi {label.lower()}"></div>'
+                f'<input type="text" name="{fname}" id="{fname}" placeholder="Isi {label.lower()}">'
+                f'{example_html}</div>'
             )
         groups_html.append(
             f'<details class="acc-item"{" open" if i == 0 else ""}>'
@@ -593,35 +648,54 @@ def render_manual_form_page(error=None):
       <details class="acc-item">
         <summary>Lampiran Gambar (Opsional)</summary>
         <div class="acc-body">
+          <div class="ff-hint" style="margin-bottom:14px;">Klik kotak di bawah lalu tekan <b>Ctrl+V</b> untuk paste gambar dari clipboard (misal screenshot), atau klik untuk pilih file dari komputer.</div>
           <div class="file-field-row">
             <label>Peta Rencana Tapak (Site Plan)</label>
-            <div class="ff-hint">Gambar/foto peta rencana tapak kegiatan.</div>
-            <input type="file" name="img_siteplan" accept="image/*">
+            <div class="img-paste-zone" tabindex="0" data-field="img_siteplan" data-multiple="false">
+              <input type="file" name="img_siteplan" accept="image/*" style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
           <div class="file-field-row">
             <label>Peta Lokasi &amp; Sebaran Titik Koordinat</label>
-            <div class="ff-hint">Peta lokasi kegiatan beserta plotting titik koordinat.</div>
-            <input type="file" name="img_peta_lokasi" accept="image/*">
+            <div class="img-paste-zone" tabindex="0" data-field="img_peta_lokasi" data-multiple="false">
+              <input type="file" name="img_peta_lokasi" accept="image/*" style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
           <div class="file-field-row">
-            <label>Foto Kondisi Perairan &amp; Garis Pantai</label>
-            <div class="ff-hint">Bisa unggah lebih dari 1 foto sekaligus.</div>
-            <input type="file" name="img_foto_pantai" accept="image/*" multiple>
+            <label>Foto Kondisi Perairan &amp; Garis Pantai <span style="font-weight:400;color:var(--muted);">(bisa lebih dari 1)</span></label>
+            <div class="img-paste-zone" tabindex="0" data-field="img_foto_pantai" data-multiple="true">
+              <input type="file" name="img_foto_pantai" accept="image/*" multiple style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file (bisa banyak)</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
           <div class="file-field-row">
             <label>Foto Kondisi Mangrove</label>
-            <div class="ff-hint">Dokumentasi tutupan vegetasi mangrove di sekitar lokasi.</div>
-            <input type="file" name="img_foto_mangrove" accept="image/*">
+            <div class="img-paste-zone" tabindex="0" data-field="img_foto_mangrove" data-multiple="false">
+              <input type="file" name="img_foto_mangrove" accept="image/*" style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
           <div class="file-field-row">
             <label>Foto Survei Terumbu Karang</label>
-            <div class="ff-hint">Dokumentasi in-situ koloni terumbu karang.</div>
-            <input type="file" name="img_foto_karang_insitu" accept="image/*">
+            <div class="img-paste-zone" tabindex="0" data-field="img_foto_karang_insitu" data-multiple="false">
+              <input type="file" name="img_foto_karang_insitu" accept="image/*" style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
           <div class="file-field-row">
             <label>Peta Rencana Pola Ruang Wilayah</label>
-            <div class="ff-hint">Peta pola ruang wilayah dan posisi lokasi permohonan.</div>
-            <input type="file" name="img_peta_pola_ruang" accept="image/*">
+            <div class="img-paste-zone" tabindex="0" data-field="img_peta_pola_ruang" data-multiple="false">
+              <input type="file" name="img_peta_pola_ruang" accept="image/*" style="display:none">
+              <div class="img-paste-placeholder">""" + ICONS["upload"] + """Klik lalu Ctrl+V, atau klik untuk pilih file</div>
+              <div class="img-preview-list"></div>
+            </div>
           </div>
         </div>
       </details>
@@ -662,6 +736,81 @@ function fmtSize(bytes) {
     input.value = ''; dz.style.display = 'block'; chip.classList.remove('show');
   });
 })();
+
+// Tombol "Pakai contoh ini" -> isi input teks dengan contoh, siap diedit
+document.querySelectorAll('.ex-fill').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var target = document.getElementById(btn.dataset.target);
+    var exampleText = btn.previousElementSibling.textContent;
+    if (target) { target.value = exampleText; target.focus(); }
+  });
+});
+
+// Paste-zone gambar: klik untuk pilih file, Ctrl+V untuk paste dari clipboard, drag & drop, multi-file
+document.querySelectorAll('.img-paste-zone').forEach(function(zone) {
+  var input = zone.querySelector('input[type=file]');
+  var previewList = zone.querySelector('.img-preview-list');
+  var placeholder = zone.querySelector('.img-paste-placeholder');
+  var multiple = zone.dataset.multiple === 'true';
+  var files = [];
+
+  function refreshInput() {
+    var dt = new DataTransfer();
+    files.forEach(function(f) { dt.items.add(f); });
+    input.files = dt.files;
+  }
+
+  function renderPreviews() {
+    previewList.innerHTML = '';
+    files.forEach(function(file, idx) {
+      var thumb = document.createElement('div');
+      thumb.className = 'img-thumb';
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'img-remove';
+      removeBtn.innerHTML = '&times;';
+      removeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        files.splice(idx, 1);
+        refreshInput();
+        renderPreviews();
+      });
+      thumb.appendChild(img);
+      thumb.appendChild(removeBtn);
+      previewList.appendChild(thumb);
+    });
+    placeholder.style.display = (files.length && !multiple) ? 'none' : 'block';
+  }
+
+  function addFile(file) {
+    if (!file || file.type.indexOf('image/') !== 0) return;
+    if (multiple) { files.push(file); } else { files = [file]; }
+    refreshInput();
+    renderPreviews();
+  }
+
+  zone.addEventListener('click', function(e) {
+    if (e.target.closest('.img-remove')) return;
+    input.click();
+  });
+  zone.addEventListener('paste', function(e) {
+    var items = (e.clipboardData || window.clipboardData).items;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image/') === 0) { addFile(items[i].getAsFile()); }
+    }
+  });
+  input.addEventListener('change', function() {
+    for (var i = 0; i < input.files.length; i++) { addFile(input.files[i]); }
+  });
+  zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', function() { zone.classList.remove('dragover'); });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault(); zone.classList.remove('dragover');
+    for (var i = 0; i < e.dataTransfer.files.length; i++) { addFile(e.dataTransfer.files[i]); }
+  });
+});
 </script>
 </body></html>"""
 
