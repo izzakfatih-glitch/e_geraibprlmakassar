@@ -26,10 +26,10 @@ FIELD_GROUPS = [
         ("prop", "Luas Kebutuhan Ruang", "Luas Kebutuhan Ruang"),
         ("prop", "KBLI", "KBLI"),
         ("prop", "Tanggal Penyusunan", "Tanggal Penyusunan"),
-        ("prop_loc", "0", "Desa"),
-        ("prop_loc", "1", "Kecamatan"),
-        ("prop_loc", "2", "Kabupaten"),
         ("prop_loc", "3", "Provinsi"),
+        ("prop_loc", "2", "Kabupaten"),
+        ("prop_loc", "1", "Kecamatan"),
+        ("prop_loc", "0", "Desa"),
     ]),
     ("Investasi & Tenaga Kerja", [
         ("prop", "investasi", "Nilai Investasi (Rp, angka saja)"),

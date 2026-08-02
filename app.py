@@ -1,5 +1,5 @@
 """
-Aplikasi Web e-GeRAI Geerate dan Asistensi Layanan PKKPRL
+Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
 Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
 data) -> klik "Generate Dokumen Final" -> file Word diunduh.
@@ -320,7 +320,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
         <div class="step-title">Draft Proposal PKKPRL (PDF)</div>
-        <div class="step-desc">Unggah file PDF Draft Proposal yang akan digabungkan. Belum punya file-nya?
+        <div class="step-desc">Unggah file PDF proposal yang akan digabungkan. Belum punya file-nya?
         <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
@@ -361,7 +361,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
         <h3>Alur Proses</h3>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["cloud"] + """</div>
-          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Draft Proposal PKKPRL</div></div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
         </div>
         <div class="flow-step">
           <div class="flow-dot">""" + ICONS["wave"] + """</div>
@@ -378,7 +378,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -523,16 +523,18 @@ REVIEW_CSS = """
   display:flex; align-items:center; justify-content:center; }
 
 .img-input-row { display:flex; gap:8px; align-items:stretch; }
-.img-paste-target { flex:1; border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:12px;
-  cursor:text; outline:none; transition:.15s; display:flex; align-items:center; gap:8px; }
-.img-paste-target:hover, .img-paste-target:focus, .img-paste-target.dragover { border-color:var(--blue); background:#eef5fd; }
-.img-paste-target svg { width:18px; height:18px; color:var(--blue); flex:none; }
-.img-paste-target .ipt-text { font-size:11.5px; color:var(--muted); line-height:1.35; }
-.img-paste-target .ipt-text b { color:var(--navy); }
-.img-upload-btn { flex:none; display:flex; align-items:center; gap:6px; background:#fff; border:1.5px solid var(--line);
-  border-radius:10px; padding:0 16px; font-size:12px; font-weight:700; color:var(--navy); cursor:pointer; white-space:nowrap; }
+.img-upload-btn { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; background:#fff;
+  border:1.5px solid var(--line); border-radius:10px; padding:0 14px; height:40px;
+  font-size:12.5px; font-weight:700; color:var(--navy); cursor:pointer; white-space:nowrap; }
 .img-upload-btn:hover { background:#f3f8ff; border-color:#cfe0f5; }
-.img-upload-btn svg { width:16px; height:16px; color:var(--blue); }
+.img-upload-btn svg { width:16px; height:16px; color:var(--blue); flex:none; }
+.img-paste-target { flex:none; width:120px; height:40px; border:2px dashed #b9cbe0; border-radius:10px;
+  background:#f7fafd; padding:0 10px; cursor:text; outline:none; transition:.15s;
+  display:flex; align-items:center; justify-content:center; gap:5px; }
+.img-paste-target:hover, .img-paste-target:focus, .img-paste-target.dragover { border-color:var(--blue); background:#eef5fd; }
+.img-paste-target svg { width:15px; height:15px; color:var(--blue); flex:none; }
+.img-paste-target .ipt-text { font-size:11px; color:var(--muted); line-height:1.25; white-space:nowrap; }
+.img-paste-target .ipt-text b { color:var(--navy); }
 
 .select-field { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
   font-size:13px; color:var(--ink); background:#fff; }
@@ -635,6 +637,20 @@ SELECT_FIELDS = {
     },
 }
 
+# Kode wilayah BPS untuk tiap provinsi (dipakai untuk fetch data Kabupaten/Kecamatan/Desa
+# secara berjenjang dari API publik https://emsifa.github.io/api-wilayah-indonesia).
+PROVINCE_BPS_IDS = {
+    "Sulawesi Selatan": "73",
+    "Sulawesi Barat": "76",
+    "Sulawesi Utara": "71",
+    "Sulawesi Tengah": "72",
+    "Sulawesi Tenggara": "74",
+    "Gorontalo": "75",
+    "Bali": "51",
+    "Nusa Tenggara Barat": "52",
+    "Nusa Tenggara Timur": "53",
+}
+
 
 def render_select_html(fname, options, allow_other=False):
     opts_html = ['<option value="">-- Pilih --</option>']
@@ -652,17 +668,16 @@ def render_select_html(fname, options, allow_other=False):
 
 def img_field_html(field_name, label, desc="", multiple=False, note=""):
     desc_html = f'<div class="ff-hint" style="margin-bottom:6px;">{desc}</div>' if desc else ""
-    multi_attr = " multiple" if multiple else ""
     note_html = f'<span style="font-weight:400;color:var(--muted);"> {note}</span>' if note else ""
     return (
         f'<div class="file-field-row">'
         f'<label>{label}{note_html}</label>{desc_html}'
         f'<div class="img-input-row">'
-        f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
-        f'<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>'
         f'<button type="button" class="img-upload-btn" data-field="{field_name}">{ICONS["doc"]} Upload File</button>'
+        f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
+        f'<span class="ipt-text"><b>Ctrl+V</b><br>paste</span></div>'
         f'</div>'
-        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/*"{multi_attr} style="display:none">'
+        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/*" multiple style="display:none">'
         f'<div class="img-preview-list" id="{field_name}_preview"></div>'
         f'</div>'
     )
@@ -693,7 +708,11 @@ def render_manual_form_page(error=None):
             if select_cfg:
                 opts_html = ['<option value="">-- Pilih --</option>']
                 for opt in select_cfg["options"]:
-                    opts_html.append(f'<option value="{opt}">{opt}</option>')
+                    if source == "prop_loc" and key == "3":
+                        bps_id = PROVINCE_BPS_IDS.get(opt, "")
+                        opts_html.append(f'<option value="{opt}" data-bps-id="{bps_id}">{opt}</option>')
+                    else:
+                        opts_html.append(f'<option value="{opt}">{opt}</option>')
                 other_html = ""
                 if select_cfg["allow_other"]:
                     opts_html.append('<option value="__other__">Lainnya...</option>')
@@ -705,6 +724,24 @@ def render_manual_form_page(error=None):
                 field_html = (
                     f'<select class="select-field" name="{fname}" id="{fname}" data-allow-other="{str(select_cfg["allow_other"]).lower()}">'
                     f'{"".join(opts_html)}</select>{other_html}'
+                )
+            elif source == "prop_loc" and key == "2":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_kabupaten" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_kabupaten"></datalist>'
+                )
+            elif source == "prop_loc" and key == "1":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_kecamatan" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_kecamatan"></datalist>'
+                )
+            elif source == "prop_loc" and key == "0":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_desa" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_desa"></datalist>'
                 )
             else:
                 field_html = f'<input type="text" name="{fname}" id="{fname}" placeholder="Isi {label.lower()}">'
@@ -928,6 +965,8 @@ def render_manual_form_page(error=None):
             <label>Aksesibilitas Lokasi</label>
             <div class="ff-hint" style="margin-bottom:6px;">Deskripsi aksesibilitas dari titik poin lokasi yang mudah dikenali ke lokasi area yang dimohonkan, termasuk jarak dan waktu tempuh.</div>
             <textarea name="aksesibilitas_lokasi" id="aksesibilitas_lokasi" rows="4" placeholder="Isi aksesibilitas lokasi"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Aksesibilitas menuju Desa Tapulaga, Kecamatan Soropia, Kabupaten Konawe, dari Bandara Haluoleo Kendari dapat ditempuh melalui jalur darat. Titik awal perjalanan adalah Bandara Haluoleo yang berada di Desa Ambaipua, Kecamatan Ranomeeto, Kabupaten Konawe Selatan, dengan akses utama melalui Jalan Wolter Monginsidi/poros bandara menuju Kota Kendari. Dari kawasan bandara, perjalanan dilanjutkan menuju pusat Kota Kendari melalui koridor Ranomeeto&ndash;Baruga&ndash;Kendari. Setelah memasuki Kota Kendari, perjalanan diarahkan ke kawasan Kota Lama/Kecamatan Kendari, kemudian berlanjut menuju jalur Kendari&ndash;Toronipa yang menjadi akses utama ke wilayah pesisir Kecamatan Soropia.</span>
+            <button type="button" class="ex-fill" data-target="aksesibilitas_lokasi">Pakai contoh ini</button></div>
           </div>
         </div>
       </details>
@@ -937,8 +976,10 @@ def render_manual_form_page(error=None):
         <div class="acc-body">
           <div class="field-row">
             <label>Satu titik per baris &mdash; format: Longitude [spasi] Latitude (nomor titik otomatis)</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi. Contoh:</div>
-            <textarea name="koordinat_manual" rows="4" placeholder="122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114"></textarea>
+            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi.</div>
+            <textarea name="koordinat_manual" id="koordinat_manual" rows="4" placeholder="122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114</span>
+            <button type="button" class="ex-fill" data-target="koordinat_manual">Pakai contoh ini</button></div>
           </div>
         </div>
       </details>
@@ -946,29 +987,13 @@ def render_manual_form_page(error=None):
       <details class="acc-item">
         <summary>Lampiran Gambar (Opsional)</summary>
         <div class="acc-body">
-          <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar: klik kotak putus-putus lalu tekan <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot), <b>atau</b> klik tombol "Upload File" di sampingnya untuk pilih file dari komputer.</div>
+          <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
 
-          <div class="file-field-row">
-            <label>Gambaran Rencana Tapak Site</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.</div>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_siteplan">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_siteplan">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_siteplan" id="img_siteplan" accept="image/*" style="display:none">
-            <div class="img-preview-list" id="img_siteplan_preview"></div>
-          </div>
+          """ + img_field_html("img_siteplan", "Gambaran Rencana Tapak Site",
+                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.") + """
 
-          <div class="file-field-row">
-            <label>Peta Lokasi</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.</div>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_peta_lokasi">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_peta_lokasi">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_peta_lokasi" id="img_peta_lokasi" accept="image/*" style="display:none">
-            <div class="img-preview-list" id="img_peta_lokasi_preview"></div>
-          </div>
+          """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
+                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.") + """
 
           <div class="field-row">
             <label>Sumber Peta</label>
@@ -978,51 +1003,19 @@ def render_manual_form_page(error=None):
             <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
           </div>
 
-          <div class="file-field-row">
-            <label>Foto Kondisi Perairan &amp; Garis Pantai <span style="font-weight:400;color:var(--muted);">(bisa lebih dari 1)</span></label>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_foto_pantai">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_foto_pantai">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_foto_pantai" id="img_foto_pantai" accept="image/*" multiple style="display:none">
-            <div class="img-preview-list" id="img_foto_pantai_preview"></div>
-          </div>
+          """ + img_field_html("img_foto_pantai", "Foto Kondisi Perairan &amp; Garis Pantai", note="(bisa lebih dari 1)") + """
 
-          <div class="file-field-row">
-            <label>Foto Kondisi Mangrove</label>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_foto_mangrove">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_foto_mangrove">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_foto_mangrove" id="img_foto_mangrove" accept="image/*" style="display:none">
-            <div class="img-preview-list" id="img_foto_mangrove_preview"></div>
-          </div>
+          """ + img_field_html("img_foto_mangrove", "Foto Kondisi Mangrove") + """
 
-          <div class="file-field-row">
-            <label>Foto Survei Terumbu Karang</label>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_foto_karang_insitu">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_foto_karang_insitu">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_foto_karang_insitu" id="img_foto_karang_insitu" accept="image/*" style="display:none">
-            <div class="img-preview-list" id="img_foto_karang_insitu_preview"></div>
-          </div>
+          """ + img_field_html("img_foto_karang_insitu", "Foto Survei Terumbu Karang") + """
 
-          <div class="file-field-row">
-            <label>Peta Rencana Pola Ruang Wilayah</label>
-            <div class="img-input-row">
-              <div class="img-paste-target" tabindex="0" data-field="img_peta_pola_ruang">""" + ICONS["upload"] + """<span class="ipt-text"><b>Klik lalu Ctrl+V</b> untuk paste gambar</span></div>
-              <button type="button" class="img-upload-btn" data-field="img_peta_pola_ruang">""" + ICONS["doc"] + """ Upload File</button>
-            </div>
-            <input type="file" name="img_peta_pola_ruang" id="img_peta_pola_ruang" accept="image/*" style="display:none">
-            <div class="img-preview-list" id="img_peta_pola_ruang_preview"></div>
-          </div>
+          """ + img_field_html("img_peta_pola_ruang", "Peta Rencana Pola Ruang Wilayah") + """
 
           """ + img_field_html("img_dok_kegiatan", "Dokumentasi Kegiatan Eksisting/Rencana",
                                 "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.") + """
 
           """ + img_field_html("img_dok_pemanfaatan_sekitar", "Dokumentasi Pemanfaatan Ruang Laut Sekitar",
-                                "Maksimal 3 dokumentasi.", multiple=True, note="(bisa lebih dari 1)") + """
+                                "Maksimal 3 dokumentasi.", note="(bisa lebih dari 1)") + """
 
           """ + img_field_html("img_foto_lamun", "Dokumentasi Ekosistem Lamun") + """
 
@@ -1033,7 +1026,7 @@ def render_manual_form_page(error=None):
           """ + img_field_html("img_dok_sosialisasi", "Dokumen Hasil Sosialisasi",
                                 "Berita acara atau surat pernyataan tidak keberatan dari masyarakat.") + """
 
-          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", multiple=True, note="(bisa lebih dari 1)") + """
+          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", note="(bisa lebih dari 1)") + """
         </div>
       </details>
     </div>
@@ -1107,14 +1100,92 @@ document.getElementById('manualForm').addEventListener('submit', function() {
   });
 });
 
+// Datalist bertingkat Provinsi -> Kabupaten -> Kecamatan -> Desa/Kelurahan
+// menggunakan API publik https://wilayah.id (dirancang khusus untuk dropdown alamat bertingkat)
+(function() {
+  var WILAYAH_API = 'https://wilayah.id/api';
+  var provSel = document.getElementById('prop_loc__3');
+  var kabInput = document.getElementById('prop_loc__2');
+  var kecInput = document.getElementById('prop_loc__1');
+  var desaInput = document.getElementById('prop_loc__0');
+  var dlKabupaten = document.getElementById('dl_kabupaten');
+  var dlKecamatan = document.getElementById('dl_kecamatan');
+  var dlDesa = document.getElementById('dl_desa');
+  if (!provSel || !kabInput || !kecInput || !desaInput) return;
+
+  var cacheRegencies = [];
+  var cacheDistricts = [];
+
+  function titleCase(s) {
+    return s.toLowerCase().replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+  }
+
+  function fillDatalist(dl, items) {
+    dl.innerHTML = '';
+    items.forEach(function(txt) {
+      var opt = document.createElement('option');
+      opt.value = txt;
+      dl.appendChild(opt);
+    });
+  }
+
+  function clearFrom(level) {
+    if (level <= 2) { cacheRegencies = []; fillDatalist(dlKabupaten, []); }
+    if (level <= 1) { cacheDistricts = []; fillDatalist(dlKecamatan, []); }
+    if (level <= 0) { fillDatalist(dlDesa, []); }
+  }
+
+  provSel.addEventListener('change', function() {
+    clearFrom(2);
+    kabInput.value = ''; kecInput.value = ''; desaInput.value = '';
+    var opt = provSel.selectedOptions[0];
+    var bpsId = opt ? opt.dataset.bpsId : '';
+    if (!bpsId) return;
+    fetch(WILAYAH_API + '/regencies/' + bpsId + '.json')
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        cacheRegencies = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
+        fillDatalist(dlKabupaten, cacheRegencies.map(function(d) { return d.name; }));
+      })
+      .catch(function() { /* diam-diam gagal; pengguna tetap bisa isi manual */ });
+  });
+
+  kabInput.addEventListener('change', function() {
+    clearFrom(1);
+    kecInput.value = ''; desaInput.value = '';
+    var match = cacheRegencies.find(function(d) { return d.name.toLowerCase() === kabInput.value.trim().toLowerCase(); });
+    if (!match) return;
+    fetch(WILAYAH_API + '/districts/' + match.code + '.json')
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        cacheDistricts = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
+        fillDatalist(dlKecamatan, cacheDistricts.map(function(d) { return d.name; }));
+      })
+      .catch(function() {});
+  });
+
+  kecInput.addEventListener('change', function() {
+    clearFrom(0);
+    desaInput.value = '';
+    var match = cacheDistricts.find(function(d) { return d.name.toLowerCase() === kecInput.value.trim().toLowerCase(); });
+    if (!match) return;
+    fetch(WILAYAH_API + '/villages/' + match.code + '.json')
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        fillDatalist(dlDesa, res.data.map(function(d) { return titleCase(d.name); }));
+      })
+      .catch(function() {});
+  });
+})();
+
 // Field gambar: area Paste (khusus Ctrl+V + drag-drop, TIDAK membuka file browser saat diklik)
-// terpisah dari tombol Upload File (eksplisit membuka file browser). Multi-file didukung untuk foto_pantai.
+// terpisah dari tombol Upload File (eksplisit membuka file browser). Kedua cara SELALU menambah
+// (accumulate), tidak pernah saling mengganti file yang sudah ada di field yang sama.
 document.querySelectorAll('.img-paste-target').forEach(function(target) {
   var fieldName = target.dataset.field;
   var input = document.getElementById(fieldName);
   var previewList = document.getElementById(fieldName + '_preview');
   var uploadBtn = document.querySelector('.img-upload-btn[data-field="' + fieldName + '"]');
-  var multiple = input.hasAttribute('multiple');
   var files = [];
 
   function refreshInput() {
@@ -1148,7 +1219,7 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
 
   function addFile(file) {
     if (!file || file.type.indexOf('image/') !== 0) return;
-    if (multiple) { files.push(file); } else { files = [file]; }
+    files.push(file);
     refreshInput();
     renderPreviews();
   }
@@ -1378,31 +1449,25 @@ def proposal_manual_submit():
             return ext if ext in ("jpg", "jpeg", "png", "webp", "gif", "bmp") else "jpg"
 
         prop_images = []
-        single_image_fields = [
+        image_field_tags = [
             ("img_siteplan", "siteplan"),
             ("img_peta_lokasi", "peta_lokasi"),
+            ("img_foto_pantai", "foto_pantai"),
             ("img_foto_mangrove", "foto_mangrove"),
             ("img_foto_karang_insitu", "foto_karang_insitu"),
             ("img_peta_pola_ruang", "peta_pola_ruang"),
             ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
+            ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
             ("img_foto_lamun", "foto_lamun"),
             ("img_aksesibilitas", "gambar_aksesibilitas"),
             ("img_sertifikat_lahan", "sertifikat_lahan"),
             ("img_dok_sosialisasi", "dok_sosialisasi"),
+            ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
         ]
-        for field_name, tag in single_image_fields:
-            f = request.files.get(field_name)
-            if f and f.filename:
-                prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
-        for f in request.files.getlist("img_foto_pantai"):
-            if f and f.filename:
-                prop_images.append({"tag": "foto_pantai", "bytes": f.read(), "ext": file_ext(f.filename)})
-        for f in request.files.getlist("img_dok_pemanfaatan_sekitar"):
-            if f and f.filename:
-                prop_images.append({"tag": "dok_pemanfaatan_sekitar", "bytes": f.read(), "ext": file_ext(f.filename)})
-        for f in request.files.getlist("img_dok_pendukung_lainnya"):
-            if f and f.filename:
-                prop_images.append({"tag": "dok_pendukung_lainnya", "bytes": f.read(), "ext": file_ext(f.filename)})
+        for field_name, tag in image_field_tags:
+            for f in request.files.getlist(field_name):
+                if f and f.filename:
+                    prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
 
         lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
 
