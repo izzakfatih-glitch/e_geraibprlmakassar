@@ -129,6 +129,9 @@ a { text-decoration:none; }
 /* ---- Hero ---- */
 .hero { position:relative; overflow:hidden; background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%);
   padding:36px 32px 50px; }
+.hero-image { padding:0; }
+.hero-image .hero-inner { display:block; max-width:1600px; margin:0 auto; }
+.hero-banner-img { width:100%; height:auto; display:block; }
 .hero-inner { max-width:1600px; margin:0 auto; display:flex; align-items:center; gap:36px; flex-wrap:wrap; }
 
 .hero-logo { flex:0 0 auto; }
@@ -296,45 +299,9 @@ UPLOAD_HTML = """<!DOCTYPE html>
 <body>
 """ + HEADER_HTML + """
 
-<section class="hero">
+<section class="hero hero-image">
   <div class="hero-inner">
-    <div class="hero-logo">
-      <img src="/static/logo-egerai-v2.png" alt="e-GeRAI KKPRL">
-    </div>
-
-    <div class="hero-copy">
-      <h1>Generate &amp; Asistensi Dokumen KKPRL</h1>
-      <p>Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen secara cepat, tepat, efisien dan efektif.</p>
-      <div class="feature-row">
-        <div class="feature"><div class="ic">""" + ICONS["bolt"] + """</div><span>Otomatis Merge Dokumen</span></div>
-        <div class="feature"><div class="ic">""" + ICONS["doc"] + """</div><span>Hasil Format Microsoft Word</span></div>
-        <div class="feature"><div class="ic">""" + ICONS["shield-check"] + """</div><span>Cepat &amp; Efisien</span></div>
-        <div class="feature"><div class="ic">""" + ICONS["lock"] + """</div><span>Aman &amp; Terpercaya</span></div>
-      </div>
-    </div>
-
-    <div class="hero-art">
-      <div class="illust-wrap">
-        <div class="illust-ai-badge">AI</div>
-        <div class="illust-screen">
-          <svg viewBox="0 0 200 140" width="78%">
-            <rect x="4" y="4" width="192" height="132" rx="10" fill="#ffffff" opacity=".06"/>
-            <rect x="18" y="20" width="70" height="8" rx="4" fill="#ffffff" opacity=".55"/>
-            <rect x="18" y="36" width="46" height="8" rx="4" fill="#ffffff" opacity=".35"/>
-            <rect x="130" y="70" width="14" height="46" fill="#ffb020"/>
-            <rect x="150" y="55" width="14" height="61" fill="#4fd1c5"/>
-            <rect x="170" y="40" width="14" height="76" fill="#ffffff" opacity=".85"/>
-            <path d="M18 100 L45 82 L70 96 L95 68" stroke="#8fd3ff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="18" cy="100" r="4" fill="#8fd3ff"/>
-            <circle cx="45" cy="82" r="4" fill="#8fd3ff"/>
-            <circle cx="70" cy="96" r="4" fill="#8fd3ff"/>
-            <circle cx="95" cy="68" r="4" fill="#8fd3ff"/>
-          </svg>
-        </div>
-        <div class="illust-stand"></div>
-        <div class="illust-mag">""" + ICONS["search"] + """</div>
-      </div>
-    </div>
+    <img src="/static/hero-banner.png" alt="Generate &amp; Asistensi Dokumen KKPRL" class="hero-banner-img">
   </div>
 </section>
 
