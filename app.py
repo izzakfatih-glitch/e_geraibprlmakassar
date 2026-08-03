@@ -14,6 +14,7 @@ CARA MENJALANKAN (LOKAL / TES):
     -> buka http://localhost:5000 di browser
 """
 import os
+import re
 import uuid
 import shutil
 import traceback
@@ -42,7 +43,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
-STAFF_SHEET_CSV_URL = (
+STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
     "/export?format=csv&gid=0"
 )
@@ -147,6 +148,58 @@ import time
 
 _staff_cache = {"data": {}, "fetched_at": 0}
 STAFF_CACHE_TTL = 300  # detik (5 menit)
+
+
+def parse_koordinat_file(file_storage):
+    """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, atau Word
+    (.docx) yang diupload -- 2 kolom pertama tiap baris dianggap Longitude
+    dan Latitude. Baris/sel yang bukan angka otomatis dilewati (termasuk
+    baris judul/header). Mengembalikan list [nomor, longitude, latitude]."""
+    filename = (file_storage.filename or "").lower()
+    data = file_storage.read()
+    hasil = []
+
+    def add_pair(a, b):
+        try:
+            float(str(a).replace(",", "."))
+            float(str(b).replace(",", "."))
+        except (TypeError, ValueError):
+            return
+        hasil.append([str(len(hasil) + 1), str(a).strip(), str(b).strip()])
+
+    try:
+        if filename.endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(_io.BytesIO(data), data_only=True)
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    vals = [v for v in row if v is not None and str(v).strip() != ""]
+                    if len(vals) >= 2:
+                        add_pair(vals[0], vals[1])
+        elif filename.endswith(".csv"):
+            text = data.decode("utf-8-sig", errors="ignore")
+            for line in text.splitlines():
+                parts = [p for p in re.split(r"[,;\t]", line.strip()) if p.strip()]
+                if len(parts) >= 2:
+                    add_pair(parts[0], parts[1])
+        elif filename.endswith(".docx"):
+            from docx import Document as _DocxDocument
+            doc = _DocxDocument(_io.BytesIO(data))
+            for table in doc.tables:
+                for row in table.rows:
+                    vals = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if len(vals) >= 2:
+                        add_pair(vals[0], vals[1])
+            if not hasil:
+                for para in doc.paragraphs:
+                    nums = re.findall(r"-?\d+[.,]\d+", para.text)
+                    if len(nums) >= 2:
+                        add_pair(nums[0], nums[1])
+    except Exception:
+        traceback.print_exc()
+        return []
+
+    return hasil
 
 
 def fetch_staff_list(force=False):
@@ -529,7 +582,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Gabungkan Dokumen Word</button>
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen Word</button>
         <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
         <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
       </div>
@@ -716,17 +769,6 @@ REVIEW_CSS = """
 .history-empty { text-align:center; padding:40px 20px; color:var(--muted); font-size:13.5px; }
 .history-login-gate { text-align:center; padding:60px 20px; }
 .history-login-gate p { color:var(--muted); font-size:14px; margin:10px 0 20px; }
-
-.login-overlay { position:fixed; inset:0; z-index:9999; background:rgba(10,25,45,.6);
-  backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center; padding:20px; }
-.login-modal-card { max-width:400px; width:100%; }
-.login-modal-card h3 { justify-content:center; }
-.login-modal-sub { text-align:center; font-size:12.5px; color:var(--muted); margin:-4px 0 16px; }
-.login-modal-btn { width:100%; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
-  border:none; padding:14px; border-radius:10px; font-size:14.5px; font-weight:800; cursor:pointer;
-  display:flex; align-items:center; justify-content:center; gap:8px; margin-top:6px; }
-.login-modal-btn:hover { filter:brightness(1.05); }
-.login-modal-btn svg { width:18px; height:18px; flex:none; }
 """
 
 
@@ -777,6 +819,29 @@ EXAMPLE_HINTS = {
 
 # Field yang dirender sebagai dropdown (select) alih-alih input teks bebas.
 # allow_other=True -> menampilkan input teks tambahan saat "Other" dipilih.
+KBLI_OPTIONS = [
+    "93295 - Wisata Pantai",
+    "93296 - Wisata Agro",
+    "93297 - Wisata Tirta",
+    "93299 - Aktivitas Hiburan dan Rekreasi Lainnya YTDL",
+    "55101 - Aktivitas Hotel Bintang Lima",
+    "55102 - Aktivitas Hotel Bintang Empat",
+    "55103 - Aktivitas Hotel Bintang Tiga",
+    "55104 - Aktivitas Hotel Bintang Dua",
+    "55105 - Aktivitas Hotel Bintang Satu",
+    "50113 - Angkutan Laut Dalam Negeri untuk Wisata",
+    "03110 - Penangkapan Ikan dan Biota Air Lainnya di Laut",
+    "03120 - Penangkapan Ikan dan Biota Air Lainnya di Perairan Air Tawar",
+    "03211 - Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Laut Lainnya yang Tidak Dilindungi",
+    "03212 - Pembudidayaan Ikan Hias Air Laut yang Tidak Dilindungi",
+    "03213 - Pembudidayaan Tumbuhan Air Laut yang Tidak Dilindungi",
+    "03214 - Pengembangbiakan Ikan dan Biota Air Laut yang Dilindungi",
+    "03231 - Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Payau Lainnya yang Tidak Dilindungi",
+    "03232 - Pembudidayaan Ikan Hias Air Payau yang Tidak Dilindungi",
+    "03233 - Pembudidayaan Tumbuhan Air Payau yang Tidak Dilindungi",
+    "03234 - Pengembangbiakan Biota Air Payau yang Dilindungi",
+]
+
 SELECT_FIELDS = {
     ("prop", "Nama Perairan"): {
         "options": ["Laut Banda", "Laut Sulawesi", "Laut Bali", "Laut Sawu", "Laut Flores",
@@ -790,6 +855,10 @@ SELECT_FIELDS = {
     },
     ("prop", "Jenis Kegiatan"): {
         "options": ["Pemanfaatan Air Laut untuk Budi Daya", "Keramba Jaring Apung", "Dermaga"],
+        "allow_other": True,
+    },
+    ("prop", "KBLI"): {
+        "options": KBLI_OPTIONS,
         "allow_other": True,
     },
     ("prop", "mangrove_kondisi"): {
@@ -871,25 +940,51 @@ def img_field_html(field_name, label, desc="", multiple=False, note=""):
 def render_login_pegawai_page(error=None):
     # Render homepage SUNGGUHAN (sudah lewat Jinja) sebagai backdrop, lalu
     # sisipkan overlay + kartu login di atasnya tepat sebelum tag </body>.
+    # CSS ditulis mandiri (inline) di sini karena halaman backdrop (UPLOAD_HTML)
+    # cuma memuat LANDING_CSS, bukan REVIEW_CSS.
     home_rendered = render_template_string(UPLOAD_HTML, error=None)
 
     error_html = (
-        f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+        f'<div class="lgo-error">\u26A0 {error}</div>' if error else ""
     )
     overlay = """
+<style>
+  .login-overlay { position:fixed; inset:0; z-index:9999; background:rgba(10,25,45,.62);
+    backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:20px; }
+  .login-modal-card { background:#fff; border-radius:16px; padding:28px 26px; box-shadow:0 20px 50px rgba(0,0,0,.35);
+    max-width:400px; width:100%; }
+  .login-modal-card h3 { display:flex; align-items:center; justify-content:center; gap:8px;
+    font-size:16px; font-weight:800; color:#123A63; margin:0 0 6px; }
+  .login-modal-card h3 svg { width:20px; height:20px; }
+  .login-modal-sub { text-align:center; font-size:12.5px; color:#5b6b7c; margin:0 0 18px; }
+  .lgo-error { background:#fff3cd; border:1px solid #ffe08a; color:#7a5b00; padding:10px 14px;
+    border-radius:8px; font-size:12.5px; margin-bottom:14px; }
+  .login-modal-card .field-row { margin-bottom:14px; }
+  .login-modal-card label { display:block; font-size:12px; font-weight:700; color:#5b6b7c; margin-bottom:5px; }
+  .login-modal-card input[type=text], .login-modal-card input[type=password] {
+    width:100%; padding:10px 12px; border:1px solid #d3dde7; border-radius:8px; font-size:14px;
+    color:#1c2b3a; background:#fff; box-sizing:border-box; }
+  .login-modal-card input:focus { outline:none; border-color:#1E63C7; box-shadow:0 0 0 3px rgba(30,99,199,.15); }
+  .login-modal-btn { width:100%; background:linear-gradient(90deg,#2F7FE0,#123A63); color:#fff;
+    border:none; padding:13px; border-radius:10px; font-size:14.5px; font-weight:800; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:8px; margin-top:4px; box-sizing:border-box; }
+  .login-modal-btn:hover { filter:brightness(1.08); }
+  .login-modal-btn svg { width:18px; height:18px; flex:none; }
+  body { overflow:hidden !important; }
+</style>
 <div class="login-overlay">
-  <div class="review-card login-modal-card">
+  <div class="login-modal-card">
     """ + error_html + """
     <h3>""" + ICONS["user"] + """ Login Pegawai BPRL Makassar</h3>
     <p class="login-modal-sub">Masuk terlebih dahulu untuk menggunakan aplikasi e-GeRAI KKPRL.</p>
     <form method="POST" action="/login-pegawai">
       <div class="field-row">
         <label>Kode Nama</label>
-        <input type="text" name="kode_nama" placeholder="Contoh: 01" required autofocus inputmode="numeric">
+        <input type="text" name="kode_nama" placeholder="Contoh: 09" required autofocus inputmode="numeric">
       </div>
       <div class="field-row">
         <label>Kode Petugas (Password)</label>
-        <input type="password" name="kode_petugas" placeholder="Contoh: 101" required inputmode="numeric">
+        <input type="password" name="kode_petugas" placeholder="Contoh: 123" required inputmode="numeric">
       </div>
       <button type="submit" class="login-modal-btn">""" + ICONS["user"] + """ Masuk</button>
     </form>
@@ -1026,6 +1121,16 @@ def render_manual_form_page(error=None):
                 field_html = (
                     f'<input type="text" name="{fname}" id="{fname}" class="digits-only-input" '
                     f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key in ("NIB", "tenaga_kerja", "tenaga_kerja_asing"):
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="digits-only-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key in ("Luas Kebutuhan Ruang", "desa_luas_ha", "desa_penduduk"):
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="decimal-only-input" '
+                    f'inputmode="decimal" placeholder="Isi {label.lower()}">'
                 )
             elif source == "prop" and key == "Tanggal Penyusunan":
                 field_html = (
@@ -1190,7 +1295,7 @@ def render_manual_form_page(error=None):
             </div>
             <div class="field-row">
               <label>Persentase Tutupan Mangrove (%)</label>
-              <input type="text" name="prop__mangrove_persen" id="prop__mangrove_persen" placeholder="Isi persentase tutupan mangrove" disabled>
+              <input type="text" name="prop__mangrove_persen" id="prop__mangrove_persen" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan mangrove" disabled>
             </div>
             <div class="field-row">
               <label>Kondisi Tutupan Mangrove</label>
@@ -1210,7 +1315,7 @@ def render_manual_form_page(error=None):
             <div class="field-row">
               <label>Persentase Tutupan Lamun</label>
               <div class="ff-hint" style="margin-bottom:6px;">Dilampirkan dalam bentuk persentase (%)</div>
-              <input type="text" name="lamun_persen" id="lamun_persen" placeholder="Isi persentase tutupan lamun" disabled>
+              <input type="text" name="lamun_persen" id="lamun_persen" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan lamun" disabled>
             </div>
             <div class="field-row">
               <label>Kondisi Lamun</label>
@@ -1230,7 +1335,7 @@ def render_manual_form_page(error=None):
             <div class="field-row">
               <label>Persentase Tutupan Terumbu Karang</label>
               <div class="ff-hint" style="margin-bottom:6px;">Dicantumkan dalam bentuk %</div>
-              <input type="text" name="karang_persen_manual" id="karang_persen_manual" placeholder="Isi persentase tutupan terumbu karang" disabled>
+              <input type="text" name="karang_persen_manual" id="karang_persen_manual" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan terumbu karang" disabled>
             </div>
             <div class="field-row">
               <label>Kondisi Terumbu Karang</label>
@@ -1243,12 +1348,27 @@ def render_manual_form_page(error=None):
       <details class="acc-item">
         <summary>Pemanfaatan Ruang Laut Sekitar (Opsional)</summary>
         <div class="acc-body">
+          <div class="ff-hint" style="margin-bottom:12px;">Isi kondisi di 4 penjuru arah mata angin di sekitar lokasi kegiatan. Akan otomatis tersusun jadi kalimat deskripsi di dokumen final.</div>
           <div class="field-row">
-            <label>Deskripsi Kegiatan Pemanfaatan Ruang Laut Sekitar</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Gambaran singkat mengenai kegiatan pemanfaatan ruang laut di sekitar lokasi.</div>
-            <textarea name="deskripsi_pemanfaatan_sekitar" id="deskripsi_pemanfaatan_sekitar" rows="4" placeholder="Isi deskripsi pemanfaatan ruang laut sekitar"></textarea>
-            <div class="field-example">Contoh: <span class="ex-text">Pemanfaatan ruang laut di sekitar lokasi permohonan didominasi oleh aktivitas penangkapan ikan skala kecil di seluruh penjuru arah mata angin. Di sebelah utara, lokasi berbatasan dengan area penangkapan ikan skala kecil serta kawasan pemukiman dan tempat tambat labuh nelayan yang berjarak sekitar 1 km. Pada sisi timur, kawasan berbatasan dengan area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km.</span>
-            <button type="button" class="ex-fill" data-target="deskripsi_pemanfaatan_sekitar">Pakai contoh ini</button></div>
+            <label>Sebelah Utara</label>
+            <input type="text" name="batas_utara" id="batas_utara" placeholder="Contoh: area penangkapan ikan skala kecil dan kawasan pemukiman nelayan berjarak sekitar 1 km">
+          </div>
+          <div class="field-row">
+            <label>Sebelah Timur</label>
+            <input type="text" name="batas_timur" id="batas_timur" placeholder="Contoh: area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km">
+          </div>
+          <div class="field-row">
+            <label>Sebelah Selatan</label>
+            <input type="text" name="batas_selatan" id="batas_selatan" placeholder="Contoh: area penangkapan ikan skala kecil serta koridor kabel/pipa bawah laut berjarak sekitar 1.4 km">
+          </div>
+          <div class="field-row">
+            <label>Sebelah Barat</label>
+            <input type="text" name="batas_barat" id="batas_barat" placeholder="Contoh: area penangkapan ikan skala kecil serta kegiatan Keramba Jaring Apung (KJA) berjarak sekitar 1.1 km">
+          </div>
+          <div class="field-row">
+            <label>Deskripsi Tambahan (Opsional)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Kalau ada info tambahan di luar 4 arah mata angin di atas, isi di sini -- akan ditambahkan setelah kalimat otomatis.</div>
+            <textarea name="deskripsi_pemanfaatan_sekitar" id="deskripsi_pemanfaatan_sekitar" rows="3" placeholder="Isi deskripsi tambahan (opsional)"></textarea>
           </div>
         </div>
       </details>
@@ -1270,7 +1390,7 @@ def render_manual_form_page(error=None):
           </div>
           <div class="field-row">
             <label>Tahun Data Sosek</label>
-            <input type="text" name="tahun_data_sosek" id="tahun_data_sosek" placeholder="Isi tahun data">
+            <input type="text" name="tahun_data_sosek" id="tahun_data_sosek" class="digits-only-input" inputmode="numeric" placeholder="Isi tahun data">
           </div>
           <div class="field-row">
             <label>Aksesibilitas Lokasi</label>
@@ -1286,8 +1406,13 @@ def render_manual_form_page(error=None):
         <summary>Titik Koordinat Batas Area (Opsional)</summary>
         <div class="acc-body">
           <div class="field-row">
-            <label>Satu titik per baris &mdash; format: Longitude [spasi] Latitude (nomor titik otomatis)</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi.</div>
+            <label>Upload File Koordinat (Excel/CSV/Word)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Kalau sudah punya file berisi daftar titik koordinat (2 kolom: Longitude, Latitude), unggah di sini -- akan otomatis dibaca dan dianalisis, tidak perlu ketik ulang manual.</div>
+            <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx">
+          </div>
+          <div class="field-row">
+            <label>Atau Ketik/Tempel Manual &mdash; format: Longitude [spasi] Latitude (nomor titik otomatis)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi. Kalau file di atas diisi, ini akan digabung otomatis dengan hasil dari file.</div>
             <textarea name="koordinat_manual" id="koordinat_manual" rows="4" placeholder="122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114"></textarea>
             <div class="field-example">Contoh: <span class="ex-text">122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114</span>
             <button type="button" class="ex-fill" data-target="koordinat_manual">Pakai contoh ini</button></div>
@@ -1405,6 +1530,16 @@ document.querySelectorAll('.digits-only-input').forEach(function(input) {
   });
 });
 
+// Field desimal (persentase, luas area, dsb): angka + maksimal 1 titik desimal
+document.querySelectorAll('.decimal-only-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    var v = input.value.replace(/[^0-9.]/g, '');
+    var parts = v.split('.');
+    if (parts.length > 2) { v = parts[0] + '.' + parts.slice(1).join(''); }
+    input.value = v;
+  });
+});
+
 // Tanggal Penyusunan: pilih lewat kalender, otomatis dikonversi ke format Indonesia (DD Bulan YYYY)
 document.querySelectorAll('.date-picker-input').forEach(function(picker) {
   var hidden = document.getElementById(picker.id.replace('_picker', ''));
@@ -1415,6 +1550,15 @@ document.querySelectorAll('.date-picker-input').forEach(function(picker) {
     var y = parts[0], m = parseInt(parts[1], 10) - 1, d = parseInt(parts[2], 10);
     hidden.value = d + ' ' + BULAN_ID[m] + ' ' + y;
   });
+  // Pastikan kalender selalu muncul walau yang diklik bagian kosong kolom
+  // (bukan cuma ikon kalender kecil di ujung), baik klik tunggal maupun ganda.
+  function openPicker() {
+    if (typeof picker.showPicker === 'function') {
+      try { picker.showPicker(); } catch (e) { /* diam-diam gagal, biarkan perilaku bawaan browser */ }
+    }
+  }
+  picker.addEventListener('click', openPicker);
+  picker.addEventListener('dblclick', openPicker);
 });
 
 // Kunci/buka otomatis field turunan (spesies/persentase/kondisi) berdasarkan
@@ -1904,6 +2048,10 @@ def proposal_manual_submit():
         prop_data["karang_persen_manual"] = request.form.get("karang_persen_manual", "")
         prop_data["karang_kondisi"] = request.form.get("karang_kondisi", "")
 
+        prop_data["batas_utara"] = request.form.get("batas_utara", "")
+        prop_data["batas_timur"] = request.form.get("batas_timur", "")
+        prop_data["batas_selatan"] = request.form.get("batas_selatan", "")
+        prop_data["batas_barat"] = request.form.get("batas_barat", "")
         prop_data["deskripsi_pemanfaatan_sekitar"] = request.form.get("deskripsi_pemanfaatan_sekitar", "")
         prop_data["mata_pencaharian"] = request.form.get("mata_pencaharian", "")
         prop_data["sumber_data_sosek"] = request.form.get("sumber_data_sosek", "")
@@ -1911,6 +2059,10 @@ def proposal_manual_submit():
         prop_data["aksesibilitas_lokasi"] = request.form.get("aksesibilitas_lokasi", "")
 
         koordinat = []
+        koordinat_file = request.files.get("upload_koordinat")
+        if koordinat_file and koordinat_file.filename:
+            hasil_file = parse_koordinat_file(koordinat_file)
+            koordinat.extend(hasil_file)
         for line in request.form.get("koordinat_manual", "").splitlines():
             line = line.strip()
             if not line:
@@ -1919,7 +2071,7 @@ def proposal_manual_submit():
                 # format lama: Nomor | Longitude | Latitude
                 parts = [p.strip() for p in line.split("|")]
                 if len(parts) == 3 and any(parts):
-                    koordinat.append(parts)
+                    koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
             else:
                 # format resmi: Longitude [spasi/tab] Latitude -> nomor titik otomatis
                 parts = line.split()
