@@ -124,3 +124,46 @@ LAPORAN_FIELD_HINTS = {
     "eko_terbuka_pct": "persentase area laut terbuka (angka saja)",
     "eko_jarak_terdekat_km": "jarak ekosistem terdekat dari titik pusat (km, angka saja)",
 }
+
+
+def perkuat_narasi_ilmiah(teks_asli, konteks=""):
+    """Perhalus & perkuat narasi asli (dari Laporan Hidro-Oseanografi/kondisi
+    eksisting) supaya lebih ilmiah, TANPA menghilangkan informasi apa pun
+    dari teks aslinya -- cuma boleh membetulkan tata bahasa dan menambahkan
+    1-2 kalimat pendukung yang relevan kalau perlu.
+
+    Kalau ANTHROPIC_API_KEY tidak diset atau proses gagal, teks ASLI
+    dikembalikan apa adanya (tidak pernah menghilangkan konten pengguna
+    hanya karena AI tidak tersedia)."""
+    if not teks_asli or not teks_asli.strip():
+        return teks_asli
+    if not api_key_available():
+        return teks_asli
+    try:
+        client = _client()
+        prompt = (
+            "Berikut ini narasi/deskripsi asli dari sebuah laporan teknis kelautan "
+            f"(konteks: {konteks}):\n\n\"\"\"\n{teks_asli}\n\"\"\"\n\n"
+            "Tugas Anda: perhalus tata bahasa dan perkuat gaya penulisannya supaya "
+            "lebih ilmiah dan formal, SESUAI untuk dokumen resmi pemerintah. "
+            "ATURAN KETAT:\n"
+            "1. JANGAN menghilangkan satu pun informasi/fakta dari teks asli.\n"
+            "2. JANGAN mengubah angka atau data apa pun.\n"
+            "3. Boleh menambahkan maksimal 1-2 kalimat pendukung yang relevan dan "
+            "faktual untuk memperkuat konteks ilmiahnya, tapi jangan mengarang data baru.\n"
+            "4. Balas HANYA dengan teks hasil revisi (paragraf biasa), tanpa "
+            "pembuka/penutup/penjelasan/markdown apa pun."
+        )
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
+        # Kalau hasilnya kosong/mencurigakan (jauh lebih pendek dari asli,
+        # kemungkinan model malah meringkas bukan memperkuat), pakai teks asli.
+        if not hasil or len(hasil) < len(teks_asli) * 0.6:
+            return teks_asli
+        return hasil
+    except Exception:
+        return teks_asli

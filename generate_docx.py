@@ -10,6 +10,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from llm_fallback import perkuat_narasi_ilmiah
 
 NAVY = RGBColor(0x1F, 0x4E, 0x79)
 LIGHTBLUE = "DCE6F1"
@@ -23,6 +24,35 @@ def g(d, key, default=NA):
     if v is None or v == "":
         return default
     return v
+
+
+def format_luas_ha(value):
+    """Tambahkan satuan 'Ha' otomatis kalau nilai luas yang diinput cuma
+    berupa angka polos (mis. '0.25' atau '0,25' -> '0.25 Ha' / '0,25 Ha'),
+    tanpa menduplikasi kalau user sudah mengetik satuannya sendiri."""
+    if not value or value == NA:
+        return value
+    v = value.strip()
+    if re.fullmatch(r"-?[\d.,]+", v):
+        return f"{v} Ha"
+    return v
+
+
+# Kriteria baku kondisi ekosistem (sesuai dokumen resmi KRITERIA_KONDISI) --
+# dipakai untuk otomatis menentukan label kondisi dari data persentase yang
+# terbaca dari Laporan Hidro-Oseanografi (bukan cuma input manual).
+KRITERIA_KARANG_LAP = [(75, 999, "Baik Sekali"), (50, 75, "Baik"), (25, 50, "Sedang"), (0, 25, "Buruk")]
+
+
+def klasifikasi_karang(persen_str):
+    try:
+        v = float(str(persen_str).replace(",", ".").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return ""
+    for lo, hi, label in KRITERIA_KARANG_LAP:
+        if lo <= v < hi:
+            return label
+    return ""
 
 
 def shade_cell(cell, color_hex):
@@ -334,7 +364,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     perusahaan = g(prop, "Nama Perusahaan/Instansi")
     perairan = g(prop, "Nama Perairan")
-    luas = g(prop, "Luas Kebutuhan Ruang")
+    luas_raw = g(prop, "Luas Kebutuhan Ruang")
+    luas = format_luas_ha(luas_raw)
     jenis_kegiatan = g(prop, "Jenis Kegiatan")
 
     # ================= COVER =================
@@ -614,6 +645,10 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"area kajian seluas {total_ha} Ha, tutupan terumbu karang tercatat seluas {karang_ha} Ha ({karang_pct}%), "
         f"diikuti substrat dasar non-terumbu seluas {lainnya_ha} Ha ({lainnya_pct}%), dan area laut terbuka "
         f"tanpa ekosistem seluas {terbuka_ha} Ha ({terbuka_pct}%).")
+    kondisi_karang_lap = klasifikasi_karang(karang_pct)
+    if kondisi_karang_lap:
+        b.p(f"Berdasarkan kriteria baku kerusakan terumbu karang, persentase tutupan sebesar {karang_pct}% "
+            f"tersebut tergolong pada kategori kondisi \u201c{kondisi_karang_lap}\u201d.")
     b.data_table(
         ["Jenis Tutupan", "Luas (Ha)", "Persentase (%)"],
         [
@@ -657,11 +692,14 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"sedimen, serta pengelolaan kualitas air.")
 
     b.h2("B. Hidro-Oseanografi")
+    narasi_lap = lap.get("_narasi", {}) or {}
     b.h3("1. Gelombang")
     b.p(f"Tinggi gelombang signifikan (Hs) rata-rata tercatat sebesar {g(lap,'hs_rata')} meter, sedangkan Hs "
         f"maksimum ekstrem tercatat sebesar {g(lap,'hs_maks')} meter dengan arah dominan dari "
         f"{g(lap,'hs_arah')}\u00b0. Parameter ini menjadi acuan utama dalam desain ketahanan struktur bangunan laut "
         f"terhadap beban gelombang ekstrem.")
+    if narasi_lap.get("gelombang"):
+        b.p(perkuat_narasi_ilmiah(narasi_lap["gelombang"], konteks="analisis gelombang laut"))
     gel_img = get_image_bytes(lap_imgs, "mawar_gelombang")
     if gel_img:
         b.image(gel_img, width_cm=9)
@@ -674,6 +712,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p(f"Kecepatan arus rata-rata tercatat sebesar {g(lap,'arus_rata')} m/detik, dengan kecepatan maksimum "
         f"ekstrem sebesar {g(lap,'arus_maks')} m/detik dan arah dominan dari {g(lap,'arus_arah')}\u00b0. Parameter "
         f"ini menjadi indikator potensi gerusan (scouring) di sekitar struktur bangunan laut.")
+    if narasi_lap.get("arus"):
+        b.p(perkuat_narasi_ilmiah(narasi_lap["arus"], konteks="analisis arus laut"))
     arus_img = get_image_bytes(lap_imgs, "mawar_arus")
     if arus_img:
         b.image(arus_img, width_cm=9)
@@ -695,6 +735,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p(f"Perairan ini memiliki tipe pasang surut {g(lap,'tipe_pasut')} (Bilangan Formzahl {g(lap,'formzahl')}), "
         f"dengan tunggang air (tidal range) sebesar {g(lap,'tidal_range')} meter, elevasi tertinggi (HAT) "
         f"sebesar +{g(lap,'hat')} meter, dan elevasi terendah (LAT) sebesar {g(lap,'lat')} meter.")
+    if narasi_lap.get("pasut"):
+        b.p(perkuat_narasi_ilmiah(narasi_lap["pasut"], konteks="analisis pasang surut"))
     b.data_table(
         ["Parameter Pasang Surut", "Elevasi"],
         [
@@ -719,6 +761,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"terhadap Lowest Water Spring (LWS). Hasil pemeruman pada profil garis batimetri sepanjang lintasan "
         f"{g(lap,'batimetri_panjang_lintasan')} km menunjukkan kedalaman terdalam mencapai "
         f"{g(lap,'batimetri_terdalam')} meter.")
+    if narasi_lap.get("batimetri"):
+        b.p(perkuat_narasi_ilmiah(narasi_lap["batimetri"], konteks="analisis profil batimetri/dasar laut"))
     bati_img = get_image_bytes(lap_imgs, "profil_batimetri")
     if bati_img:
         b.image(bati_img, width_cm=13)

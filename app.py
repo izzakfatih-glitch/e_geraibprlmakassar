@@ -43,6 +43,8 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
+DRAFTS_DIR = os.path.join(BASE_DIR, "drafts")
+DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
     "/export?format=csv&gid=0"
@@ -50,6 +52,7 @@ STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(JOBS_DIR, exist_ok=True)
+os.makedirs(DRAFTS_DIR, exist_ok=True)
 
 MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
@@ -147,6 +150,85 @@ def read_history(limit=200):
 
 
 # ---------------------------------------------------------------------------
+# Riwayat pengisian PER-PENGGUNA ("Riwayat Saya") -- beda dari riwayat global
+# (history.jsonl) yang isinya cuma metadata ringkas dan permanen. Ini
+# menyimpan SELURUH data isian form (prop_data, tanpa gambar) supaya staf
+# bisa melanjutkan isian yang belum selesai tanpa mengulang dari awal.
+# Otomatis terhapus sendiri setelah DRAFT_MAX_AGE_DAYS hari supaya tidak
+# membebani penyimpanan server. Riwayat global (semua pengguna) TIDAK
+# terpengaruh oleh penghapusan ini.
+# ---------------------------------------------------------------------------
+def _safe_kode(kode_nama):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(kode_nama or "anon"))
+
+
+def save_draft(kode_nama, job_id, prop_data):
+    try:
+        safe_kode = _safe_kode(kode_nama)
+        entry = {
+            "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
+            "job_id": job_id,
+            "kode_nama": kode_nama,
+            "nama_pemohon": prop_data.get("Nama Pemohon", ""),
+            "nama_perusahaan": prop_data.get("Nama Perusahaan/Instansi", ""),
+            "prop_data": prop_data,
+        }
+        path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entry, f, ensure_ascii=False)
+    except Exception:
+        traceback.print_exc()
+
+
+def cleanup_expired_drafts():
+    try:
+        cutoff = time.time() - (DRAFT_MAX_AGE_DAYS * 86400)
+        for fname in os.listdir(DRAFTS_DIR):
+            path = os.path.join(DRAFTS_DIR, fname)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                continue
+    except Exception:
+        traceback.print_exc()
+
+
+def read_user_drafts(kode_nama, limit=50):
+    cleanup_expired_drafts()
+    safe_kode = _safe_kode(kode_nama)
+    prefix = f"{safe_kode}__"
+    entries = []
+    try:
+        for fname in os.listdir(DRAFTS_DIR):
+            if not fname.startswith(prefix):
+                continue
+            path = os.path.join(DRAFTS_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    entries.append(json.load(f))
+            except Exception:
+                continue
+    except Exception:
+        traceback.print_exc()
+        return []
+    entries.sort(key=lambda e: e.get("waktu", ""), reverse=True)
+    return entries[:limit]
+
+
+def load_draft(kode_nama, job_id):
+    safe_kode = _safe_kode(kode_nama)
+    path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
 # Login sederhana pegawai -- kredensial diambil LANGSUNG dari Google Sheet
 # ("Kode Nama" = username, "Kode petugas" = password), di-cache sebentar
 # supaya tidak nge-fetch Google di setiap request. Kalau ada pegawai baru
@@ -162,13 +244,15 @@ STAFF_CACHE_TTL = 300  # detik (5 menit)
 
 
 def parse_koordinat_file(file_storage):
-    """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, atau Word
-    (.docx) yang diupload -- 2 kolom pertama tiap baris dianggap Longitude
-    dan Latitude. Baris/sel yang bukan angka otomatis dilewati (termasuk
-    baris judul/header). Mengembalikan list [nomor, longitude, latitude]."""
+    """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, Word
+    (.docx), atau gambar (PNG/JPG) yang diupload -- 2 kolom pertama tiap
+    baris dianggap Longitude dan Latitude. Baris/sel yang bukan angka
+    otomatis dilewati (termasuk baris judul/header). Mengembalikan tuple
+    (list [nomor, longitude, latitude], pesan_status_atau_None)."""
     filename = (file_storage.filename or "").lower()
     data = file_storage.read()
     hasil = []
+    pesan = None
 
     def add_pair(a, b):
         try:
@@ -207,57 +291,86 @@ def parse_koordinat_file(file_storage):
                     if len(nums) >= 2:
                         add_pair(nums[0], nums[1])
         elif filename.endswith((".png", ".jpg", ".jpeg")):
-            hasil = parse_koordinat_dari_gambar(data, filename)
+            hasil, pesan = parse_koordinat_dari_gambar(data, filename)
     except Exception:
         traceback.print_exc()
-        return []
+        return [], "Terjadi kesalahan saat membaca file. Silakan isi koordinat manual."
 
-    return hasil
+    return hasil, pesan
 
 
 def parse_koordinat_dari_gambar(image_bytes, filename):
     """Baca titik koordinat dari gambar (mis. screenshot tabel koordinat atau
     peta) memakai Claude Vision API. Kalau ANTHROPIC_API_KEY tidak diset,
     otomatis dilewati (dikembalikan list kosong, tidak error) -- konsisten
-    dengan pola fallback LLM lain di aplikasi ini (lihat llm_fallback.py)."""
+    dengan pola fallback LLM lain di aplikasi ini (lihat llm_fallback.py).
+    Mengembalikan tuple (list_titik, pesan_status) supaya pemanggil bisa
+    kasih tahu user kenapa gagal/berhasil, bukan cuma diam-diam kosong."""
     from llm_fallback import api_key_available
     if not api_key_available():
-        return []
+        return [], "ANTHROPIC_API_KEY belum diset di server -- pembacaan otomatis dari gambar dilewati."
+
+    MAX_BYTES = 5 * 1024 * 1024  # 5 MB, batas aman untuk request Claude API
+    if len(image_bytes) > MAX_BYTES:
+        return [], "Ukuran gambar terlalu besar (maks 5 MB) untuk dibaca otomatis."
+
     try:
         import base64
         from anthropic import Anthropic
         client = Anthropic()
-        ext = "jpeg" if filename.endswith((".jpg", ".jpeg")) else "png"
+        ext = "jpeg" if filename.lower().endswith((".jpg", ".jpeg")) else "png"
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         resp = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1000,
+            max_tokens=1500,
             messages=[{
                 "role": "user",
                 "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": f"image/{ext}", "data": b64}},
                     {"type": "text", "text": (
                         "Gambar ini berisi daftar titik koordinat (longitude, latitude) batas area, "
-                        "bisa berupa tabel atau anotasi pada peta. Baca semua titik koordinat yang "
-                        "terlihat, urut sesuai urutan tampil. Balas HANYA dengan JSON array polos "
-                        "(tanpa markdown/backtick/teks lain), format: "
+                        "bisa berupa tabel, daftar teks, atau anotasi pada peta/citra satelit. Baca "
+                        "semua titik koordinat yang terlihat dalam format desimal derajat (bukan "
+                        "derajat-menit-detik), urut sesuai urutan tampil di gambar (atas ke bawah, "
+                        "atau sesuai penomoran titik kalau ada). Kalau koordinat tertulis dalam format "
+                        "derajat-menit-detik (mis. 119°27'30\"E), konversi ke desimal derajat. "
+                        "Balas HANYA dengan JSON array polos (tanpa markdown/backtick/penjelasan "
+                        "apa pun), format persis: "
                         '[["longitude1","latitude1"],["longitude2","latitude2"],...]. '
-                        "Kalau tidak ada titik koordinat yang terbaca, balas []."
+                        "Kalau tidak ada titik koordinat yang terbaca sama sekali, balas: []"
                     )},
                 ],
             }],
         )
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
         text = text.replace("```json", "").replace("```", "").strip()
+        # Kalau model tetap menyelipkan teks lain di luar instruksi, ambil
+        # bagian yang berbentuk array JSON saja (dari '[' pertama sampai ']' terakhir).
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        if m:
+            text = m.group(0)
         pairs = json.loads(text)
+
         hasil = []
         for p in pairs:
-            if isinstance(p, (list, tuple)) and len(p) >= 2:
-                hasil.append([str(len(hasil) + 1), str(p[0]).strip(), str(p[1]).strip()])
-        return hasil
+            if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+                continue
+            try:
+                lon = float(str(p[0]).replace(",", "."))
+                lat = float(str(p[1]).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            # Validasi kasar: koordinat wilayah Indonesia (longitude 90-142, latitude -12..8)
+            if not (90 <= lon <= 142 and -12 <= lat <= 8):
+                continue
+            hasil.append([str(len(hasil) + 1), str(p[0]).strip(), str(p[1]).strip()])
+
+        if not hasil:
+            return [], "Gambar berhasil dibaca AI, tapi tidak ditemukan titik koordinat yang valid di dalamnya."
+        return hasil, f"Berhasil membaca {len(hasil)} titik koordinat dari gambar."
     except Exception:
         traceback.print_exc()
-        return []
+        return [], "Terjadi kesalahan saat membaca gambar lewat AI. Silakan isi koordinat manual."
 
 
 def fetch_staff_list(force=False):
@@ -545,6 +658,7 @@ HEADER_HTML = """
   <div class="user-badge">
     {% if session.user.picture %}<img src="{{ session.user.picture }}" class="user-avatar" alt="">{% endif %}
     <span class="user-greet">Halo, {{ session.user.name }}</span>
+    <a href="/riwayat-saya" class="logout-link" style="color:var(--navy);background:#fff;">Riwayat Saya</a>
     <a href="/logout" class="logout-link">Keluar</a>
   </div>
   {% else %}
@@ -712,11 +826,15 @@ REVIEW_CSS = """
 @media (max-width: 980px) { .review-grid { grid-template-columns:1fr; } }
 
 .sticky-bar { position:sticky; top:0; z-index:6; background:var(--bg); padding:14px 0 10px; }
+.sticky-bar-row { display:flex; gap:10px; }
 .sticky-bar button { width:100%; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
   border:none; padding:15px; border-radius:12px; font-size:14.5px; font-weight:800; cursor:pointer;
   display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 6px 18px rgba(30,99,199,.28); }
 .sticky-bar button svg { width:19px; height:19px; flex:none; }
 .sticky-bar button:hover { filter:brightness(1.05); }
+.sticky-bar button.btn-draft { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
+  box-shadow:none; flex:none; width:auto; white-space:nowrap; padding:15px 20px; }
+.sticky-bar button.btn-draft:hover { background:#f3f8ff; filter:none; }
 .back-link { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700;
   color:var(--blue); margin-top:14px; }
 
@@ -936,7 +1054,7 @@ SELECT_FIELDS = {
         "allow_other": False,
     },
     ("prop", "lamun_kondisi"): {
-        "options": ["Sangat kaya", "Kurang Sehat", "Miskin"],
+        "options": ["Kaya/Sehat", "Kurang Kaya/Kurang Sehat", "Miskin"],
         "allow_other": False,
     },
     ("prop", "karang_ada"): {
@@ -944,10 +1062,45 @@ SELECT_FIELDS = {
         "allow_other": False,
     },
     ("prop", "karang_kondisi"): {
-        "options": ["Sangat Baik", "Baik", "Sedang"],
+        "options": ["Baik Sekali", "Baik", "Sedang", "Buruk"],
         "allow_other": False,
     },
 }
+
+# Kriteria baku kondisi ekosistem (sesuai dokumen resmi KRITERIA_KONDISI) --
+# dipakai untuk menentukan otomatis label kondisi berdasarkan persentase
+# tutupan yang diinput, supaya user tidak perlu pilih manual satu-satu.
+# Format: list of (batas_bawah_persen, batas_atas_persen, label_kondisi).
+KRITERIA_MANGROVE = [
+    (75, 100.001, "Sangat Padat"),
+    (50, 75, "Sedang"),
+    (0, 50, "Jarang"),
+]
+KRITERIA_LAMUN = [
+    (60, 100.001, "Kaya/Sehat"),
+    (30, 60, "Kurang Kaya/Kurang Sehat"),
+    (0, 30, "Miskin"),
+]
+KRITERIA_KARANG = [
+    (75, 100.001, "Baik Sekali"),
+    (50, 75, "Baik"),
+    (25, 50, "Sedang"),
+    (0, 25, "Buruk"),
+]
+
+
+def klasifikasi_kondisi(persen_str, kriteria):
+    """Cari label kondisi yang sesuai dari daftar kriteria berdasarkan nilai
+    persentase (string, boleh pakai koma atau titik). Kembalikan '' kalau
+    nilainya tidak valid/tidak bisa diparse."""
+    try:
+        v = float(str(persen_str).replace(",", ".").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return ""
+    for lo, hi, label in kriteria:
+        if lo <= v < hi:
+            return label
+    return ""
 
 # Kode wilayah BPS untuk tiap provinsi (dipakai untuk fetch data Kabupaten/Kecamatan/Desa
 # secara berjenjang dari API publik https://emsifa.github.io/api-wilayah-indonesia).
@@ -1052,6 +1205,54 @@ def render_login_pegawai_page(error=None):
     return home_rendered.replace("</body>", overlay + "</body>")
 
 
+def render_riwayat_saya_page():
+    user = session.get("user")
+    if not user:
+        return render_login_pegawai_page()
+
+    kode = user.get("kode", "")
+    drafts = read_user_drafts(kode) if kode else []
+
+    if drafts:
+        rows = "".join(
+            f'<tr><td>{d.get("waktu","-")}</td>'
+            f'<td>{d.get("nama_pemohon") or "-"}</td>'
+            f'<td>{d.get("nama_perusahaan") or "-"}</td>'
+            f'<td><a href="/riwayat-saya/lanjutkan/{d.get("job_id")}" class="ex-fill" style="text-decoration:none;display:inline-block;">Lanjutkan Isi</a></td></tr>'
+            for d in drafts
+        )
+        table_html = (
+            '<table class="history-table"><thead><tr>'
+            "<th>Waktu</th><th>Nama Pemohon</th><th>Nama Perusahaan/Instansi</th><th>Aksi</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    else:
+        table_html = '<div class="history-empty">Belum ada riwayat isian form yang tersimpan. Riwayat akan muncul di sini setiap kali Anda mengisi form manual, dan otomatis terhapus sendiri setelah ' + str(DRAFT_MAX_AGE_DAYS) + ' hari.</div>'
+
+    body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Isian Saya <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(drafts)} tersimpan &middot; otomatis terhapus setelah {DRAFT_MAX_AGE_DAYS} hari)</span></h3>
+    {table_html}
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Isian Saya &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Isian Saya</h1>
+  <p>Daftar isian form manual yang pernah Anda mulai. Klik "Lanjutkan Isi" untuk mengisi ulang form secara otomatis dari data yang tersimpan (lampiran gambar/laporan perlu diunggah ulang).</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
 def render_history_page():
     logged_in = bool(session.get("user"))
 
@@ -1104,7 +1305,7 @@ def render_history_page():
 </body></html>"""
 
 
-def render_manual_form_page(error=None):
+def render_manual_form_page(error=None, prefill_data=None):
     prop_groups = []
     for group_title, fields in FIELD_GROUPS:
         prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
@@ -1235,16 +1436,16 @@ def render_manual_form_page(error=None):
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
     <div class="manual-upload-card">
-      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word)</h3>
+      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
       <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut</a>,
-      unduh hasilnya (PDF atau Word), lalu unggah di bawah ini.</div>
+      unduh hasilnya (PDF atau Word), lalu unggah di bawah ini. Belum sempat siap? Boleh dikosongkan dulu &mdash; pakai tombol <b>"Unduh Draft"</b> di bawah untuk mengunduh draft Proposal saja terlebih dulu, lengkapi Laporannya nanti.</div>
       <div class="dropzone" id="dzManual">
         """ + ICONS["cloud"] + """
         <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
         <div class="dz-sub">atau klik untuk memilih file</div>
         <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
-        <input type="file" name="laporan" id="laporanManual" accept="application/pdf,.docx" required>
+        <input type="file" name="laporan" id="laporanManual" accept="application/pdf,.docx">
       </div>
       <div class="file-chip" id="chipManual">
         <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="nameManual"></span></div>
@@ -1254,7 +1455,10 @@ def render_manual_form_page(error=None):
     </div>
 
     <div class="sticky-bar">
-      <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+      <div class="sticky-bar-row">
+        <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+        <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-draft">""" + ICONS["download"] + """ Unduh Draft</button>
+      </div>
     </div>
 
     <div class="review-card">
@@ -1598,6 +1802,34 @@ document.querySelectorAll('.decimal-only-input').forEach(function(input) {
   });
 });
 
+// Auto-klasifikasi kondisi ekosistem (mangrove/lamun/karang) berdasarkan
+// persentase yang diinput, sesuai kriteria baku resmi (KRITERIA_KONDISI).
+// User tetap bisa ubah manual kalau perlu -- ini cuma bantu isi otomatis.
+(function() {
+  var KRITERIA = {
+    'prop__mangrove_persen': { select: 'prop__mangrove_kondisi', rules: [[75,999,'Sangat Padat'],[50,75,'Sedang'],[0,50,'Jarang']] },
+    'lamun_persen': { select: 'lamun_kondisi', rules: [[60,999,'Kaya/Sehat'],[30,60,'Kurang Kaya/Kurang Sehat'],[0,30,'Miskin']] },
+    'karang_persen_manual': { select: 'karang_kondisi', rules: [[75,999,'Baik Sekali'],[50,75,'Baik'],[25,50,'Sedang'],[0,25,'Buruk']] },
+  };
+  Object.keys(KRITERIA).forEach(function(inputId) {
+    var input = document.getElementById(inputId);
+    var cfg = KRITERIA[inputId];
+    var select = document.getElementById(cfg.select);
+    if (!input || !select) return;
+    input.addEventListener('input', function() {
+      var v = parseFloat(input.value.replace(',', '.'));
+      if (isNaN(v)) return;
+      for (var i = 0; i < cfg.rules.length; i++) {
+        var lo = cfg.rules[i][0], hi = cfg.rules[i][1], label = cfg.rules[i][2];
+        if (v >= lo && v < hi) {
+          select.value = label;
+          break;
+        }
+      }
+    });
+  });
+})();
+
 // Tanggal Penyusunan: pilih lewat kalender, otomatis dikonversi ke format Indonesia (DD Bulan YYYY)
 document.querySelectorAll('.date-picker-input').forEach(function(picker) {
   var hidden = document.getElementById(picker.id.replace('_picker', ''));
@@ -1817,6 +2049,58 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   });
 });
 </script>
+""" + (f"""
+<script>
+// Isi ulang form otomatis dari draft riwayat pengisian sebelumnya ("Lanjutkan")
+(function() {{
+  var data = {json.dumps(prefill_data)};
+
+  function setField(name, val) {{
+    if (typeof val !== 'string') return;
+    var els = document.getElementsByName(name);
+    if (!els.length) {{
+      var byId = document.getElementById(name);
+      if (byId) els = [byId];
+    }}
+    Array.prototype.forEach.call(els, function(el) {{
+      if (el.type === 'checkbox') {{ el.checked = (val === true || val === 'true'); }}
+      else if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+        el.value = val;
+        el.dispatchEvent(new Event('change'));
+        el.dispatchEvent(new Event('input'));
+      }}
+    }});
+  }}
+
+  Object.keys(data).forEach(function(key) {{
+    if (key.startsWith('_')) return;
+    var val = data[key];
+    if (key === 'koordinat' && Array.isArray(val)) {{
+      var ta = document.getElementById('koordinat_manual');
+      if (ta) ta.value = val.map(function(row) {{ return row[1] + '\\t' + row[2]; }}).join('\\n');
+      return;
+    }}
+    if (key === '_lokasi_parts' && Array.isArray(val)) {{
+      var labels = ['prop_loc__0', 'prop_loc__1', 'prop_loc__2', 'prop_loc__3'];
+      val.forEach(function(v, i) {{ if (labels[i]) setField(labels[i], v); }});
+      return;
+    }}
+    if (typeof val === 'boolean') {{
+      var cb = document.getElementsByName(key)[0];
+      if (cb && cb.type === 'checkbox') cb.checked = val;
+      return;
+    }}
+    if (typeof val !== 'string') return;
+    // Field dari FIELD_GROUPS (mis. "Nama Pemohon") pakai nama HTML "prop__Nama_Pemohon"
+    // (spasi/garis-miring diganti underscore) -- coba key asli dulu, baru varian ini.
+    setField(key, val);
+    var transformed = 'prop__' + key.replace(/[ /]/g, '_');
+    if (transformed !== key) setField(transformed, val);
+  }});
+  document.querySelectorAll('details.acc-item').forEach(function(d) {{ d.open = true; }});
+}})();
+</script>
+""" if prefill_data else "") + """
 </body></html>"""
 
 
@@ -1848,6 +2132,10 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
         )
 
     error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    koordinat_pesan = prop_data.get("_koordinat_file_pesan", "")
+    if koordinat_pesan:
+        icon = "\u2705" if "Berhasil" in koordinat_pesan else "\u2139\ufe0f"
+        error_html += f'<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">{icon} {koordinat_pesan}</div>'
 
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
@@ -1999,6 +2287,22 @@ def history_page():
     return render_template_string(render_history_page())
 
 
+@app.route("/riwayat-saya")
+def riwayat_saya_page():
+    return render_template_string(render_riwayat_saya_page())
+
+
+@app.route("/riwayat-saya/lanjutkan/<job_id>")
+def riwayat_saya_lanjutkan(job_id):
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    draft = load_draft(user["kode"], job_id)
+    if not draft:
+        return render_template_string(render_riwayat_saya_page())
+    return render_template_string(render_manual_form_page(prefill_data=draft.get("prop_data", {})))
+
+
 @app.route("/review", methods=["POST"])
 def review():
     proposal_file = request.files.get("proposal")
@@ -2052,120 +2356,140 @@ def proposal_manual_form():
     return render_template_string(render_manual_form_page())
 
 
+def build_prop_data_from_manual_form(form, files):
+    """Bangun prop_data & prop_images dari form isian manual (dipakai baik
+    untuk alur submit-ke-review biasa maupun unduh-draft-langsung)."""
+    prop_data = {}
+    prop_data, _ = apply_form_values(form, prop_data, {})
+    prop_data["non_reklamasi"] = "non_reklamasi" in form
+    prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in form
+    prop_data["non_strategis"] = "non_strategis" in form
+    prop_data["kegiatan_status"] = form.get("kegiatan_status", "")
+    prop_data["sumber_peta"] = form.get("sumber_peta", "")
+    prop_data["deskripsi_kegiatan"] = form.get("deskripsi_kegiatan", "")
+    prop_data["manfaat_kegiatan"] = form.get("manfaat_kegiatan", "")
+    prop_data["tujuan_kegiatan"] = form.get("tujuan_kegiatan", "")
+    prop_data["instalasi_bangunan"] = form.get("instalasi_bangunan", "")
+    prop_data["instalasi_posisi"] = form.get("instalasi_posisi", "")
+    prop_data["jadwal_kegiatan"] = form.get("jadwal_kegiatan", "")
+    dukung_list = []
+    if "dukung_nib" in form:
+        dukung_list.append("NIB")
+    if "dukung_sertifikat" in form:
+        dukung_list.append("Sertifikat Kepemilikan Lahan Darat")
+    if "dukung_izin_lingkungan" in form:
+        dukung_list.append("Surat Izin Lingkungan")
+    if "dukung_ba_sosialisasi" in form:
+        dukung_list.append("Berita Acara Sosialisasi")
+    prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
+
+    prop_data["mangrove_ada"] = form.get("mangrove_ada", "")
+    prop_data["mangrove_spesies"] = form.get("prop__mangrove_spesies", "")
+    prop_data["mangrove_persen"] = form.get("prop__mangrove_persen", "")
+    prop_data["mangrove_kondisi"] = form.get("prop__mangrove_kondisi", "")
+    prop_data["lamun_ada_manual"] = form.get("lamun_ada_manual", "")
+    prop_data["lamun_spesies"] = form.get("lamun_spesies", "")
+    prop_data["lamun_persen"] = form.get("lamun_persen", "")
+    prop_data["lamun_kondisi"] = form.get("lamun_kondisi", "")
+    prop_data["karang_ada"] = form.get("karang_ada", "")
+    prop_data["karang_spesies"] = form.get("karang_spesies", "")
+    prop_data["karang_persen_manual"] = form.get("karang_persen_manual", "")
+    prop_data["karang_kondisi"] = form.get("karang_kondisi", "")
+
+    prop_data["batas_utara"] = form.get("batas_utara", "")
+    prop_data["batas_timur"] = form.get("batas_timur", "")
+    prop_data["batas_selatan"] = form.get("batas_selatan", "")
+    prop_data["batas_barat"] = form.get("batas_barat", "")
+    prop_data["deskripsi_pemanfaatan_sekitar"] = form.get("deskripsi_pemanfaatan_sekitar", "")
+    prop_data["mata_pencaharian"] = form.get("mata_pencaharian", "")
+    prop_data["sumber_data_sosek"] = form.get("sumber_data_sosek", "")
+    prop_data["tahun_data_sosek"] = form.get("tahun_data_sosek", "")
+    prop_data["aksesibilitas_lokasi"] = form.get("aksesibilitas_lokasi", "")
+
+    koordinat = []
+    koordinat_file_pesan = None
+    koordinat_file = files.get("upload_koordinat")
+    if koordinat_file and koordinat_file.filename:
+        hasil_file, koordinat_file_pesan = parse_koordinat_file(koordinat_file)
+        koordinat.extend(hasil_file)
+    for line in form.get("koordinat_manual", "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) == 3 and any(parts):
+                koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
+        else:
+            parts = line.split()
+            if len(parts) == 2:
+                koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
+    prop_data["koordinat"] = koordinat
+    if koordinat_file_pesan:
+        prop_data["_koordinat_file_pesan"] = koordinat_file_pesan
+
+    def file_ext(filename):
+        ext = os.path.splitext(filename)[1].lstrip(".").lower()
+        return "jpg" if ext == "jpeg" else ext
+
+    ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
+
+    prop_images = []
+    image_field_tags = [
+        ("img_siteplan", "siteplan"),
+        ("img_peta_lokasi", "peta_lokasi"),
+        ("img_foto_mangrove", "foto_mangrove"),
+        ("img_foto_karang_insitu", "foto_karang_insitu"),
+        ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
+        ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
+        ("img_foto_lamun", "foto_lamun"),
+        ("img_aksesibilitas", "gambar_aksesibilitas"),
+        ("img_sertifikat_lahan", "sertifikat_lahan"),
+        ("img_dok_sosialisasi", "dok_sosialisasi"),
+        ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
+    ]
+    for field_name, tag in image_field_tags:
+        for f in files.getlist(field_name):
+            if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
+                prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
+
+    return prop_data, prop_images
+
+
+EMPTY_LAP_DATA = {}  # dipakai saat generate draft tanpa Laporan Hidro-Oseanografi
+
+
 @app.route("/proposal-manual", methods=["POST"])
 def proposal_manual_submit():
     laporan_file = request.files.get("laporan")
-    if not laporan_file or laporan_file.filename == "":
-        return render_template_string(render_manual_form_page(error="Mohon unggah file Laporan Hidro-Oseanografi (PDF atau Word).")), 400
-    if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
-        return render_template_string(render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx).")), 400
-    laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+    laporan_ext = None
+    if laporan_file and laporan_file.filename:
+        if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            return render_template_string(render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx).")), 400
+        laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
 
     job_store.cleanup_old_jobs(JOBS_DIR)
 
     job_id = uuid.uuid4().hex[:12]
     tmp_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(tmp_dir, exist_ok=True)
-    laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
-    laporan_file.save(laporan_path)
+    laporan_path = None
+    if laporan_ext:
+        laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
+        laporan_file.save(laporan_path)
 
     try:
-        prop_data = {}
-        prop_data, _ = apply_form_values(request.form, prop_data, {})
-        prop_data["non_reklamasi"] = "non_reklamasi" in request.form
-        prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in request.form
-        prop_data["non_strategis"] = "non_strategis" in request.form
-        prop_data["kegiatan_status"] = request.form.get("kegiatan_status", "")
-        prop_data["sumber_peta"] = request.form.get("sumber_peta", "")
-        prop_data["deskripsi_kegiatan"] = request.form.get("deskripsi_kegiatan", "")
-        prop_data["manfaat_kegiatan"] = request.form.get("manfaat_kegiatan", "")
-        prop_data["tujuan_kegiatan"] = request.form.get("tujuan_kegiatan", "")
-        prop_data["instalasi_bangunan"] = request.form.get("instalasi_bangunan", "")
-        prop_data["instalasi_posisi"] = request.form.get("instalasi_posisi", "")
-        prop_data["jadwal_kegiatan"] = request.form.get("jadwal_kegiatan", "")
-        dukung_list = []
-        if "dukung_nib" in request.form:
-            dukung_list.append("NIB")
-        if "dukung_sertifikat" in request.form:
-            dukung_list.append("Sertifikat Kepemilikan Lahan Darat")
-        if "dukung_izin_lingkungan" in request.form:
-            dukung_list.append("Surat Izin Lingkungan")
-        if "dukung_ba_sosialisasi" in request.form:
-            dukung_list.append("Berita Acara Sosialisasi")
-        prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
 
-        prop_data["mangrove_ada"] = request.form.get("mangrove_ada", "")
-        prop_data["mangrove_spesies"] = request.form.get("prop__mangrove_spesies", "")
-        prop_data["mangrove_persen"] = request.form.get("prop__mangrove_persen", "")
-        prop_data["mangrove_kondisi"] = request.form.get("prop__mangrove_kondisi", "")
-        prop_data["lamun_ada_manual"] = request.form.get("lamun_ada_manual", "")
-        prop_data["lamun_spesies"] = request.form.get("lamun_spesies", "")
-        prop_data["lamun_persen"] = request.form.get("lamun_persen", "")
-        prop_data["lamun_kondisi"] = request.form.get("lamun_kondisi", "")
-        prop_data["karang_ada"] = request.form.get("karang_ada", "")
-        prop_data["karang_spesies"] = request.form.get("karang_spesies", "")
-        prop_data["karang_persen_manual"] = request.form.get("karang_persen_manual", "")
-        prop_data["karang_kondisi"] = request.form.get("karang_kondisi", "")
-
-        prop_data["batas_utara"] = request.form.get("batas_utara", "")
-        prop_data["batas_timur"] = request.form.get("batas_timur", "")
-        prop_data["batas_selatan"] = request.form.get("batas_selatan", "")
-        prop_data["batas_barat"] = request.form.get("batas_barat", "")
-        prop_data["deskripsi_pemanfaatan_sekitar"] = request.form.get("deskripsi_pemanfaatan_sekitar", "")
-        prop_data["mata_pencaharian"] = request.form.get("mata_pencaharian", "")
-        prop_data["sumber_data_sosek"] = request.form.get("sumber_data_sosek", "")
-        prop_data["tahun_data_sosek"] = request.form.get("tahun_data_sosek", "")
-        prop_data["aksesibilitas_lokasi"] = request.form.get("aksesibilitas_lokasi", "")
-
-        koordinat = []
-        koordinat_file = request.files.get("upload_koordinat")
-        if koordinat_file and koordinat_file.filename:
-            hasil_file = parse_koordinat_file(koordinat_file)
-            koordinat.extend(hasil_file)
-        for line in request.form.get("koordinat_manual", "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if "|" in line:
-                # format lama: Nomor | Longitude | Latitude
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) == 3 and any(parts):
-                    koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
-            else:
-                # format resmi: Longitude [spasi/tab] Latitude -> nomor titik otomatis
-                parts = line.split()
-                if len(parts) == 2:
-                    koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
-        prop_data["koordinat"] = koordinat
-
-        def file_ext(filename):
-            ext = os.path.splitext(filename)[1].lstrip(".").lower()
-            return "jpg" if ext == "jpeg" else ext
-
-        ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
-
-        prop_images = []
-        image_field_tags = [
-            ("img_siteplan", "siteplan"),
-            ("img_peta_lokasi", "peta_lokasi"),
-            ("img_foto_mangrove", "foto_mangrove"),
-            ("img_foto_karang_insitu", "foto_karang_insitu"),
-            ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
-            ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
-            ("img_foto_lamun", "foto_lamun"),
-            ("img_aksesibilitas", "gambar_aksesibilitas"),
-            ("img_sertifikat_lahan", "sertifikat_lahan"),
-            ("img_dok_sosialisasi", "dok_sosialisasi"),
-            ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
-        ]
-        for field_name, tag in image_field_tags:
-            for f in request.files.getlist(field_name):
-                if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
-                    prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
-
-        lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+        if laporan_path:
+            lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+        else:
+            lap_data, lap_images = dict(EMPTY_LAP_DATA), []
 
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
+        current_user = session.get("user")
+        if current_user and current_user.get("kode"):
+            save_draft(current_user["kode"], job_id, prop_data)
 
         preview_docx_path = os.path.join(tmp_dir, "preview.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
@@ -2180,6 +2504,51 @@ def proposal_manual_submit():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return render_template_string(render_review_page(job_id, prop_data, lap_data, preview_html))
+
+
+@app.route("/proposal-manual/draft", methods=["POST"])
+def proposal_manual_draft():
+    """Unduh draft Proposal langsung (TANPA menunggu/menggabung Laporan
+    Hidro-Oseanografi) -- untuk staf yang ingin cepat mengunduh draft
+    berisi data yang sudah diisi sejauh ini, sebelum melengkapi Laporan
+    di kesempatan berikutnya."""
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        lap_data, lap_images = dict(EMPTY_LAP_DATA), []
+
+        current_user = session.get("user")
+        if current_user and current_user.get("kode"):
+            save_draft(current_user["kode"], uuid.uuid4().hex[:12], prop_data)
+
+        tmp_path = os.path.join(OUTPUT_DIR, f"Draft_{uuid.uuid4().hex[:12]}.docx")
+        build_document(prop_data, prop_images, lap_data, lap_images, tmp_path)
+        log_history_entry(
+            nama_pemohon=prop_data.get("Nama Pemohon", ""),
+            nama_perusahaan=prop_data.get("Nama Perusahaan/Instansi", ""),
+            sumber="Unduh Draft (Tanpa Laporan)",
+        )
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(render_manual_form_page(
+            error="Terjadi kesalahan saat membuat draft. Silakan coba lagi."
+        )), 500
+
+    @after_this_request
+    def cleanup(response):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return response
+
+    perusahaan = prop_data.get("Nama Perusahaan/Instansi", "PKKPRL").replace(" ", "_").replace(".", "")
+    download_name = f"Draft_Proposal_PKKPRL_{perusahaan}.docx"
+    return send_file(
+        tmp_path,
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @app.route("/finalize", methods=["POST"])

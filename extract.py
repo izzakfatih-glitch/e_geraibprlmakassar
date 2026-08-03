@@ -237,12 +237,84 @@ def extract_proposal_docx(docx_path):
 # tidak selalu reliable; urutan xref lebih konsisten untuk template ini.
 LAPORAN_IMAGE_ORDER = ["mawar_gelombang", "mawar_arus", "siklus_pasut", "peta_ekosistem", "profil_batimetri"]
 
+# Heading/judul gambar -> tag, dicek di teks SEBELUM gambar muncul (per halaman
+# untuk PDF, per paragraf untuk DOCX) supaya gambar ditandai sesuai konteks
+# aslinya -- bukan cuma tebakan urutan tetap yang bisa keliru kalau urutan
+# gambar di dokumen sumber ternyata berbeda dari yang diasumsikan.
+LAPORAN_HEADINGS = [
+    (r"mawar\s*gelombang", "mawar_gelombang"),
+    (r"mawar\s*arus", "mawar_arus"),
+    (r"(fluktuasi\s*)?pasang\s*surut", "siklus_pasut"),
+    (r"siklus\s*pasut", "siklus_pasut"),
+    (r"(peta\s*)?sebaran\s*(spasial\s*)?ekosistem", "peta_ekosistem"),
+    (r"peta\s*ekosistem", "peta_ekosistem"),
+    (r"profil\s*(garis\s*)?batimetri", "profil_batimetri"),
+    (r"profil\s*dasar\s*laut", "profil_batimetri"),
+    (r"kontur\s*batimetri", "profil_batimetri"),
+]
+
+
+def _detect_laporan_tag(text_before, current_tag):
+    """Cari heading yang paling terakhir muncul di teks sebelum gambar ini,
+    untuk menentukan tag yang tepat. Kalau tidak ada heading baru yang cocok,
+    pertahankan tag section terakhir yang diketahui (gambar lanjutan di
+    section yang sama)."""
+    matches = []
+    for pattern, tag in LAPORAN_HEADINGS:
+        for m in re.finditer(pattern, text_before, re.IGNORECASE):
+            matches.append((m.start(), tag))
+    if matches:
+        matches.sort(key=lambda x: x[0])
+        return matches[-1][1]
+    return current_tag
+
+
+# Heading penanda batas section untuk menangkap NARASI UTUH (bukan cuma
+# angka) dari Laporan Hidro-Oseanografi -- supaya deskripsi/analisis asli
+# yang ditulis surveyor tetap masuk ke dokumen final, bukan sekadar
+# kalimat template generik yang cuma diisi angka.
+NARASI_SECTIONS = [
+    (r"\d\.\s*Gelombang\b", "gelombang"),
+    (r"\d\.\s*Arus\b", "arus"),
+    (r"\d\.\s*Pasang\s*Surut\b", "pasut"),
+    (r"[A-Z]\.\s*Profil\s*Dasar\s*Laut\b", "batimetri"),
+    (r"Profil\s*Batimetri\b", "batimetri"),
+    (r"(identifikasi|kondisi)\s*ekosistem\b", "ekosistem"),
+]
+
+MAX_NARASI_LEN = 2000  # batas aman biar tidak "kebablasan" ambil isi dokumen kalau heading berikutnya tidak kedeteksi
+
+
+def extract_narasi_sections(full_text):
+    """Cari posisi tiap heading section, lalu ambil semua teks di antara
+    satu heading dengan heading berikutnya sebagai narasi utuh section itu.
+    Mengembalikan dict {tag: teks_narasi}. Kalau heading tidak ditemukan
+    sama sekali, dict yang dikembalikan kosong (pemanggil lalu pakai
+    fallback kalimat template seperti sebelumnya)."""
+    matches = []
+    for pattern, tag in NARASI_SECTIONS:
+        for m in re.finditer(pattern, full_text, re.IGNORECASE):
+            matches.append((m.start(), m.end(), tag))
+    if not matches:
+        return {}
+    matches.sort(key=lambda x: x[0])
+
+    narasi = {}
+    for i, (start, end, tag) in enumerate(matches):
+        next_start = matches[i + 1][0] if i + 1 < len(matches) else len(full_text)
+        chunk = full_text[end:next_start].strip(" .:-")
+        chunk = chunk[:MAX_NARASI_LEN].strip()
+        if chunk and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
+            narasi[tag] = chunk
+    return narasi
+
 
 def _parse_laporan_text(full_text):
     """Semua regex parsing Laporan Hidro-Oseanografi, dipakai bersama baik
     sumbernya PDF maupun DOCX -- karena keduanya sama-sama sudah berupa teks
     biasa pada titik ini, regex tidak peduli asalnya dari format file apa."""
     data = {}
+    data["_narasi"] = extract_narasi_sections(full_text)
 
     m = re.search(r"LOKASI TITIK PUSAT RENCANA KEGIATAN\s*(.+?)\s*I\.\s*PENDAHULUAN", full_text)
     data["lokasi_studi"] = norm(m.group(1)) if m else ""
@@ -311,11 +383,17 @@ def extract_laporan(pdf_path):
     full_text = norm(full_text_raw)
     data = _parse_laporan_text(full_text)
 
-    # ---------------- IMAGES ----------------
+    # ---------------- IMAGES (deteksi berdasar heading per-halaman, dengan
+    # fallback ke urutan tetap untuk tag yang belum kepakai) ----------------
     seen_hash = set()
     images = []
+    used_tags = set()
+    current_tag = None
     for pnum in range(len(doc)):
         page = doc[pnum]
+        page_text_norm = norm(page.get_text())
+        current_tag = _detect_laporan_tag(page_text_norm, current_tag)
+
         imglist = page.get_images(full=True)
         for i, img in enumerate(imglist):
             xref = img[0]
@@ -326,8 +404,11 @@ def extract_laporan(pdf_path):
             if w < 150 or ht < 150 or h in seen_hash:
                 continue
             seen_hash.add(h)
-            order_idx = len(images)
-            tag = LAPORAN_IMAGE_ORDER[order_idx] if order_idx < len(LAPORAN_IMAGE_ORDER) else "lainnya"
+            if current_tag and current_tag not in used_tags:
+                tag = current_tag
+            else:
+                tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
+            used_tags.add(tag)
             images.append({
                 "tag": tag, "bytes": data_bytes, "ext": base["ext"],
                 "width": w, "height": ht, "page": pnum + 1,
@@ -342,7 +423,6 @@ def extract_laporan_docx(docx_path):
     dibaca dibanding PDF (tidak ada masalah urutan/pemotongan kata saat
     di-convert ke teks), sehingga regex lebih jarang gagal."""
     from docx import Document
-    import zipfile
 
     doc = Document(docx_path)
 
@@ -355,27 +435,40 @@ def extract_laporan_docx(docx_path):
     full_text = norm(full_text_raw)
     data = _parse_laporan_text(full_text)
 
-    # ---------------- IMAGES ----------------
-    # Ambil semua gambar yang tertanam di file docx (folder word/media/ di dalam zip),
-    # urut berdasarkan nama file (biasanya sesuai urutan penyisipan: image1, image2, dst)
-    # lalu tandai sesuai urutan yang sama seperti versi PDF.
+    # ---------------- IMAGES (lacak per-paragraf, deteksi heading -- sama
+    # seperti versi PDF, tapi resolusinya lebih presisi karena docx tidak
+    # punya batas halaman tetap) ----------------
+    from docx.oxml.ns import qn as _qn
     seen_hash = set()
     images = []
-    with zipfile.ZipFile(docx_path) as z:
-        media_files = sorted(
-            [n for n in z.namelist() if n.startswith("word/media/")],
-            key=lambda n: n
-        )
-        for name in media_files:
-            data_bytes = z.read(name)
-            h = hashlib.md5(data_bytes).hexdigest()
-            if h in seen_hash:
-                continue
-            seen_hash.add(h)
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else "png"
-            order_idx = len(images)
-            tag = LAPORAN_IMAGE_ORDER[order_idx] if order_idx < len(LAPORAN_IMAGE_ORDER) else "lainnya"
-            images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
+    used_tags = set()
+    current_tag = None
+    for para in doc.paragraphs:
+        para_text_norm = norm(para.text)
+        if para_text_norm:
+            current_tag = _detect_laporan_tag(para_text_norm, current_tag)
+        for run in para.runs:
+            blips = run._element.findall(".//" + _qn("a:blip"))
+            for blip in blips:
+                rId = blip.get(_qn("r:embed"))
+                if not rId:
+                    continue
+                try:
+                    image_part = doc.part.related_parts[rId]
+                except KeyError:
+                    continue
+                data_bytes = image_part.blob
+                h = hashlib.md5(data_bytes).hexdigest()
+                if h in seen_hash:
+                    continue
+                seen_hash.add(h)
+                if current_tag and current_tag not in used_tags:
+                    tag = current_tag
+                else:
+                    tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
+                used_tags.add(tag)
+                ext = image_part.content_type.split("/")[-1] if "/" in image_part.content_type else "png"
+                images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
 
     return data, images
 
