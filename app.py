@@ -42,6 +42,10 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
+STAFF_SHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
+    "/export?format=csv&gid=0"
+)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(JOBS_DIR, exist_ok=True)
@@ -128,6 +132,51 @@ def read_history(limit=200):
         traceback.print_exc()
         return []
     return list(reversed(entries))[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Login sederhana pegawai -- kredensial diambil LANGSUNG dari Google Sheet
+# ("Kode Nama" = username, "Kode petugas" = password), di-cache sebentar
+# supaya tidak nge-fetch Google di setiap request. Kalau ada pegawai baru
+# ditambahkan di sheet, otomatis kepakai begitu cache kedaluwarsa (tanpa
+# perlu ubah kode / redeploy).
+# ---------------------------------------------------------------------------
+import csv
+import io as _io
+import time
+
+_staff_cache = {"data": {}, "fetched_at": 0}
+STAFF_CACHE_TTL = 300  # detik (5 menit)
+
+
+def fetch_staff_list(force=False):
+    now = time.time()
+    if not force and _staff_cache["data"] and (now - _staff_cache["fetched_at"]) < STAFF_CACHE_TTL:
+        return _staff_cache["data"]
+
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(STAFF_SHEET_CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8-sig")
+        reader = csv.DictReader(_io.StringIO(raw))
+        staff = {}
+        for row in reader:
+            nama = (row.get("Nama") or "").strip()
+            kode_nama = (row.get("Kode Nama") or "").strip()
+            kode_petugas = (row.get("Kode petugas") or "").strip()
+            if nama and kode_nama and kode_petugas:
+                staff[kode_nama] = {"nama": nama, "password": kode_petugas}
+        if staff:
+            _staff_cache["data"] = staff
+            _staff_cache["fetched_at"] = now
+        return _staff_cache["data"]
+    except Exception:
+        traceback.print_exc()
+        # Kalau fetch gagal (mis. sedang tidak ada internet), tetap pakai
+        # cache lama yang masih ada di memori (kalau ada), daripada error total.
+        return _staff_cache["data"]
 
 BASE_CSS = """
 :root { --navy:#1F4E79; --bg:#f4f6f8; }
@@ -388,7 +437,7 @@ HEADER_HTML = """
     <a href="/logout" class="logout-link">Keluar</a>
   </div>
   {% else %}
-  <a href="/login" class="login-btn">""" + ICONS["user"] + """ Login</a>
+  <a href="/login-pegawai" class="login-btn">""" + ICONS["user"] + """ Login</a>
   {% endif %}
 </header>
 """
@@ -808,6 +857,44 @@ def img_field_html(field_name, label, desc="", multiple=False, note=""):
     )
 
 
+def render_login_pegawai_page(error=None):
+    error_html = (
+        f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    )
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login Pegawai &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.login-card-wrap { max-width:420px; margin:60px auto; }
+.login-card-wrap .review-card h3 { justify-content:center; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<div class="review-wrap login-card-wrap">
+  """ + error_html + """
+  <div class="review-card">
+    <h3>""" + ICONS["user"] + """ Login Pegawai BPRL Makassar</h3>
+    <form method="POST" action="/login-pegawai">
+      <div class="field-row">
+        <label>Kode Nama</label>
+        <input type="text" name="kode_nama" placeholder="Contoh: 01" required autofocus inputmode="numeric">
+      </div>
+      <div class="field-row">
+        <label>Kode Petugas (Password)</label>
+        <input type="password" name="kode_petugas" placeholder="Contoh: 101" required inputmode="numeric">
+      </div>
+      <div class="sticky-bar" style="position:static;">
+        <button type="submit">""" + ICONS["user"] + """ Masuk</button>
+      </div>
+    </form>
+  </div>
+  <a href="/" class="back-link">&larr; Kembali ke halaman utama</a>
+</div>
+</body></html>"""
+
+
 def render_history_page():
     logged_in = bool(session.get("user"))
 
@@ -817,7 +904,7 @@ def render_history_page():
   <div class="review-card history-login-gate">
     <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
     <p>Riwayat hanya bisa dilihat oleh staf yang sudah login menggunakan akun Google BPRL.</p>
-    <a href="/login" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
+    <a href="/login-pegawai" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
   </div>
 </div>"""
     else:
@@ -1629,6 +1716,25 @@ def api_wilayah_proxy(level, code):
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "message": str(e), "data": []}, 502
+
+
+@app.route("/login-pegawai", methods=["GET"])
+def login_pegawai_form():
+    return render_template_string(render_login_pegawai_page())
+
+
+@app.route("/login-pegawai", methods=["POST"])
+def login_pegawai_submit():
+    kode_nama = (request.form.get("kode_nama") or "").strip()
+    kode_petugas = (request.form.get("kode_petugas") or "").strip()
+    staff = fetch_staff_list()
+    entry = staff.get(kode_nama)
+    if entry and entry["password"] == kode_petugas:
+        session["user"] = {"name": entry["nama"], "email": "", "picture": "", "kode": kode_nama}
+        return redirect(url_for("index"))
+    return render_template_string(render_login_pegawai_page(
+        error="Kode Nama atau Kode Petugas salah. Mohon periksa kembali."
+    ))
 
 
 @app.route("/login")
