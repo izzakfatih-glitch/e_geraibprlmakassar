@@ -509,23 +509,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p("Berdasarkan hasil survei/pengamatan langsung, tidak terdapat pemanfaatan ruang laut oleh pihak lain "
         "di sekitar lokasi permohonan. Rencana kegiatan disusun dengan memperhatikan kepentingan nelayan "
         "tradisional dan masyarakat, serta tidak menghalangi akses pelayaran yang sudah ada.")
-    batas_utara = prop.get("batas_utara", "")
-    batas_timur = prop.get("batas_timur", "")
-    batas_selatan = prop.get("batas_selatan", "")
-    batas_barat = prop.get("batas_barat", "")
-    if batas_utara or batas_timur or batas_selatan or batas_barat:
-        kalimat_arah = ["Pemanfaatan ruang laut di sekitar lokasi permohonan didominasi oleh aktivitas "
-                        "penangkapan ikan skala kecil di seluruh penjuru arah mata angin."]
-        if batas_utara:
-            kalimat_arah.append(f"Di sebelah utara, lokasi berbatasan dengan {batas_utara}.")
-        if batas_timur:
-            kalimat_arah.append(f"Pada sisi timur, kawasan berbatasan dengan {batas_timur}.")
-        if batas_selatan:
-            kalimat_arah.append(f"Sementara itu, di sebelah selatan terdapat {batas_selatan}.")
-        if batas_barat:
-            kalimat_arah.append(f"Di sebelah barat berbatasan dengan {batas_barat}.")
-        b.p(" ".join(kalimat_arah))
-
     deskripsi_sekitar = prop.get("deskripsi_pemanfaatan_sekitar", "")
     if deskripsi_sekitar:
         b.p(deskripsi_sekitar)
