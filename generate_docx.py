@@ -3,6 +3,7 @@ Modul pembangun dokumen Word (proposal PKKPRL final) dari data & gambar
 hasil ekstraksi (lihat extract.py).
 """
 import io
+import re
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -45,6 +46,137 @@ def set_font(run, size=11, bold=False, italic=False, color=None):
         rFonts = OxmlElement("w:rFonts")
         rPr.append(rFonts)
     rFonts.set(qn("w:eastAsia"), FONT)
+
+
+BULAN_ID_KE_NOMOR = {
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
+}
+BULAN_ID_SINGKAT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Ags", "Sep", "Okt", "Nov", "Des"]
+
+
+def parse_jadwal_kegiatan(text):
+    """Uraikan teks 'Deskripsi Jadwal Kegiatan' menjadi daftar aktivitas.
+    Format yang diharapkan (satu atau lebih, dipisah titik):
+    "Nama Kegiatan : Bulan X - Bulan Y." Mengembalikan list of
+    (nama_kegiatan, bulan_mulai, bulan_selesai). Kalau tidak ada yang cocok
+    sama sekali, mengembalikan list kosong (pemanggil lalu memakai fallback
+    teks polos biasa)."""
+    if not text:
+        return []
+    pattern = re.compile(
+        r"([^.:]+?)\s*:\s*Bulan\s*(\d+)\s*(?:-|s/d|sampai)\s*Bulan\s*(\d+)\s*\.?",
+        re.IGNORECASE,
+    )
+    hasil = []
+    for m in pattern.finditer(text):
+        nama = m.group(1).strip(" .")
+        try:
+            mulai = int(m.group(2))
+            selesai = int(m.group(3))
+        except ValueError:
+            continue
+        if nama and selesai >= mulai:
+            hasil.append((nama, mulai, selesai))
+    return hasil
+
+
+def parse_tanggal_indonesia(text):
+    """Uraikan tanggal format 'D Bulan YYYY' (mis. '3 Agustus 2026') jadi
+    (bulan, tahun). Mengembalikan None kalau gagal."""
+    if not text:
+        return None
+    m = re.search(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", text)
+    if not m:
+        return None
+    nama_bulan = m.group(2).strip().lower()
+    bulan = BULAN_ID_KE_NOMOR.get(nama_bulan)
+    if not bulan:
+        return None
+    return bulan, int(m.group(3))
+
+
+def build_gantt_table(builder, activities, start_bulan_tahun):
+    """Buat tabel Gantt chart (rencana jadwal pelaksanaan) mirip format resmi:
+    baris tahun, baris bulan (Jan-Des disingkat), lalu 1 baris per kegiatan
+    dengan sel yang diarsir gelap pada rentang bulan aktivitas tsb berjalan."""
+    max_bulan = max(a[2] for a in activities)
+    start_month, start_year = start_bulan_tahun
+
+    # Bangun label kalender aktual untuk tiap "Bulan N" (N=1..max_bulan)
+    kalender = []
+    m, y = start_month, start_year
+    for _ in range(max_bulan):
+        kalender.append((BULAN_ID_SINGKAT[m - 1], y))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+
+    doc = builder.doc
+    ncols = 1 + max_bulan
+    table = doc.add_table(rows=0, cols=ncols)
+    table.style = "Table Grid"
+
+    # Baris 1: label tahun (digabung/merge per kelompok tahun yang sama)
+    row_year = table.add_row()
+    shade_cell(row_year.cells[0], "1F4E79")
+    row_year.cells[0].text = ""
+    i = 0
+    while i < max_bulan:
+        y = kalender[i][1]
+        j = i
+        while j < max_bulan and kalender[j][1] == y:
+            j += 1
+        start_cell = row_year.cells[1 + i]
+        if j - i > 1:
+            end_cell = row_year.cells[1 + j - 1]
+            start_cell = start_cell.merge(end_cell)
+        shade_cell(start_cell, "1F4E79")
+        p = start_cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(str(y))
+        set_font(r, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+        i = j
+
+    # Baris 2: header "Kegiatan" + nama bulan singkat
+    row_bulan = table.add_row()
+    shade_cell(row_bulan.cells[0], "1F4E79")
+    p0 = row_bulan.cells[0].paragraphs[0]
+    r0 = p0.add_run("Kegiatan")
+    set_font(r0, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    for i, (nama_bulan, _) in enumerate(kalender):
+        cell = row_bulan.cells[1 + i]
+        shade_cell(cell, "1F4E79")
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(nama_bulan)
+        set_font(r, size=9.5, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+    # Baris kegiatan
+    for nama, mulai, selesai in activities:
+        row = table.add_row()
+        cell0 = row.cells[0]
+        p0 = cell0.paragraphs[0]
+        r0 = p0.add_run(nama)
+        set_font(r0, size=9.5, bold=True)
+        for i in range(max_bulan):
+            bulan_ke = i + 1
+            cell = row.cells[1 + i]
+            cell.text = ""
+            if mulai <= bulan_ke <= selesai:
+                shade_cell(cell, "1F4E79")
+
+    # Lebar kolom: kolom "Kegiatan" lebih lebar, kolom bulan sempit & seragam
+    table.columns[0].width = Cm(3.6)
+    for i in range(max_bulan):
+        table.columns[1 + i].width = Cm(1.0)
+    for row in table.rows:
+        row.cells[0].width = Cm(3.6)
+        for i in range(max_bulan):
+            row.cells[1 + i].width = Cm(1.0)
+
+    return table
 
 
 class Builder:
@@ -279,10 +411,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         bangunan_txt = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
         b.p(f"Instalasi bangunan menetap di laut yang direncanakan berupa {bangunan_txt}{posisi_txt}.")
 
-    jadwal = prop.get("jadwal_kegiatan", "")
-    if jadwal:
-        b.labeled("Jadwal Kegiatan", jadwal)
-
     dukung = prop.get("dokumen_data_dukung", "")
     if dukung:
         b.p(f"Dokumen data dukung yang telah dimiliki oleh pelaku usaha meliputi: {dukung}.")
@@ -314,7 +442,26 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.caption(f"Gambar {img_no}. Dokumentasi Kegiatan Eksisting/Rencana yang Dimohonkan.")
         img_no += 1
 
-    b.h3("3. Reklamasi / Non-Reklamasi")
+    b.h3("3. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya")
+    activities = parse_jadwal_kegiatan(prop.get("jadwal_kegiatan", ""))
+    bangunan_txt2 = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
+    posisi_txt2 = f" yang berada di {instalasi_posisi}" if instalasi_posisi else ""
+    if activities:
+        b.p(f"Adapun kegiatan utama yang akan dilakukan ialah pembangunan dan pengembangan lokasi {jenis_kegiatan} "
+            f"akan dilakukan sebagaimana ditampilkan pada Tabel 1. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
+        start_bt = parse_tanggal_indonesia(prop.get("Tanggal Penyusunan", "")) or (
+            __import__("datetime").datetime.now().month, __import__("datetime").datetime.now().year
+        )
+        build_gantt_table(b, activities, start_bt)
+        b.caption("Tabel 1. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya.")
+    else:
+        jadwal = prop.get("jadwal_kegiatan", "")
+        if jadwal:
+            b.labeled("Jadwal Kegiatan", jadwal)
+        else:
+            b.p(NA)
+
+    b.h3("4. Reklamasi / Non-Reklamasi")
     reklamasi_txt = "tanpa reklamasi" if prop.get("non_reklamasi") else "dengan reklamasi"
     b.p(f"Kegiatan {jenis_kegiatan} yang dilakukan oleh {perusahaan} merupakan kegiatan yang dilaksanakan {reklamasi_txt}.")
 

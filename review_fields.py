@@ -33,13 +33,8 @@ FIELD_GROUPS = [
     ]),
     ("Investasi & Tenaga Kerja", [
         ("prop", "investasi", "Nilai Investasi (Rp, angka saja)"),
-        ("prop", "tenaga_kerja", "Jumlah Tenaga Kerja per Siklus"),
+        ("prop", "tenaga_kerja", "Jumlah Tenaga Kerja WNI"),
         ("prop", "tenaga_kerja_asing", "Jumlah Tenaga Kerja Asing"),
-    ]),
-    ("Ekosistem Mangrove", [
-        ("prop", "mangrove_spesies", "Spesies Mangrove Dominan"),
-        ("prop", "mangrove_persen", "Persentase Tutupan Mangrove (%)"),
-        ("prop", "mangrove_kondisi", "Kondisi Tutupan Mangrove"),
     ]),
     ("Ekosistem Terumbu Karang & Lamun", [
         ("lap", "eko_total_ha", "Total Area Kajian (Ha)"),

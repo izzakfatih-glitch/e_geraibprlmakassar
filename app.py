@@ -41,6 +41,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
+HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(JOBS_DIR, exist_ok=True)
@@ -75,6 +76,58 @@ if AUTHLIB_AVAILABLE:
 
 print(f"[startup] BASE_DIR = {BASE_DIR}")
 print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
+
+
+# ---------------------------------------------------------------------------
+# Riwayat penggunaan (history) -- catatan RINGAN saja (metadata: nama pemohon,
+# nama perusahaan, waktu, dan siapa yang memproses). TIDAK menyimpan file
+# dokumennya sama sekali, sesuai kebijakan privasi aplikasi ini.
+#
+# CATATAN PENTING: file history.jsonl ini disimpan di disk lokal container.
+# Di Railway, disk lokal bersifat SEMENTARA -- akan terhapus setiap kali
+# aplikasi di-redeploy/restart, KECUALI Anda memasang "Volume" (persistent
+# storage) di pengaturan Railway dan mengarahkannya ke folder BASE_DIR ini.
+# ---------------------------------------------------------------------------
+import json
+import datetime
+
+WIB = datetime.timezone(datetime.timedelta(hours=7))
+
+
+def log_history_entry(nama_pemohon, nama_perusahaan, sumber):
+    entry = {
+        "waktu": datetime.datetime.now(WIB).strftime("%Y-%m-%d %H:%M:%S"),
+        "nama_pemohon": nama_pemohon or "-",
+        "nama_perusahaan": nama_perusahaan or "-",
+        "sumber": sumber,
+        "diproses_oleh": (session.get("user") or {}).get("name", "Belum Login"),
+        "email": (session.get("user") or {}).get("email", ""),
+    }
+    try:
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        traceback.print_exc()
+
+
+def read_history(limit=200):
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    entries = []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        traceback.print_exc()
+        return []
+    return list(reversed(entries))[:limit]
 
 BASE_CSS = """
 :root { --navy:#1F4E79; --bg:#f4f6f8; }
@@ -325,7 +378,7 @@ HEADER_HTML = """
     <a href="#" class="nav-link" onclick="return false;">Informasi """ + ICONS["chevron-down"] + """</a>
     <a href="#" class="nav-link" onclick="return false;">""" + ICONS["book"] + """ Panduan</a>
     <a href="#" class="nav-link" onclick="return false;">""" + ICONS["life-buoy"] + """ Bantuan</a>
-    <a href="#" class="nav-link" onclick="return false;">""" + ICONS["chart-bar"] + """ Laporan</a>
+    <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
   </nav>
 
   {% if session.user %}
@@ -592,7 +645,28 @@ REVIEW_CSS = """
 .select-field:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .select-other-input { margin-top:8px; display:none; }
 .select-other-input.show { display:block; }
+.eco-children { padding-left:16px; border-left:3px solid var(--line); margin:-4px 0 14px; transition:.2s; }
+.eco-children.locked { opacity:.5; }
+.eco-children.locked input, .eco-children.locked select { background:#f3f5f7; cursor:not-allowed; }
+.eco-lock-note { font-size:11px; color:var(--muted); font-style:italic; margin:2px 0 10px; }
+
+.money-field { display:flex; align-items:stretch; border:1px solid #d3dde7; border-radius:8px; overflow:hidden; }
+.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:13px;
+  padding:9px 10px; border-right:1px solid #d3dde7; display:flex; align-items:center; }
+.money-field .money-input { border:none; border-radius:0; flex:1; padding:9px 11px; font-size:13px; }
+.money-field .money-input:focus { outline:none; }
+.money-field:focus-within { border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.date-picker-input { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px; font-size:13px; color:var(--ink); background:#fff; }
+.date-picker-input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .field-note { font-size:11px; color:var(--muted); margin-top:4px; }
+
+.history-table { width:100%; border-collapse:collapse; font-size:13px; }
+.history-table th, .history-table td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; }
+.history-table th { color:var(--muted); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+.history-table tr:hover td { background:#f7fafd; }
+.history-empty { text-align:center; padding:40px 20px; color:var(--muted); font-size:13.5px; }
+.history-login-gate { text-align:center; padding:60px 20px; }
+.history-login-gate p { color:var(--muted); font-size:14px; margin:10px 0 20px; }
 """
 
 
@@ -728,10 +802,62 @@ def img_field_html(field_name, label, desc="", multiple=False, note=""):
         f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
         f'<span class="ipt-text"><b>Ctrl+V</b><br>paste</span></div>'
         f'</div>'
-        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/*" multiple style="display:none">'
+        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple style="display:none">'
         f'<div class="img-preview-list" id="{field_name}_preview"></div>'
         f'</div>'
     )
+
+
+def render_history_page():
+    logged_in = bool(session.get("user"))
+
+    if not logged_in:
+        body = """
+<div class="review-wrap">
+  <div class="review-card history-login-gate">
+    <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
+    <p>Riwayat hanya bisa dilihat oleh staf yang sudah login menggunakan akun Google BPRL.</p>
+    <a href="/login" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
+  </div>
+</div>"""
+    else:
+        entries = read_history()
+        if entries:
+            rows = "".join(
+                f"<tr><td>{e.get('waktu','-')}</td><td>{e.get('nama_pemohon','-')}</td>"
+                f"<td>{e.get('nama_perusahaan','-')}</td><td>{e.get('diproses_oleh','-')}</td></tr>"
+                for e in entries
+            )
+            table_html = (
+                '<table class="history-table"><thead><tr>'
+                "<th>Waktu</th><th>Nama Pemohon</th><th>Nama Perusahaan/Instansi</th><th>Diproses Oleh</th>"
+                f"</tr></thead><tbody>{rows}</tbody></table>"
+            )
+        else:
+            table_html = '<div class="history-empty">Belum ada riwayat dokumen yang di-generate.</div>'
+
+        body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Penggunaan <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(entries)} entri terakhir)</span></h3>
+    {table_html}
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Penggunaan &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h1>
+  <p>Catatan dokumen PKKPRL yang sudah di-generate melalui aplikasi ini (nama pemohon, waktu, dan siapa yang memproses). Dokumen itu sendiri tidak disimpan.</p>
+</section>
+""" + body + """
+</body></html>"""
 
 
 def render_manual_form_page(error=None):
@@ -793,6 +919,27 @@ def render_manual_form_page(error=None):
                     f'<input type="text" name="{fname}" id="{fname}" list="dl_desa" '
                     f'placeholder="Isi {label.lower()}" autocomplete="off">'
                     f'<datalist id="dl_desa"></datalist>'
+                )
+            elif source == "prop" and key == "investasi":
+                field_html = (
+                    f'<div class="money-field"><span class="money-prefix">Rp</span>'
+                    f'<input type="text" name="{fname}" id="{fname}" class="money-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}"></div>'
+                )
+            elif source == "prop" and key == "NPWP":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="npwp-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key == "Nomor Telepon Selular":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="digits-only-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key == "Tanggal Penyusunan":
+                field_html = (
+                    f'<input type="date" id="{fname}_picker" class="date-picker-input">'
+                    f'<input type="hidden" name="{fname}" id="{fname}">'
                 )
             else:
                 field_html = f'<input type="text" name="{fname}" id="{fname}" placeholder="Isi {label.lower()}">'
@@ -937,45 +1084,67 @@ def render_manual_form_page(error=None):
       </details>
 
       <details class="acc-item">
-        <summary>Data Ekosistem Tambahan (Opsional)</summary>
+        <summary>Data Ekosistem Tambahan</summary>
         <div class="acc-body">
           <div class="field-row">
             <label>Keberadaan Ekosistem Mangrove</label>
-            """ + render_select_html("mangrove_ada", SELECT_FIELDS[("prop", "mangrove_ada")]["options"]) + """
+            """ + render_select_html("mangrove_ada", SELECT_FIELDS[("prop", "mangrove_ada")]["options"]).replace('id="mangrove_ada"', 'id="mangrove_ada" data-eco-trigger="1"') + """
           </div>
+          <div class="eco-children locked" data-for="mangrove_ada">
+            <div class="field-row">
+              <label>Spesies Mangrove Dominan</label>
+              <input type="text" name="prop__mangrove_spesies" id="prop__mangrove_spesies" placeholder="Isi spesies mangrove" disabled>
+              <div class="field-example">Contoh: <span class="ex-text">Rhizophora mucronata</span>
+              <button type="button" class="ex-fill" data-target="prop__mangrove_spesies">Pakai contoh ini</button></div>
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Mangrove (%)</label>
+              <input type="text" name="prop__mangrove_persen" id="prop__mangrove_persen" placeholder="Isi persentase tutupan mangrove" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Tutupan Mangrove</label>
+              """ + render_select_html("prop__mangrove_kondisi", SELECT_FIELDS[("prop", "mangrove_kondisi")]["options"]).replace('id="prop__mangrove_kondisi"', 'id="prop__mangrove_kondisi" disabled') + """
+            </div>
+          </div>
+
           <div class="field-row">
             <label>Keberadaan Ekosistem Lamun</label>
-            """ + render_select_html("lamun_ada_manual", SELECT_FIELDS[("prop", "lamun_ada_manual")]["options"]) + """
+            """ + render_select_html("lamun_ada_manual", SELECT_FIELDS[("prop", "lamun_ada_manual")]["options"]).replace('id="lamun_ada_manual"', 'id="lamun_ada_manual" data-eco-trigger="1"') + """
           </div>
-          <div class="field-row">
-            <label>Spesies Lamun</label>
-            <input type="text" name="lamun_spesies" id="lamun_spesies" placeholder="Isi spesies lamun">
+          <div class="eco-children locked" data-for="lamun_ada_manual">
+            <div class="field-row">
+              <label>Spesies Lamun</label>
+              <input type="text" name="lamun_spesies" id="lamun_spesies" placeholder="Isi spesies lamun" disabled>
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Lamun</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Dilampirkan dalam bentuk persentase (%)</div>
+              <input type="text" name="lamun_persen" id="lamun_persen" placeholder="Isi persentase tutupan lamun" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Lamun</label>
+              """ + render_select_html("lamun_kondisi", SELECT_FIELDS[("prop", "lamun_kondisi")]["options"]).replace('id="lamun_kondisi"', 'id="lamun_kondisi" disabled') + """
+            </div>
           </div>
-          <div class="field-row">
-            <label>Persentase Tutupan Lamun</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Dilampirkan dalam bentuk persentase (%)</div>
-            <input type="text" name="lamun_persen" id="lamun_persen" placeholder="Isi persentase tutupan lamun">
-          </div>
-          <div class="field-row">
-            <label>Kondisi Lamun</label>
-            """ + render_select_html("lamun_kondisi", SELECT_FIELDS[("prop", "lamun_kondisi")]["options"]) + """
-          </div>
+
           <div class="field-row">
             <label>Keberadaan Ekosistem Terumbu Karang</label>
-            """ + render_select_html("karang_ada", SELECT_FIELDS[("prop", "karang_ada")]["options"]) + """
+            """ + render_select_html("karang_ada", SELECT_FIELDS[("prop", "karang_ada")]["options"]).replace('id="karang_ada"', 'id="karang_ada" data-eco-trigger="1"') + """
           </div>
-          <div class="field-row">
-            <label>Spesies Terumbu Karang</label>
-            <input type="text" name="karang_spesies" id="karang_spesies" placeholder="Isi spesies terumbu karang">
-          </div>
-          <div class="field-row">
-            <label>Persentase Tutupan Terumbu Karang</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Dicantumkan dalam bentuk %</div>
-            <input type="text" name="karang_persen_manual" id="karang_persen_manual" placeholder="Isi persentase tutupan terumbu karang">
-          </div>
-          <div class="field-row">
-            <label>Kondisi Terumbu Karang</label>
-            """ + render_select_html("karang_kondisi", SELECT_FIELDS[("prop", "karang_kondisi")]["options"]) + """
+          <div class="eco-children locked" data-for="karang_ada">
+            <div class="field-row">
+              <label>Spesies Terumbu Karang</label>
+              <input type="text" name="karang_spesies" id="karang_spesies" placeholder="Isi spesies terumbu karang" disabled>
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Terumbu Karang</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Dicantumkan dalam bentuk %</div>
+              <input type="text" name="karang_persen_manual" id="karang_persen_manual" placeholder="Isi persentase tutupan terumbu karang" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Terumbu Karang</label>
+              """ + render_select_html("karang_kondisi", SELECT_FIELDS[("prop", "karang_kondisi")]["options"]).replace('id="karang_kondisi"', 'id="karang_kondisi" disabled') + """
+            </div>
           </div>
         </div>
       </details>
@@ -1054,13 +1223,9 @@ def render_manual_form_page(error=None):
             <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
           </div>
 
-          """ + img_field_html("img_foto_pantai", "Foto Kondisi Perairan &amp; Garis Pantai", note="(bisa lebih dari 1)") + """
-
           """ + img_field_html("img_foto_mangrove", "Foto Kondisi Mangrove") + """
 
           """ + img_field_html("img_foto_karang_insitu", "Foto Survei Terumbu Karang") + """
-
-          """ + img_field_html("img_peta_pola_ruang", "Peta Rencana Pola Ruang Wilayah") + """
 
           """ + img_field_html("img_dok_kegiatan", "Dokumentasi Kegiatan Eksisting/Rencana",
                                 "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.") + """
@@ -1127,6 +1292,60 @@ document.querySelectorAll('.ex-fill').forEach(function(btn) {
   });
 });
 
+// Nilai Investasi: format ribuan otomatis pakai titik saat mengetik (200000000 -> 200.000.000)
+document.querySelectorAll('.money-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    var digits = input.value.replace(/\D/g, '');
+    input.value = digits ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : '';
+  });
+});
+
+// NPWP: kunci hanya boleh angka, titik, dan strip (format resmi: 01.234.567.8-901.000)
+document.querySelectorAll('.npwp-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    input.value = input.value.replace(/[^0-9.\-]/g, '');
+  });
+});
+
+// Nomor Telepon Selular: kunci hanya boleh angka
+document.querySelectorAll('.digits-only-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    input.value = input.value.replace(/\D/g, '');
+  });
+});
+
+// Tanggal Penyusunan: pilih lewat kalender, otomatis dikonversi ke format Indonesia (DD Bulan YYYY)
+document.querySelectorAll('.date-picker-input').forEach(function(picker) {
+  var hidden = document.getElementById(picker.id.replace('_picker', ''));
+  var BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+  picker.addEventListener('change', function() {
+    if (!picker.value) { hidden.value = ''; return; }
+    var parts = picker.value.split('-'); // YYYY-MM-DD
+    var y = parts[0], m = parseInt(parts[1], 10) - 1, d = parseInt(parts[2], 10);
+    hidden.value = d + ' ' + BULAN_ID[m] + ' ' + y;
+  });
+});
+
+// Kunci/buka otomatis field turunan (spesies/persentase/kondisi) berdasarkan
+// pilihan "Keberadaan Ekosistem" -- terkunci sampai user pilih "Terdapat ekosistem..."
+document.querySelectorAll('[data-eco-trigger]').forEach(function(sel) {
+  var childWrap = document.querySelector('.eco-children[data-for="' + sel.id + '"]');
+  if (!childWrap) return;
+  var note = document.createElement('div');
+  note.className = 'eco-lock-note';
+  note.textContent = 'Pilih "Terdapat ekosistem..." di atas untuk mengisi bagian ini.';
+  childWrap.insertBefore(note, childWrap.firstChild);
+
+  function update() {
+    var unlocked = sel.value.indexOf('Terdapat ekosistem') === 0;
+    childWrap.classList.toggle('locked', !unlocked);
+    note.style.display = unlocked ? 'none' : 'block';
+    childWrap.querySelectorAll('input, select').forEach(function(el) { el.disabled = !unlocked; });
+  }
+  sel.addEventListener('change', update);
+  update();
+});
+
 // Dropdown dengan opsi "Lainnya..." -> munculkan input teks tambahan
 document.querySelectorAll('select[data-allow-other="true"]').forEach(function(sel) {
   var otherInput = document.getElementById(sel.id + '_other');
@@ -1154,7 +1373,7 @@ document.getElementById('manualForm').addEventListener('submit', function() {
 // Datalist bertingkat Provinsi -> Kabupaten -> Kecamatan -> Desa/Kelurahan
 // menggunakan API publik https://kodewilayah.web.id (punya demo interaktif serupa di situsnya sendiri)
 (function() {
-  var WILAYAH_API = 'https://api.kodewilayah.web.id';
+  var WILAYAH_API = '/api/wilayah';
   var provSel = document.getElementById('prop_loc__3');
   var kabInput = document.getElementById('prop_loc__2');
   var kecInput = document.getElementById('prop_loc__1');
@@ -1273,7 +1492,12 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   }
 
   function addFile(file) {
-    if (!file || file.type.indexOf('image/') !== 0) return;
+    if (!file) return;
+    var allowed = ['image/png', 'image/jpeg'];
+    if (allowed.indexOf(file.type) === -1) {
+      alert('Format file tidak didukung. Hanya PNG dan JPG/JPEG yang diperbolehkan.');
+      return;
+    }
     files.push(file);
     refreshInput();
     renderPreviews();
@@ -1304,6 +1528,15 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
 
 
 def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
+    # Amankan dari karakter yang mirip sintaks Jinja ({{ }}, {% %}) kalau kebetulan
+    # muncul di konten dokumen asli pengguna -- supaya tidak salah dievaluasi
+    # sebagai template saat halaman ini dibungkus render_template_string().
+    preview_html = (
+        preview_html.replace("{{", "&#123;&#123;")
+        .replace("}}", "&#125;&#125;")
+        .replace("{%", "&#123;%")
+        .replace("%}", "%&#125;")
+    )
     groups_html = []
     for i, (group_title, fields) in enumerate(FIELD_GROUPS):
         rows = []
@@ -1376,6 +1609,28 @@ def health():
     return {"status": "ok"}
 
 
+@app.route("/api/wilayah/<level>/<code>")
+def api_wilayah_proxy(level, code):
+    """Proxy server-side ke api.kodewilayah.web.id supaya request datalist
+    Kabupaten/Kecamatan/Desa tidak terhalang CORS di browser (fetch dilakukan
+    dari server, browser cuma bicara dengan server sendiri)."""
+    import urllib.request
+    import json as _json
+
+    if level not in ("regencies", "districts", "villages"):
+        return {"success": False, "message": "level tidak valid", "data": []}, 400
+
+    url = f"https://api.kodewilayah.web.id/{level}/{code}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+        return payload
+    except Exception as e:
+        traceback.print_exc()
+        return {"success": False, "message": str(e), "data": []}, 502
+
+
 @app.route("/login")
 def login():
     try:
@@ -1408,6 +1663,11 @@ def auth_callback():
 def logout():
     session.pop("user", None)
     return redirect(url_for("index"))
+
+
+@app.route("/history")
+def history_page():
+    return render_template_string(render_history_page())
 
 
 @app.route("/review", methods=["POST"])
@@ -1455,21 +1715,21 @@ def review():
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return render_review_page(job_id, prop_data, lap_data, preview_html)
+    return render_template_string(render_review_page(job_id, prop_data, lap_data, preview_html))
 
 
 @app.route("/proposal-manual", methods=["GET"])
 def proposal_manual_form():
-    return render_manual_form_page()
+    return render_template_string(render_manual_form_page())
 
 
 @app.route("/proposal-manual", methods=["POST"])
 def proposal_manual_submit():
     laporan_file = request.files.get("laporan")
     if not laporan_file or laporan_file.filename == "":
-        return render_manual_form_page(error="Mohon unggah file Laporan Hidro-Oseanografi (PDF atau Word)."), 400
+        return render_template_string(render_manual_form_page(error="Mohon unggah file Laporan Hidro-Oseanografi (PDF atau Word).")), 400
     if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
-        return render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx)."), 400
+        return render_template_string(render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx).")), 400
     laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
 
     job_store.cleanup_old_jobs(JOBS_DIR)
@@ -1506,6 +1766,9 @@ def proposal_manual_submit():
         prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
 
         prop_data["mangrove_ada"] = request.form.get("mangrove_ada", "")
+        prop_data["mangrove_spesies"] = request.form.get("prop__mangrove_spesies", "")
+        prop_data["mangrove_persen"] = request.form.get("prop__mangrove_persen", "")
+        prop_data["mangrove_kondisi"] = request.form.get("prop__mangrove_kondisi", "")
         prop_data["lamun_ada_manual"] = request.form.get("lamun_ada_manual", "")
         prop_data["lamun_spesies"] = request.form.get("lamun_spesies", "")
         prop_data["lamun_persen"] = request.form.get("lamun_persen", "")
@@ -1540,16 +1803,16 @@ def proposal_manual_submit():
 
         def file_ext(filename):
             ext = os.path.splitext(filename)[1].lstrip(".").lower()
-            return ext if ext in ("jpg", "jpeg", "png", "webp", "gif", "bmp") else "jpg"
+            return "jpg" if ext == "jpeg" else ext
+
+        ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
 
         prop_images = []
         image_field_tags = [
             ("img_siteplan", "siteplan"),
             ("img_peta_lokasi", "peta_lokasi"),
-            ("img_foto_pantai", "foto_pantai"),
             ("img_foto_mangrove", "foto_mangrove"),
             ("img_foto_karang_insitu", "foto_karang_insitu"),
-            ("img_peta_pola_ruang", "peta_pola_ruang"),
             ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
             ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
             ("img_foto_lamun", "foto_lamun"),
@@ -1560,7 +1823,7 @@ def proposal_manual_submit():
         ]
         for field_name, tag in image_field_tags:
             for f in request.files.getlist(field_name):
-                if f and f.filename:
+                if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
                     prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
 
         lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
@@ -1575,11 +1838,11 @@ def proposal_manual_submit():
         traceback.print_exc()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         job_store.delete_job(JOBS_DIR, job_id)
-        return render_manual_form_page(error="Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF/Word yang valid."), 500
+        return render_template_string(render_manual_form_page(error="Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF/Word yang valid.")), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return render_review_page(job_id, prop_data, lap_data, preview_html)
+    return render_template_string(render_review_page(job_id, prop_data, lap_data, preview_html))
 
 
 @app.route("/finalize", methods=["POST"])
@@ -1598,6 +1861,11 @@ def finalize():
     output_path = os.path.join(OUTPUT_DIR, f"Proposal_Final_{job_id}.docx")
     try:
         build_document(prop_data, prop_images, lap_data, lap_images, output_path)
+        log_history_entry(
+            nama_pemohon=prop_data.get("Nama Pemohon", ""),
+            nama_perusahaan=prop_data.get("Nama Perusahaan/Instansi", ""),
+            sumber="Generate Dokumen Final",
+        )
     except Exception:
         traceback.print_exc()
         return render_template_string(
