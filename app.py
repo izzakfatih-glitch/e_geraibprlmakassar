@@ -19,7 +19,18 @@ import shutil
 import traceback
 from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for
 import mammoth
-from authlib.integrations.flask_client import OAuth
+
+# Login Google (authlib) bersifat OPSIONAL: kalau library ini gagal di-import
+# atau gagal diinisialisasi (misal karena versi Python di server belum kompatibel),
+# aplikasi tetap harus jalan normal -- cuma fitur Login yang otomatis nonaktif.
+try:
+    from authlib.integrations.flask_client import OAuth
+    AUTHLIB_AVAILABLE = True
+except Exception:
+    traceback.print_exc()
+    print("[startup] PERINGATAN: authlib gagal di-import, fitur Login Google dinonaktifkan.")
+    OAuth = None
+    AUTHLIB_AVAILABLE = False
 
 from extract import extract_proposal_with_fallback, extract_laporan_with_fallback
 from generate_docx import build_document
@@ -46,14 +57,21 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24).hex()
 # ---- Konfigurasi OAuth Google (Sign in with Google) ----
 # GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET wajib diisi lewat environment variable
 # di Railway (dibuat lewat Google Cloud Console -> OAuth 2.0 Client IDs).
-oauth = OAuth(app)
-google_oauth = oauth.register(
-    name="google",
-    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
-    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
+google_oauth = None
+if AUTHLIB_AVAILABLE:
+    try:
+        oauth = OAuth(app)
+        google_oauth = oauth.register(
+            name="google",
+            client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+            client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+            server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+            client_kwargs={"scope": "openid email profile"},
+        )
+    except Exception:
+        traceback.print_exc()
+        print("[startup] PERINGATAN: inisialisasi OAuth Google gagal, fitur Login dinonaktifkan.")
+        google_oauth = None
 
 print(f"[startup] BASE_DIR = {BASE_DIR}")
 print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
