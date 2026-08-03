@@ -39,11 +39,17 @@ from review_fields import FIELD_GROUPS, form_field_name, get_value, apply_form_v
 import job_store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR: folder untuk data yang perlu BERTAHAN lintas-redeploy (riwayat &
+# draft per-pengguna). Kalau env var DATA_DIR diisi (arahkan ke mount path
+# Railway Volume, mis. "/data"), riwayat tidak akan hilang saat redeploy.
+# Kalau tidak diisi, fallback ke folder aplikasi biasa (ephemeral -- hilang
+# tiap redeploy, sama seperti sebelumnya).
+DATA_DIR = os.environ.get("DATA_DIR") or BASE_DIR
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
-HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
-DRAFTS_DIR = os.path.join(BASE_DIR, "drafts")
+HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
+DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
 DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
@@ -53,6 +59,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(JOBS_DIR, exist_ok=True)
 os.makedirs(DRAFTS_DIR, exist_ok=True)
+print(f"[startup] DATA_DIR (riwayat/draft tersimpan di sini) = {DATA_DIR}")
+
 
 MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
