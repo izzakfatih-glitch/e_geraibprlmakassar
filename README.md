@@ -1,6 +1,6 @@
-# Aplikasi Web e-Gerai Generate dan Layanan PKKPRL
+# Aplikasi Web Penggabung Proposal PKKPRL
 
-Versi web dari aplikasi e-Gerai generate dan Layanan proposal PKKPRL. Bisa diakses dari
+Versi web dari aplikasi penggabung proposal PKKPRL. Bisa diakses dari
 **browser HP atau laptop mana saja** (tidak perlu install Python di
 perangkat pengguna), dan **aman dipakai bersamaan oleh banyak orang**
 sekaligus.

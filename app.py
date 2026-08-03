@@ -664,9 +664,9 @@ HEADER_HTML = """
 
   {% if session.user %}
   <div class="user-badge">
+    <a href="/riwayat-saya" class="logout-link" style="color:var(--navy);background:#fff;">Riwayat Saya</a>
     {% if session.user.picture %}<img src="{{ session.user.picture }}" class="user-avatar" alt="">{% endif %}
     <span class="user-greet">Halo, {{ session.user.name }}</span>
-    <a href="/riwayat-saya" class="logout-link" style="color:var(--navy);background:#fff;">Riwayat Saya</a>
     <a href="/logout" class="logout-link">Keluar</a>
   </div>
   {% else %}
@@ -862,8 +862,8 @@ REVIEW_CSS = """
 .acc-body { padding:14px 16px 4px; }
 .field-row { margin-bottom:12px; }
 .field-row label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin-bottom:5px; }
-.field-row input[type=text] { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:13px; color:var(--ink); background:#fff; }
+.field-row input[type=text] { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:16px; color:var(--ink); background:#fff; }
 .field-row input[type=text]:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 
 .preview-panel { position:sticky; top:80px; }
@@ -887,10 +887,10 @@ REVIEW_CSS = """
 .file-field-row .ff-hint { font-size:11px; color:var(--muted); margin-bottom:6px; }
 .file-field-row input[type=file] { width:100%; font-size:12.5px; padding:8px; border:1px solid #d3dde7;
   border-radius:8px; background:#f7fafd; }
-.field-row textarea { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:12.5px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:80px; }
+.field-row textarea { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:15px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:96px; }
 .field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
-.field-example { font-size:22px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
+.field-example { font-size:19px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
 .field-example .ex-text { font-style:italic; }
 .field-example .ex-fill { font-size:14px; font-weight:700; color:var(--blue); background:#eaf1fc;
   border:1px solid #cfe0f5; border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
@@ -926,8 +926,8 @@ REVIEW_CSS = """
 
 @media (max-width: 700px) { .img-input-row { max-width:80%; } }
 
-.select-field { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:13px; color:var(--ink); background:#fff; }
+.select-field { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:16px; color:var(--ink); background:#fff; }
 .select-field:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .select-other-input { margin-top:8px; display:none; }
 .select-other-input.show { display:block; }
@@ -936,13 +936,21 @@ REVIEW_CSS = """
 .eco-children.locked input, .eco-children.locked select { background:#f3f5f7; cursor:not-allowed; }
 .eco-lock-note { font-size:11px; color:var(--muted); font-style:italic; margin:2px 0 10px; }
 
+.dukung-item { margin-bottom:6px; }
+.dukung-detail { padding:10px 0 6px 26px; border-left:2px solid #e0e8f0; margin:2px 0 8px 8px; }
+.dukung-detail .field-row { margin-bottom:8px; }
+.dukung-custom-row { display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; }
+.dukung-custom-row input[type=text] { flex:1; }
+.dukung-custom-row .dukung-remove { flex:none; background:#fff0f0; border:1px solid #f3c6c6; color:#c0392b;
+  border-radius:8px; padding:9px 12px; cursor:pointer; font-size:12px; font-weight:700; }
+
 .money-field { display:flex; align-items:stretch; border:1px solid #d3dde7; border-radius:8px; overflow:hidden; }
-.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:13px;
-  padding:9px 10px; border-right:1px solid #d3dde7; display:flex; align-items:center; }
-.money-field .money-input { border:none; border-radius:0; flex:1; padding:9px 11px; font-size:13px; }
+.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:16px;
+  padding:11px 12px; border-right:1px solid #d3dde7; display:flex; align-items:center; }
+.money-field .money-input { border:none; border-radius:0; flex:1; padding:11px 13px; font-size:16px; }
 .money-field .money-input:focus { outline:none; }
 .money-field:focus-within { border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
-.date-picker-input { width:100%; padding:9px 11px; border:1px solid #d3dde7; border-radius:8px; font-size:13px; color:var(--ink); background:#fff; }
+.date-picker-input { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px; font-size:16px; color:var(--ink); background:#fff; }
 .date-picker-input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .field-note { font-size:11px; color:var(--muted); margin-top:4px; }
 
@@ -1062,7 +1070,7 @@ SELECT_FIELDS = {
         "allow_other": False,
     },
     ("prop", "lamun_kondisi"): {
-        "options": ["Kaya/Sehat", "Kurang Kaya/Kurang Sehat", "Miskin"],
+        "options": ["Baik (Kaya/Sehat)", "Rusak (Kurang Kaya/Kurang Sehat)", "Rusak (Miskin)"],
         "allow_other": False,
     },
     ("prop", "karang_ada"): {
@@ -1085,9 +1093,9 @@ KRITERIA_MANGROVE = [
     (0, 50, "Jarang"),
 ]
 KRITERIA_LAMUN = [
-    (60, 100.001, "Kaya/Sehat"),
-    (30, 60, "Kurang Kaya/Kurang Sehat"),
-    (0, 30, "Miskin"),
+    (60, 100.001, "Baik (Kaya/Sehat)"),
+    (30, 60, "Rusak (Kurang Kaya/Kurang Sehat)"),
+    (0, 30, "Rusak (Miskin)"),
 ]
 KRITERIA_KARANG = [
     (75, 100.001, "Baik Sekali"),
@@ -1136,6 +1144,23 @@ def render_select_html(fname, options, allow_other=False):
     return (
         f'<select class="select-field" name="{fname}" id="{fname}" data-allow-other="{str(allow_other).lower()}">'
         f'{"".join(opts_html)}</select>{other_html}'
+    )
+
+
+def dukung_item_html(idx, checkbox_name, label):
+    """Satu baris item Dokumen Data Dukung: checkbox + (kalau dicentang)
+    muncul otomatis kolom Link Google Drive dan Upload File."""
+    cb_id = f"dd{idx}"
+    return (
+        f'<div class="dukung-item">'
+        f'<div class="checkbox-row"><input type="checkbox" name="{checkbox_name}" id="{cb_id}" class="dukung-cb" data-target="dukung_detail_{cb_id}">'
+        f'<label for="{cb_id}">{label}</label></div>'
+        f'<div class="dukung-detail" id="dukung_detail_{cb_id}" style="display:none;">'
+        f'<div class="field-row"><label>Link Google Drive Dokumen</label>'
+        f'<input type="text" name="{checkbox_name}_drive" placeholder="Tempel link Google Drive di sini"></div>'
+        f'<div class="field-row"><label>Atau Upload File</label>'
+        f'<input type="file" name="{checkbox_name}_file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"></div>'
+        f'</div></div>'
     )
 
 
@@ -1435,18 +1460,12 @@ def render_manual_form_page(error=None, prefill_data=None):
 </section>
 
 <div class="review-wrap">
-  <div class="error-banner" style="margin-bottom:16px;background:#eaf1fc;border-color:#cfe0f5;color:var(--navy);">
-    <b>\U0001F4CC Petunjuk Pengisian:</b> Sebelum mengisi formulir ini, pemohon diwajibkan mengakses portal
-    <b>Gerai Pelayanan Balai Penataan Ruang Laut</b> melalui tautan
-    <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL</a>
-    untuk memperoleh data Hidro-Oseanografi. Dokumen PDF hasil analisis dari link tersebut diunduh, lalu diunggah pada bagian "Laporan Kondisi Eksisting / Hidro-Oseanografi" di bawah.
-  </div>
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
     <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
-      <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut</a>,
+      <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
       unduh hasilnya (PDF atau Word), lalu unggah di bawah ini. Belum sempat siap? Boleh dikosongkan dulu &mdash; pakai tombol <b>"Unduh Draft"</b> di bawah untuk mengunduh draft Proposal saja terlebih dulu, lengkapi Laporannya nanti.</div>
       <div class="dropzone" id="dzManual">
         """ + ICONS["cloud"] + """
@@ -1521,11 +1540,18 @@ def render_manual_form_page(error=None, prefill_data=None):
 
           <div class="field-row">
             <label>Dokumen Data Dukung</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Dokumen data dukung yang dimiliki oleh pelaku usaha (centang yang sesuai)</div>
-            <div class="checkbox-row"><input type="checkbox" name="dukung_nib" id="dd1"><label for="dd1">NIB</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="dukung_sertifikat" id="dd2"><label for="dd2">Sertifikat Kepemilikan Lahan Darat</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="dukung_izin_lingkungan" id="dd3"><label for="dd3">Surat Izin Lingkungan</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="dukung_ba_sosialisasi" id="dd4"><label for="dd4">Berita Acara Sosialisasi</label></div>
+            <div class="ff-hint" style="margin-bottom:6px;">Dokumen data dukung yang dimiliki oleh pelaku usaha (centang yang sesuai -- akan otomatis masuk ke bagian "IV. Dokumen Persyaratan Lainnya" di draft dokumen)</div>
+            """ + dukung_item_html(1, "dukung_nib", "NIB") + """
+            """ + dukung_item_html(2, "dukung_sertifikat", "Sertifikat Kepemilikan Lahan Darat") + """
+            """ + dukung_item_html(3, "dukung_izin_lingkungan", "Surat Izin Lingkungan") + """
+            """ + dukung_item_html(4, "dukung_ba_sosialisasi", "Berita Acara Sosialisasi") + """
+            """ + dukung_item_html(5, "dukung_identitas", "Dokumen Identitas dan Legalitas Pemohon/Perusahaan") + """
+            """ + dukung_item_html(6, "dukung_survei", "Dokumentasi Survei Lapangan Kondisi Eksisting Lokasi") + """
+            """ + dukung_item_html(7, "dukung_peta", "Peta Pendukung (Peta Lokasi, Site Plan, Pola Ruang Wilayah)") + """
+            """ + dukung_item_html(8, "dukung_dipa", "DIPA/RKAKL (Sumber Anggaran APBD/APBN) / Lainnya") + """
+            """ + dukung_item_html(9, "dukung_sk_kkprl", "SK Penetapan KNMP") + """
+            <div id="dukungLainnyaWrap"></div>
+            <button type="button" id="btnTambahDukung" class="ex-fill" style="margin-top:8px;">+ Tambah Dokumen Lainnya</button>
           </div>
         </div>
       </details>
@@ -1816,7 +1842,7 @@ document.querySelectorAll('.decimal-only-input').forEach(function(input) {
 (function() {
   var KRITERIA = {
     'prop__mangrove_persen': { select: 'prop__mangrove_kondisi', rules: [[75,999,'Sangat Padat'],[50,75,'Sedang'],[0,50,'Jarang']] },
-    'lamun_persen': { select: 'lamun_kondisi', rules: [[60,999,'Kaya/Sehat'],[30,60,'Kurang Kaya/Kurang Sehat'],[0,30,'Miskin']] },
+    'lamun_persen': { select: 'lamun_kondisi', rules: [[60,999,'Baik (Kaya/Sehat)'],[30,60,'Rusak (Kurang Kaya/Kurang Sehat)'],[0,30,'Rusak (Miskin)']] },
     'karang_persen_manual': { select: 'karang_kondisi', rules: [[75,999,'Baik Sekali'],[50,75,'Baik'],[25,50,'Sedang'],[0,25,'Buruk']] },
   };
   Object.keys(KRITERIA).forEach(function(inputId) {
@@ -1858,6 +1884,34 @@ document.querySelectorAll('.date-picker-input').forEach(function(picker) {
   picker.addEventListener('click', openPicker);
   picker.addEventListener('dblclick', openPicker);
 });
+
+// Dokumen Data Dukung: munculkan otomatis kolom Link Drive & Upload saat dicentang
+document.querySelectorAll('.dukung-cb').forEach(function(cb) {
+  var detail = document.getElementById(cb.dataset.target);
+  if (!detail) return;
+  cb.addEventListener('change', function() {
+    detail.style.display = cb.checked ? 'block' : 'none';
+  });
+});
+
+// Tombol "+ Tambah Dokumen Lainnya": tambah baris dokumen custom (bisa lebih dari 1)
+(function() {
+  var wrap = document.getElementById('dukungLainnyaWrap');
+  var btn = document.getElementById('btnTambahDukung');
+  if (!wrap || !btn) return;
+  var counter = 0;
+  btn.addEventListener('click', function() {
+    counter++;
+    var row = document.createElement('div');
+    row.className = 'dukung-custom-row';
+    row.innerHTML =
+      '<input type="text" name="dukung_custom_nama[]" placeholder="Nama dokumen (ketik manual)">' +
+      '<input type="text" name="dukung_custom_drive[]" placeholder="Link Google Drive (opsional)">' +
+      '<button type="button" class="dukung-remove">Hapus</button>';
+    row.querySelector('.dukung-remove').addEventListener('click', function() { row.remove(); });
+    wrap.appendChild(row);
+  });
+})();
 
 // Kunci/buka otomatis field turunan (spesies/persentase/kondisi) berdasarkan
 // pilihan "Keberadaan Ekosistem" -- terkunci sampai user pilih "Terdapat ekosistem..."
@@ -2367,6 +2421,13 @@ def proposal_manual_form():
 def build_prop_data_from_manual_form(form, files):
     """Bangun prop_data & prop_images dari form isian manual (dipakai baik
     untuk alur submit-ke-review biasa maupun unduh-draft-langsung)."""
+    def file_ext(filename):
+        ext = os.path.splitext(filename)[1].lstrip(".").lower()
+        return "jpg" if ext == "jpeg" else ext
+
+    ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
+    prop_images = []
+
     prop_data = {}
     prop_data, _ = apply_form_values(form, prop_data, {})
     prop_data["non_reklamasi"] = "non_reklamasi" in form
@@ -2380,16 +2441,37 @@ def build_prop_data_from_manual_form(form, files):
     prop_data["instalasi_bangunan"] = form.get("instalasi_bangunan", "")
     prop_data["instalasi_posisi"] = form.get("instalasi_posisi", "")
     prop_data["jadwal_kegiatan"] = form.get("jadwal_kegiatan", "")
+    DUKUNG_ITEMS = [
+        ("dukung_nib", "NIB"),
+        ("dukung_sertifikat", "Sertifikat Kepemilikan Lahan Darat"),
+        ("dukung_izin_lingkungan", "Surat Izin Lingkungan"),
+        ("dukung_ba_sosialisasi", "Berita Acara Sosialisasi"),
+        ("dukung_identitas", "Dokumen Identitas dan Legalitas Pemohon/Perusahaan"),
+        ("dukung_survei", "Dokumentasi Survei Lapangan Kondisi Eksisting Lokasi"),
+        ("dukung_peta", "Peta Pendukung (Peta Lokasi, Site Plan, Pola Ruang Wilayah)"),
+        ("dukung_dipa", "DIPA/RKAKL (Sumber Anggaran APBD/APBN) / Lainnya"),
+        ("dukung_sk_kkprl", "SK Penetapan KNMP"),
+    ]
     dukung_list = []
-    if "dukung_nib" in form:
-        dukung_list.append("NIB")
-    if "dukung_sertifikat" in form:
-        dukung_list.append("Sertifikat Kepemilikan Lahan Darat")
-    if "dukung_izin_lingkungan" in form:
-        dukung_list.append("Surat Izin Lingkungan")
-    if "dukung_ba_sosialisasi" in form:
-        dukung_list.append("Berita Acara Sosialisasi")
+    dukung_detail = []
+    for field_name, label in DUKUNG_ITEMS:
+        if field_name in form:
+            entry = {"label": label, "drive": form.get(f"{field_name}_drive", "").strip(), "file": ""}
+            f = files.get(f"{field_name}_file")
+            if f and f.filename:
+                entry["file"] = f.filename
+                ext = os.path.splitext(f.filename)[1].lstrip(".").lower()
+                if ext in ("png", "jpg", "jpeg"):
+                    prop_images.append({"tag": "dukung_dokumen", "bytes": f.read(), "ext": file_ext(f.filename)})
+            dukung_list.append(label)
+            dukung_detail.append(entry)
+    for nama_custom, drive_custom in zip(form.getlist("dukung_custom_nama[]"), form.getlist("dukung_custom_drive[]")):
+        nama_custom = nama_custom.strip()
+        if nama_custom:
+            dukung_list.append(nama_custom)
+            dukung_detail.append({"label": nama_custom, "drive": drive_custom.strip(), "file": ""})
     prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
+    prop_data["dokumen_data_dukung_detail"] = dukung_detail
 
     prop_data["mangrove_ada"] = form.get("mangrove_ada", "")
     prop_data["mangrove_spesies"] = form.get("prop__mangrove_spesies", "")
@@ -2436,13 +2518,6 @@ def build_prop_data_from_manual_form(form, files):
     if koordinat_file_pesan:
         prop_data["_koordinat_file_pesan"] = koordinat_file_pesan
 
-    def file_ext(filename):
-        ext = os.path.splitext(filename)[1].lstrip(".").lower()
-        return "jpg" if ext == "jpeg" else ext
-
-    ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
-
-    prop_images = []
     image_field_tags = [
         ("img_siteplan", "siteplan"),
         ("img_peta_lokasi", "peta_lokasi"),

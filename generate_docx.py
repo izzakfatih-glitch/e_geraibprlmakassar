@@ -807,10 +807,24 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.page_break()
     b.h1("IV. DOKUMEN PERSYARATAN LAINNYA")
     b.p(f"Dokumen pendukung untuk permohonan PKKPRL yang diajukan oleh {perusahaan} meliputi:")
-    b.bullet("Sertifikat Kepemilikan Lahan Darat.")
-    b.bullet("Dokumen identitas dan legalitas pemohon/perusahaan.")
-    b.bullet("Dokumentasi survei lapangan kondisi eksisting lokasi.")
-    b.bullet("Peta pendukung (peta lokasi, peta site plan, dan peta pola ruang wilayah).")
+
+    dukung_detail = prop.get("dokumen_data_dukung_detail") or []
+    if dukung_detail:
+        for item in dukung_detail:
+            label = item.get("label", "")
+            drive = item.get("drive", "")
+            fname = item.get("file", "")
+            extra = ""
+            if drive:
+                extra = f" (tautan Google Drive: {drive})"
+            elif fname:
+                extra = f" (file terlampir: {fname})"
+            b.bullet(f"{label}.{extra}")
+    else:
+        b.bullet("Sertifikat Kepemilikan Lahan Darat.")
+        b.bullet("Dokumen identitas dan legalitas pemohon/perusahaan.")
+        b.bullet("Dokumentasi survei lapangan kondisi eksisting lokasi.")
+        b.bullet("Peta pendukung (peta lokasi, peta site plan, dan peta pola ruang wilayah).")
 
     sertifikat_img = get_image_bytes(prop_imgs, "sertifikat_lahan")
     if sertifikat_img:
@@ -822,6 +836,12 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     if sosialisasi_img:
         b.image(sosialisasi_img, width_cm=13)
         b.caption(f"Gambar {img_no}. Dokumen Hasil Sosialisasi dengan Masyarakat Sekitar.")
+        img_no += 1
+
+    dukung_dok_list = [im for im in prop_imgs if im["tag"] == "dukung_dokumen"]
+    for im in dukung_dok_list:
+        b.image(im["bytes"], width_cm=13)
+        b.caption(f"Gambar {img_no}. Dokumen Data Dukung Terlampir.")
         img_no += 1
 
     pendukung_lain_list = [im for im in prop_imgs if im["tag"] == "dok_pendukung_lainnya"]
