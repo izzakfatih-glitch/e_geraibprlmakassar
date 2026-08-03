@@ -716,6 +716,17 @@ REVIEW_CSS = """
 .history-empty { text-align:center; padding:40px 20px; color:var(--muted); font-size:13.5px; }
 .history-login-gate { text-align:center; padding:60px 20px; }
 .history-login-gate p { color:var(--muted); font-size:14px; margin:10px 0 20px; }
+
+.login-overlay { position:fixed; inset:0; z-index:9999; background:rgba(10,25,45,.6);
+  backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center; padding:20px; }
+.login-modal-card { max-width:400px; width:100%; }
+.login-modal-card h3 { justify-content:center; }
+.login-modal-sub { text-align:center; font-size:12.5px; color:var(--muted); margin:-4px 0 16px; }
+.login-modal-btn { width:100%; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:14px; border-radius:10px; font-size:14.5px; font-weight:800; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px; margin-top:6px; }
+.login-modal-btn:hover { filter:brightness(1.05); }
+.login-modal-btn svg { width:18px; height:18px; flex:none; }
 """
 
 
@@ -858,24 +869,19 @@ def img_field_html(field_name, label, desc="", multiple=False, note=""):
 
 
 def render_login_pegawai_page(error=None):
+    # Render homepage SUNGGUHAN (sudah lewat Jinja) sebagai backdrop, lalu
+    # sisipkan overlay + kartu login di atasnya tepat sebelum tag </body>.
+    home_rendered = render_template_string(UPLOAD_HTML, error=None)
+
     error_html = (
         f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
     )
-    return """<!DOCTYPE html>
-<html lang="id"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Login Pegawai &mdash; e-GeRAI KKPRL</title>
-<style>""" + LANDING_CSS + REVIEW_CSS + """
-.login-card-wrap { max-width:420px; margin:60px auto; }
-.login-card-wrap .review-card h3 { justify-content:center; }
-</style></head>
-<body>
-""" + HEADER_HTML + """
-
-<div class="review-wrap login-card-wrap">
-  """ + error_html + """
-  <div class="review-card">
+    overlay = """
+<div class="login-overlay">
+  <div class="review-card login-modal-card">
+    """ + error_html + """
     <h3>""" + ICONS["user"] + """ Login Pegawai BPRL Makassar</h3>
+    <p class="login-modal-sub">Masuk terlebih dahulu untuk menggunakan aplikasi e-GeRAI KKPRL.</p>
     <form method="POST" action="/login-pegawai">
       <div class="field-row">
         <label>Kode Nama</label>
@@ -885,14 +891,12 @@ def render_login_pegawai_page(error=None):
         <label>Kode Petugas (Password)</label>
         <input type="password" name="kode_petugas" placeholder="Contoh: 101" required inputmode="numeric">
       </div>
-      <div class="sticky-bar" style="position:static;">
-        <button type="submit">""" + ICONS["user"] + """ Masuk</button>
-      </div>
+      <button type="submit" class="login-modal-btn">""" + ICONS["user"] + """ Masuk</button>
     </form>
   </div>
-  <a href="/" class="back-link">&larr; Kembali ke halaman utama</a>
 </div>
-</body></html>"""
+"""
+    return home_rendered.replace("</body>", overlay + "</body>")
 
 
 def render_history_page():
@@ -1686,6 +1690,22 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
 </body></html>"""
 
 
+PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health"}
+PUBLIC_PREFIXES = ("/static/",)
+
+
+@app.before_request
+def require_login_pegawai():
+    """Seluruh aplikasi WAJIB login dulu (Kode Nama + Kode Petugas) sebelum
+    bisa dipakai -- kecuali halaman login itu sendiri, logout, file statis,
+    dan health check (dipakai Railway untuk cek server hidup/tidak)."""
+    if request.path in PUBLIC_PATHS or request.path.startswith(PUBLIC_PREFIXES):
+        return None
+    if not session.get("user"):
+        return render_login_pegawai_page()
+    return None
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template_string(UPLOAD_HTML, error=None)
@@ -1720,7 +1740,7 @@ def api_wilayah_proxy(level, code):
 
 @app.route("/login-pegawai", methods=["GET"])
 def login_pegawai_form():
-    return render_template_string(render_login_pegawai_page())
+    return render_login_pegawai_page()
 
 
 @app.route("/login-pegawai", methods=["POST"])
@@ -1732,9 +1752,9 @@ def login_pegawai_submit():
     if entry and entry["password"] == kode_petugas:
         session["user"] = {"name": entry["nama"], "email": "", "picture": "", "kode": kode_nama}
         return redirect(url_for("index"))
-    return render_template_string(render_login_pegawai_page(
+    return render_login_pegawai_page(
         error="Kode Nama atau Kode Petugas salah. Mohon periksa kembali."
-    ))
+    )
 
 
 @app.route("/login")
