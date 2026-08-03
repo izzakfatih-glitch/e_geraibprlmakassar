@@ -55,15 +55,21 @@ MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-# SECRET_KEY wajib diset (lewat environment variable di Railway) supaya session login
-# tidak reset setiap kali server restart/redeploy. Kalau belum diset, pakai fallback
-# acak per-proses (login tetap jalan tapi akan ke-reset saat redeploy).
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24).hex()
-# Sesi login dibuat bertahan lama (30 hari) supaya staf tidak perlu login ulang
-# setiap kali buka aplikasi -- cukup sekali di awal, lalu semua halaman langsung
-# bisa dipakai selama sesi masih berlaku (lihat session.permanent di login_pegawai_submit).
+# PENTING: SECRET_KEY wajib SAMA di semua worker proses (Procfile pakai -w 4,
+# artinya ada 4 proses gunicorn berbeda) supaya cookie sesi yang ditandatangani
+# oleh 1 worker bisa tetap dikenali/valid saat request berikutnya ditangani
+# worker LAIN -- kalau tidak, user akan dianggap "belum login" lagi setiap kali
+# request-nya kebetulan jatuh ke worker yang berbeda (bug: login muncul lagi
+# saat pindah halaman). Paling aman: set FLASK_SECRET_KEY di environment
+# variable Railway dengan nilai TETAP. Kalau belum diset, fallback di bawah ini
+# tetap KONSISTEN antar-worker (bukan acak per-proses) supaya tidak bug,
+# walaupun secara keamanan sebaiknya tetap diganti dengan nilai rahasia sendiri.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "e-gerai-kkprl-bprl-makassar-2026-ganti-dgn-secret-sendiri"
+# Sesi login dibuat bertahan SANGAT LAMA (10 tahun / praktis tanpa batas waktu)
+# supaya staf cukup login SEKALI di awal, lalu semua menu langsung bisa dipakai
+# terus-menerus tanpa diminta login ulang, sampai mereka klik "Keluar" sendiri.
 import datetime as _dt
-app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=30)
+app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=3650)
 
 # ---- Konfigurasi OAuth Google (Sign in with Google) ----
 # GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET wajib diisi lewat environment variable
