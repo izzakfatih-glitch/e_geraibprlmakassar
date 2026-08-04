@@ -14,7 +14,7 @@ from llm_fallback import perkuat_narasi_ilmiah
 
 NAVY = RGBColor(0x1F, 0x4E, 0x79)
 LIGHTBLUE = "DCE6F1"
-FONT = "Calibri"
+FONT = "Arial"
 
 NA = "[data tidak terdeteksi otomatis \u2013 mohon lengkapi manual]"
 
