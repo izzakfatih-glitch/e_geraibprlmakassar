@@ -863,7 +863,7 @@ REVIEW_CSS = """
 .field-row { margin-bottom:12px; }
 .field-row label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin-bottom:5px; }
 .field-row input[type=text] { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:16px; color:var(--ink); background:#fff; }
+  font-size:18px; color:var(--ink); background:#fff; }
 .field-row input[type=text]:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 
 .preview-panel { position:sticky; top:80px; }
@@ -888,9 +888,9 @@ REVIEW_CSS = """
 .file-field-row input[type=file] { width:100%; font-size:12.5px; padding:8px; border:1px solid #d3dde7;
   border-radius:8px; background:#f7fafd; }
 .field-row textarea { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:15px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:96px; }
+  font-size:18px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:96px; }
 .field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
-.field-example { font-size:19px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
+.field-example { font-size:17px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
 .field-example .ex-text { font-style:italic; }
 .field-example .ex-fill { font-size:14px; font-weight:700; color:var(--blue); background:#eaf1fc;
   border:1px solid #cfe0f5; border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
@@ -927,7 +927,7 @@ REVIEW_CSS = """
 @media (max-width: 700px) { .img-input-row { max-width:80%; } }
 
 .select-field { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
-  font-size:16px; color:var(--ink); background:#fff; }
+  font-size:18px; color:var(--ink); background:#fff; }
 .select-field:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .select-other-input { margin-top:8px; display:none; }
 .select-other-input.show { display:block; }
@@ -945,12 +945,12 @@ REVIEW_CSS = """
   border-radius:8px; padding:9px 12px; cursor:pointer; font-size:12px; font-weight:700; }
 
 .money-field { display:flex; align-items:stretch; border:1px solid #d3dde7; border-radius:8px; overflow:hidden; }
-.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:16px;
+.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:18px;
   padding:11px 12px; border-right:1px solid #d3dde7; display:flex; align-items:center; }
-.money-field .money-input { border:none; border-radius:0; flex:1; padding:11px 13px; font-size:16px; }
+.money-field .money-input { border:none; border-radius:0; flex:1; padding:11px 13px; font-size:18px; }
 .money-field .money-input:focus { outline:none; }
 .money-field:focus-within { border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
-.date-picker-input { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px; font-size:16px; color:var(--ink); background:#fff; }
+.date-picker-input { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px; font-size:18px; color:var(--ink); background:#fff; }
 .date-picker-input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
 .field-note { font-size:11px; color:var(--muted); margin-top:4px; }
 
