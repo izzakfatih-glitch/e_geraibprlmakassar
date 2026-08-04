@@ -275,14 +275,26 @@ def _detect_laporan_tag(text_before, current_tag):
 # kalimat template generik yang cuma diisi angka.
 NARASI_SECTIONS = [
     (r"\d\.\s*Gelombang\b", "gelombang"),
+    (r"(analisis|kondisi|karakteristik|data)\s*gelombang\b", "gelombang"),
     (r"\d\.\s*Arus\b", "arus"),
+    (r"(analisis|kondisi|karakteristik|pola|data)\s*arus\b", "arus"),
     (r"\d\.\s*Pasang\s*Surut\b", "pasut"),
+    (r"(analisis|kondisi|karakteristik|tipe|data)\s*pasang\s*surut\b", "pasut"),
     (r"[A-Z]\.\s*Profil\s*Dasar\s*Laut\b", "batimetri"),
     (r"Profil\s*Batimetri\b", "batimetri"),
+    (r"(analisis|kondisi|data)\s*batimetri\b", "batimetri"),
+    (r"kedalaman\s*perairan\b", "batimetri"),
+    (r"\d\.\s*Mangrove\b", "mangrove"),
+    (r"(kondisi|ekosistem)\s*mangrove\b", "mangrove"),
+    (r"\d\.\s*Lamun\b", "lamun"),
+    (r"(kondisi|ekosistem|padang)\s*lamun\b", "lamun"),
+    (r"\d\.\s*Terumbu\s*Karang\b", "karang"),
+    (r"(kondisi|ekosistem)\s*terumbu\s*karang\b", "karang"),
     (r"(identifikasi|kondisi)\s*ekosistem\b", "ekosistem"),
 ]
 
 MAX_NARASI_LEN = 2000  # batas aman biar tidak "kebablasan" ambil isi dokumen kalau heading berikutnya tidak kedeteksi
+MIN_NARASI_LEN = 60  # di bawah ini dianggap bukan narasi berarti (cuma angka/label pendek)
 
 
 def extract_narasi_sections(full_text):
@@ -290,7 +302,12 @@ def extract_narasi_sections(full_text):
     satu heading dengan heading berikutnya sebagai narasi utuh section itu.
     Mengembalikan dict {tag: teks_narasi}. Kalau heading tidak ditemukan
     sama sekali, dict yang dikembalikan kosong (pemanggil lalu pakai
-    fallback kalimat template seperti sebelumnya)."""
+    fallback kalimat template seperti sebelumnya).
+
+    Teks SEBELUM heading pertama yang ditemukan (kalau cukup panjang untuk
+    dianggap narasi, bukan sekadar judul dokumen/header halaman) juga
+    ditangkap terpisah sebagai tag 'pendahuluan' -- supaya paragraf
+    pembuka/konteks yang biasanya ada di awal Laporan tidak ikut hilang."""
     matches = []
     for pattern, tag in NARASI_SECTIONS:
         for m in re.finditer(pattern, full_text, re.IGNORECASE):
@@ -300,11 +317,16 @@ def extract_narasi_sections(full_text):
     matches.sort(key=lambda x: x[0])
 
     narasi = {}
+
+    awal = full_text[:matches[0][0]].strip(" .:-")
+    if len(awal) >= 200:  # cukup panjang, kemungkinan besar paragraf pembuka sungguhan
+        narasi["pendahuluan"] = awal[:MAX_NARASI_LEN].strip()
+
     for i, (start, end, tag) in enumerate(matches):
         next_start = matches[i + 1][0] if i + 1 < len(matches) else len(full_text)
         chunk = full_text[end:next_start].strip(" .:-")
         chunk = chunk[:MAX_NARASI_LEN].strip()
-        if chunk and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
+        if len(chunk) >= MIN_NARASI_LEN and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
             narasi[tag] = chunk
     return narasi
 

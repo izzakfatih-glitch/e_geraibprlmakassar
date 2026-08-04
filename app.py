@@ -42,14 +42,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR: folder untuk data yang perlu BERTAHAN lintas-redeploy (riwayat &
 # draft per-pengguna). Kalau env var DATA_DIR diisi (arahkan ke mount path
 # Railway Volume, mis. "/data"), riwayat tidak akan hilang saat redeploy.
-# Kalau tidak diisi, fallback ke folder aplikasi biasa (ephemeral -- hilang
-# tiap redeploy, sama seperti sebelumnya).
+# Kalau tidak diisi ATAU gagal diakses (mis. Volume belum siap saat startup),
+# fallback ke folder aplikasi biasa -- supaya aplikasi TIDAK PERNAH crash
+# gara-gara masalah storage eksternal, cukup riwayat jadi ephemeral lagi.
 DATA_DIR = os.environ.get("DATA_DIR") or BASE_DIR
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
-HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
-DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
 DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
@@ -58,7 +57,22 @@ STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(JOBS_DIR, exist_ok=True)
-os.makedirs(DRAFTS_DIR, exist_ok=True)
+
+try:
+    os.makedirs(os.path.join(DATA_DIR, "drafts"), exist_ok=True)
+    # Tes tulis-baca kecil untuk pastikan DATA_DIR benar-benar bisa dipakai
+    # (bukan cuma makedirs sukses tapi ternyata read-only/belum ter-mount).
+    _test_path = os.path.join(DATA_DIR, ".write_test")
+    with open(_test_path, "w") as _f:
+        _f.write("ok")
+    os.remove(_test_path)
+except Exception as _e:
+    print(f"[startup] PERINGATAN: DATA_DIR ({DATA_DIR}) tidak bisa dipakai ({_e}), fallback ke BASE_DIR.")
+    DATA_DIR = BASE_DIR
+    os.makedirs(os.path.join(DATA_DIR, "drafts"), exist_ok=True)
+
+HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
+DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
 print(f"[startup] DATA_DIR (riwayat/draft tersimpan di sini) = {DATA_DIR}")
 
 
@@ -116,6 +130,7 @@ print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
 # storage) di pengaturan Railway dan mengarahkannya ke folder BASE_DIR ini.
 # ---------------------------------------------------------------------------
 import json
+import base64
 import datetime
 
 WITA = datetime.timezone(datetime.timedelta(hours=8))  # Waktu Indonesia Tengah (Makassar)
@@ -170,9 +185,16 @@ def _safe_kode(kode_nama):
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(kode_nama or "anon"))
 
 
-def save_draft(kode_nama, job_id, prop_data):
+def save_draft(kode_nama, job_id, prop_data, prop_images=None):
     try:
         safe_kode = _safe_kode(kode_nama)
+        images_b64 = []
+        for im in (prop_images or []):
+            images_b64.append({
+                "tag": im["tag"],
+                "ext": im["ext"],
+                "data": base64.b64encode(im["bytes"]).decode("ascii"),
+            })
         entry = {
             "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
             "job_id": job_id,
@@ -180,6 +202,7 @@ def save_draft(kode_nama, job_id, prop_data):
             "nama_pemohon": prop_data.get("Nama Pemohon", ""),
             "nama_perusahaan": prop_data.get("Nama Perusahaan/Instansi", ""),
             "prop_data": prop_data,
+            "images": images_b64,
         }
         path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -235,6 +258,19 @@ def load_draft(kode_nama, job_id):
     except Exception:
         traceback.print_exc()
         return None
+
+
+def draft_images_to_prop_images(draft):
+    """Decode gambar tersimpan di draft (base64) balik jadi bytes, format
+    yang sama dengan prop_images biasa (dipakai untuk 'bawa lanjut' gambar
+    lama saat resume isian tanpa perlu upload ulang)."""
+    hasil = []
+    for im in (draft or {}).get("images", []) or []:
+        try:
+            hasil.append({"tag": im["tag"], "ext": im["ext"], "bytes": base64.b64decode(im["data"])})
+        except Exception:
+            continue
+    return hasil
 
 
 # Login sederhana pegawai -- kredensial diambil LANGSUNG dari Google Sheet
@@ -1338,7 +1374,7 @@ def render_history_page():
 </body></html>"""
 
 
-def render_manual_form_page(error=None, prefill_data=None):
+def render_manual_form_page(error=None, prefill_data=None, saved_notice=False, resume_job_id=None):
     prop_groups = []
     for group_title, fields in FIELD_GROUPS:
         prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
@@ -1443,6 +1479,30 @@ def render_manual_form_page(error=None, prefill_data=None):
         )
 
     error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    if saved_notice:
+        error_html += '<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">\u2705 Isian berhasil disimpan ke "Riwayat Saya". Anda bisa lanjutkan kapan saja tanpa harus generate dokumen dulu.</div>'
+
+    resume_images_note_html = ""
+    if resume_job_id:
+        user = session.get("user")
+        if user and user.get("kode"):
+            old_draft = load_draft(user["kode"], resume_job_id)
+            old_images = draft_images_to_prop_images(old_draft) if old_draft else []
+            if old_images:
+                label_map = {
+                    "siteplan": "Site Plan", "peta_lokasi": "Peta Lokasi", "foto_mangrove": "Foto Mangrove",
+                    "foto_karang_insitu": "Foto Terumbu Karang", "dok_kegiatan_eksisting": "Dok. Kegiatan Eksisting",
+                    "dok_pemanfaatan_sekitar": "Dok. Pemanfaatan Sekitar", "foto_lamun": "Foto Lamun",
+                    "gambar_aksesibilitas": "Gambar Aksesibilitas", "sertifikat_lahan": "Sertifikat Lahan",
+                    "dok_sosialisasi": "Dok. Sosialisasi", "dok_pendukung_lainnya": "Dok. Pendukung Lainnya",
+                    "dukung_dokumen": "Dokumen Data Dukung",
+                }
+                items = ", ".join(sorted({label_map.get(im["tag"], im["tag"]) for im in old_images}))
+                resume_images_note_html = (
+                    '<div class="error-banner" style="margin-bottom:16px;background:#eef5fd;border-color:#cfe0f5;">'
+                    f'\U0001F4CE Gambar berikut sudah tersimpan dari isian sebelumnya dan akan <b>tetap dipakai otomatis</b> '
+                    f'kalau Anda tidak upload ulang: <b>{items}</b>.</div>'
+                )
 
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
@@ -1462,6 +1522,8 @@ def render_manual_form_page(error=None, prefill_data=None):
 <div class="review-wrap">
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
+    <input type="hidden" name="resume_job_id" value=\"""" + (resume_job_id or "") + """\">
+    """ + resume_images_note_html + """
     <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
@@ -1485,6 +1547,7 @@ def render_manual_form_page(error=None, prefill_data=None):
       <div class="sticky-bar-row">
         <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
         <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-draft">""" + ICONS["download"] + """ Unduh Draft</button>
+        <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-draft">""" + ICONS["check-circle"] + """ Simpan</button>
       </div>
     </div>
 
@@ -1722,7 +1785,7 @@ def render_manual_form_page(error=None, prefill_data=None):
           <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
 
           """ + img_field_html("img_siteplan", "Gambaran Rencana Tapak Site",
-                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.") + """
+                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Bisa lebih dari 1 gambar (mis. tampilan dari sudut/lapisan berbeda). Maks. 10 MB per gambar.", note="(bisa lebih dari 1)") + """
 
           """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
                                 "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.") + """
@@ -2101,13 +2164,20 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   target.addEventListener('dragleave', function() { target.classList.remove('dragover'); });
   target.addEventListener('drop', function(e) {
     e.preventDefault(); target.classList.remove('dragover');
-    for (var i = 0; i < e.dataTransfer.files.length; i++) { addFile(e.dataTransfer.files[i]); }
+    var dropSnapshot = Array.prototype.slice.call(e.dataTransfer.files);
+    dropSnapshot.forEach(function(f) { addFile(f); });
   });
 
   // Tombol Upload File: eksplisit membuka file browser
   uploadBtn.addEventListener('click', function() { input.click(); });
   input.addEventListener('change', function() {
-    for (var i = 0; i < input.files.length; i++) { addFile(input.files[i]); }
+    // Salin ke array statis DULU -- soalnya addFile() memanggil refreshInput()
+    // yang mengganti input.files dengan DataTransfer baru, jadi kalau loop
+    // langsung baca input.files.length tiap iterasi, nilainya berubah di
+    // tengah jalan dan file ke-2/3/dst jadi ketinggalan (cuma file pertama
+    // yang sempat diproses).
+    var filesSnapshot = Array.prototype.slice.call(input.files);
+    filesSnapshot.forEach(function(f) { addFile(f); });
   });
 });
 </script>
@@ -2135,7 +2205,6 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   }}
 
   Object.keys(data).forEach(function(key) {{
-    if (key.startsWith('_')) return;
     var val = data[key];
     if (key === 'koordinat' && Array.isArray(val)) {{
       var ta = document.getElementById('koordinat_manual');
@@ -2143,10 +2212,16 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
       return;
     }}
     if (key === '_lokasi_parts' && Array.isArray(val)) {{
+      // Provinsi (index 3) HARUS diisi PALING AWAL -- soalnya event 'change'
+      // pada Provinsi otomatis mengosongkan Kabupaten/Kecamatan/Desa (logika
+      // cascading datalist wilayah). Kalau diisi belakangan, nilai yang sudah
+      // diisi duluan bakal ketimpa jadi kosong lagi.
+      var urutan = [3, 2, 1, 0];
       var labels = ['prop_loc__0', 'prop_loc__1', 'prop_loc__2', 'prop_loc__3'];
-      val.forEach(function(v, i) {{ if (labels[i]) setField(labels[i], v); }});
+      urutan.forEach(function(i) {{ if (val[i] !== undefined) setField(labels[i], val[i]); }});
       return;
     }}
+    if (key.startsWith('_')) return;
     if (typeof val === 'boolean') {{
       var cb = document.getElementsByName(key)[0];
       if (cb && cb.type === 'checkbox') cb.checked = val;
@@ -2362,7 +2437,7 @@ def riwayat_saya_lanjutkan(job_id):
     draft = load_draft(user["kode"], job_id)
     if not draft:
         return render_template_string(render_riwayat_saya_page())
-    return render_template_string(render_manual_form_page(prefill_data=draft.get("prop_data", {})))
+    return render_template_string(render_manual_form_page(prefill_data=draft.get("prop_data", {}), resume_job_id=job_id))
 
 
 @app.route("/review", methods=["POST"])
@@ -2536,6 +2611,20 @@ def build_prop_data_from_manual_form(form, files):
             if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
                 prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
 
+    # Kalau ini lanjutan dari draft tersimpan (resume), bawa lanjut gambar
+    # lama untuk tag yang TIDAK diupload ulang di submit ini -- supaya
+    # gambar yang sudah ada sebelumnya tidak hilang begitu saja.
+    resume_job_id = form.get("resume_job_id", "").strip()
+    current_user = session.get("user")
+    if resume_job_id and current_user and current_user.get("kode"):
+        old_draft = load_draft(current_user["kode"], resume_job_id)
+        if old_draft:
+            old_images = draft_images_to_prop_images(old_draft)
+            new_tags = {im["tag"] for im in prop_images}
+            for im in old_images:
+                if im["tag"] not in new_tags:
+                    prop_images.append(im)
+
     return prop_data, prop_images
 
 
@@ -2572,7 +2661,7 @@ def proposal_manual_submit():
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
         current_user = session.get("user")
         if current_user and current_user.get("kode"):
-            save_draft(current_user["kode"], job_id, prop_data)
+            save_draft(current_user["kode"], job_id, prop_data, prop_images)
 
         preview_docx_path = os.path.join(tmp_dir, "preview.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
@@ -2601,7 +2690,7 @@ def proposal_manual_draft():
 
         current_user = session.get("user")
         if current_user and current_user.get("kode"):
-            save_draft(current_user["kode"], uuid.uuid4().hex[:12], prop_data)
+            save_draft(current_user["kode"], uuid.uuid4().hex[:12], prop_data, prop_images)
 
         tmp_path = os.path.join(OUTPUT_DIR, f"Draft_{uuid.uuid4().hex[:12]}.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, tmp_path)
@@ -2632,6 +2721,28 @@ def proposal_manual_draft():
         download_name=download_name,
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+@app.route("/proposal-manual/simpan", methods=["POST"])
+def proposal_manual_simpan():
+    """Simpan isian form APA ADANYA ke 'Riwayat Saya' TANPA memproses/
+    men-generate dokumen sama sekali -- supaya staf bisa lanjut isi
+    kapan saja tanpa harus menunggu proses dokumen selesai."""
+    current_user = session.get("user")
+    if not current_user or not current_user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        job_id = uuid.uuid4().hex[:12]
+        save_draft(current_user["kode"], job_id, prop_data, prop_images)
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(render_manual_form_page(
+            error="Terjadi kesalahan saat menyimpan. Silakan coba lagi."
+        )), 500
+    return render_template_string(render_manual_form_page(
+        error=None, prefill_data=prop_data, saved_notice=True
+    ))
 
 
 @app.route("/finalize", methods=["POST"])
