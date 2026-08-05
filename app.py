@@ -170,9 +170,30 @@ def _safe_kode(kode_nama):
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(kode_nama or "anon"))
 
 
-def save_draft(kode_nama, job_id, prop_data):
+def _draft_images_dir(safe_kode, job_id):
+    return os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}_images")
+
+
+def save_draft(kode_nama, job_id, prop_data, prop_images=None):
+    """Simpan seluruh isian form (prop_data) SEKALIGUS gambar yang sudah
+    diunggah (prop_images) supaya tidak hilang kalau pengguna menutup
+    halaman / melanjutkan isian di lain waktu. Gambar disimpan sebagai file
+    terpisah di folder <kode>__<job_id>_images/ (bukan di-embed ke JSON)
+    supaya file draft tetap ringan dan cepat dibaca."""
     try:
         safe_kode = _safe_kode(kode_nama)
+
+        images_meta = []
+        if prop_images:
+            img_dir = _draft_images_dir(safe_kode, job_id)
+            os.makedirs(img_dir, exist_ok=True)
+            for i, im in enumerate(prop_images):
+                ext = im.get("ext") or "png"
+                fname = f"{i}_{im.get('tag', 'lainnya')}.{ext}"
+                with open(os.path.join(img_dir, fname), "wb") as imgf:
+                    imgf.write(im["bytes"])
+                images_meta.append({"tag": im.get("tag", "lainnya"), "filename": fname})
+
         entry = {
             "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
             "job_id": job_id,
@@ -180,12 +201,58 @@ def save_draft(kode_nama, job_id, prop_data):
             "nama_pemohon": prop_data.get("Nama Pemohon", ""),
             "nama_perusahaan": prop_data.get("Nama Perusahaan/Instansi", ""),
             "prop_data": prop_data,
+            "prop_images_meta": images_meta,
         }
         path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(entry, f, ensure_ascii=False)
     except Exception:
         traceback.print_exc()
+
+
+def load_draft_images(kode_nama, job_id):
+    """Baca kembali gambar yang tersimpan untuk satu draft (hasil save_draft
+    sebelumnya) dalam format list [{'tag','bytes','ext'}] -- format yang
+    sama seperti prop_images biasa, siap dipakai langsung oleh
+    build_document()."""
+    safe_kode = _safe_kode(kode_nama)
+    draft = load_draft(kode_nama, job_id)
+    if not draft:
+        return []
+    images = []
+    img_dir = _draft_images_dir(safe_kode, job_id)
+    for meta in draft.get("prop_images_meta", []) or []:
+        fpath = os.path.join(img_dir, meta.get("filename", ""))
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath, "rb") as f:
+                data_bytes = f.read()
+            ext = os.path.splitext(meta["filename"])[1].lstrip(".").lower() or "png"
+            images.append({"tag": meta.get("tag", "lainnya"), "bytes": data_bytes, "ext": ext})
+        except Exception:
+            continue
+    return images
+
+
+def merge_draft_images(kode_nama, job_id, prop_images):
+    """Gabungkan gambar yang BARU diunggah pada submit ini (prop_images)
+    dengan gambar yang sudah tersimpan sebelumnya lewat tombol \"Simpan\"
+    (job_id yang sama) -- supaya kalau pengguna sudah pernah mengunggah
+    gambar tapi lupa mengunggah ulang di sesi berikutnya, gambar lama tetap
+    dipakai (tidak hilang). Tag yang di-upload ulang pada submit ini akan
+    MENGGANTIKAN (bukan menumpuk) gambar lama dengan tag yang sama."""
+    if not kode_nama or not job_id:
+        return prop_images
+    saved = load_draft_images(kode_nama, job_id)
+    if not saved:
+        return prop_images
+    new_tags = {im.get("tag") for im in prop_images}
+    merged = list(prop_images)
+    for im in saved:
+        if im.get("tag") not in new_tags:
+            merged.append(im)
+    return merged
 
 
 def cleanup_expired_drafts():
@@ -196,6 +263,10 @@ def cleanup_expired_drafts():
             try:
                 if os.path.getmtime(path) < cutoff:
                     os.remove(path)
+                    # folder gambar draft ini (kalau ada) ikut dihapus
+                    if fname.endswith(".json"):
+                        img_dir = path[:-len(".json")] + "_images"
+                        shutil.rmtree(img_dir, ignore_errors=True)
             except OSError:
                 continue
     except Exception:
@@ -1338,7 +1409,7 @@ def render_history_page():
 </body></html>"""
 
 
-def render_manual_form_page(error=None, prefill_data=None):
+def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_images_meta=None, saved_msg=None):
     prop_groups = []
     for group_title, fields in FIELD_GROUPS:
         prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
@@ -1444,6 +1515,18 @@ def render_manual_form_page(error=None, prefill_data=None):
 
     error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
 
+    if saved_msg:
+        error_html += f'<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">\u2705 {saved_msg}</div>'
+
+    if saved_images_meta:
+        tags_txt = ", ".join(m.get("tag", "") for m in saved_images_meta)
+        error_html += (
+            '<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">'
+            f"\U0001F4CE {len(saved_images_meta)} gambar tersimpan dari isian sebelumnya ({tags_txt}) &mdash; "
+            "tetap akan dipakai walau tidak diunggah ulang. Unggah ulang di kolom terkait kalau ingin menggantinya."
+            "</div>"
+        )
+
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1462,6 +1545,8 @@ def render_manual_form_page(error=None, prefill_data=None):
 <div class="review-wrap">
   """ + error_html + """
   <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
+    <input type="hidden" name="existing_job_id" value=\"""" + (job_id or "") + """\">
+
     <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
@@ -1483,6 +1568,7 @@ def render_manual_form_page(error=None, prefill_data=None):
 
     <div class="sticky-bar">
       <div class="sticky-bar-row">
+        <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-draft">""" + ICONS["check-circle"] + """ Simpan</button>
         <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
         <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-draft">""" + ICONS["download"] + """ Unduh Draft</button>
       </div>
@@ -2362,7 +2448,11 @@ def riwayat_saya_lanjutkan(job_id):
     draft = load_draft(user["kode"], job_id)
     if not draft:
         return render_template_string(render_riwayat_saya_page())
-    return render_template_string(render_manual_form_page(prefill_data=draft.get("prop_data", {})))
+    return render_template_string(render_manual_form_page(
+        prefill_data=draft.get("prop_data", {}),
+        job_id=job_id,
+        saved_images_meta=draft.get("prop_images_meta", []),
+    ))
 
 
 @app.route("/review", methods=["POST"])
@@ -2542,6 +2632,38 @@ def build_prop_data_from_manual_form(form, files):
 EMPTY_LAP_DATA = {}  # dipakai saat generate draft tanpa Laporan Hidro-Oseanografi
 
 
+@app.route("/proposal-manual/simpan", methods=["POST"])
+def proposal_manual_simpan():
+    """Simpan isian form (SEMUA field + gambar yang sudah diunggah) sebagai
+    draft, TANPA memproses/menggabungkan dokumen apa pun -- supaya pengguna
+    bisa berhenti sejenak dan melanjutkan isian nanti tanpa kehilangan apa
+    yang sudah dikerjakan. Beda dari \"Unduh Draft\" yang langsung membuat
+    file Word; tombol ini murni menyimpan progres isian."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        existing_job_id = request.form.get("existing_job_id", "").strip()
+        job_id = existing_job_id or uuid.uuid4().hex[:12]
+        prop_images = merge_draft_images(user["kode"], job_id, prop_images)
+        save_draft(user["kode"], job_id, prop_data, prop_images)
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(render_manual_form_page(
+            error="Terjadi kesalahan saat menyimpan draft. Silakan coba lagi.",
+        )), 500
+
+    n_img = len(prop_images)
+    pesan = f"Draft tersimpan ({n_img} gambar ikut tersimpan)." if n_img else "Draft tersimpan."
+    return render_template_string(render_manual_form_page(
+        prefill_data=prop_data,
+        job_id=job_id,
+        saved_msg=pesan,
+    ))
+
+
 @app.route("/proposal-manual", methods=["POST"])
 def proposal_manual_submit():
     laporan_file = request.files.get("laporan")
@@ -2563,6 +2685,10 @@ def proposal_manual_submit():
 
     try:
         prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        current_user = session.get("user")
+        draft_job_id = request.form.get("existing_job_id", "").strip() or job_id
+        if current_user and current_user.get("kode"):
+            prop_images = merge_draft_images(current_user["kode"], draft_job_id, prop_images)
 
         if laporan_path:
             lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
@@ -2570,9 +2696,8 @@ def proposal_manual_submit():
             lap_data, lap_images = dict(EMPTY_LAP_DATA), []
 
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
-        current_user = session.get("user")
         if current_user and current_user.get("kode"):
-            save_draft(current_user["kode"], job_id, prop_data)
+            save_draft(current_user["kode"], draft_job_id, prop_data, prop_images)
 
         preview_docx_path = os.path.join(tmp_dir, "preview.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
@@ -2600,8 +2725,10 @@ def proposal_manual_draft():
         lap_data, lap_images = dict(EMPTY_LAP_DATA), []
 
         current_user = session.get("user")
+        draft_job_id = request.form.get("existing_job_id", "").strip() or uuid.uuid4().hex[:12]
         if current_user and current_user.get("kode"):
-            save_draft(current_user["kode"], uuid.uuid4().hex[:12], prop_data)
+            prop_images = merge_draft_images(current_user["kode"], draft_job_id, prop_images)
+            save_draft(current_user["kode"], draft_job_id, prop_data, prop_images)
 
         tmp_path = os.path.join(OUTPUT_DIR, f"Draft_{uuid.uuid4().hex[:12]}.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, tmp_path)
