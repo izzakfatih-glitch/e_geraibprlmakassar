@@ -55,14 +55,33 @@ def _parse_proposal_text(full_text, full_text_raw):
     lokasi_raw = data.get("Lokasi Kegiatan", "")
     data["_lokasi_parts"] = [p for p in re.split(r"\s{1,}", lokasi_raw) if p.strip()]
 
-    # Lokasi Kegiatan sebenarnya terdiri atas 4 baris terpisah (desa, kecamatan,
-    # kabupaten, provinsi) pada dokumen sumber. Ambil ulang dari teks MENTAH
-    # (belum dinormalisasi) supaya batas baris tidak hilang.
+    # Lokasi Kegiatan pada dokumen sumber ada 2 format yang pernah ditemui:
+    # (a) 4 baris terpisah (desa/kecamatan/kabupaten/provinsi masing-masing
+    #     baris sendiri) -- ambil dari teks MENTAH supaya batas baris tidak
+    #     hilang; atau
+    # (b) satu baris dipisah koma, mis. "Desa X, Kecamatan Y, Kabupaten Z,
+    #     Provinsi W" -- format ini yang paling umum dijumpai di dokumen
+    #     instansi pemerintah.
     m_loc = re.search(r"Lokasi Kegiatan\s*\n(.*?)\nNama Perairan", full_text_raw, re.DOTALL)
     if m_loc:
         lines = [norm(x) for x in m_loc.group(1).split("\n") if norm(x)]
         if len(lines) >= 4:
             data["_lokasi_parts"] = lines[:4]
+        elif len(lines) == 1 and lines[0].count(",") >= 2:
+            # format (b): satu baris, pisahkan per koma lalu buang label
+            # "Desa"/"Kecamatan"/"Provinsi" di depan tiap bagian (kabupaten/
+            # kota TIDAK dibuang labelnya karena template pemanggil tidak
+            # menambahkan prefiks sendiri untuk bagian ini).
+            comma_parts = [norm(x) for x in lines[0].split(",") if norm(x)]
+            if len(comma_parts) >= 4:
+                cleaned = []
+                for i, part in enumerate(comma_parts[:4]):
+                    if i in (0, 1, 3):  # desa, kecamatan, provinsi
+                        part = re.sub(r"^(desa|kecamatan|provinsi)\s+", "", part, flags=re.IGNORECASE)
+                    cleaned.append(part)
+                data["_lokasi_parts"] = cleaned
+            elif lines:
+                data["_lokasi_parts"] = lines
         elif lines:
             data["_lokasi_parts"] = lines
 
@@ -107,10 +126,113 @@ def _parse_proposal_text(full_text, full_text_raw):
     return data
 
 
+def _nearby_caption_tag(para_texts_norm, pi, patterns, before=3, after=3):
+    """Cari caption gambar di paragraf-paragraf SEKITAR posisi gambar (pi),
+    baik sebelum maupun sesudah, diprioritaskan dari yang paling dekat --
+    karena konvensi penulisan caption berbeda-beda antar dokumen (ada yang
+    menaruh caption di atas gambar, ada yang di bawah)."""
+    offsets = [0]
+    for d in range(1, max(before, after) + 1):
+        if d <= after:
+            offsets.append(d)
+        if d <= before:
+            offsets.append(-d)
+    for off in offsets:
+        idx = pi + off
+        if 0 <= idx < len(para_texts_norm):
+            cand = para_texts_norm[idx]
+            if not cand:
+                continue
+            tag = _tag_from_caption(cand, patterns)
+            if tag:
+                return tag
+    return None
+
+
 def _tag_proposal_image(current_section, section_img_count):
     if current_section == "terumbu_karang_section":
         return "foto_pantai" if section_img_count == 0 else "foto_karang_insitu"
     return current_section or "lainnya"
+
+
+# ----------------------------------------------------------------------
+# PENCOCOKAN GAMBAR -> TAG BERDASARKAN CAPTION ASLI DI DEKAT GAMBAR
+# ----------------------------------------------------------------------
+# Cara lama menandai gambar berdasar section/heading TERAKHIR yang terlihat
+# di halaman/paragraf sebelumnya -- ini gampang keliru kalau gambar (mis.
+# dokumentasi/lampiran foto) posisinya di dokumen sumber tidak persis
+# mengikuti urutan section di template (contoh nyata: screenshot rapat yang
+# kebetulan muncul di section "Rencana Tapak" ikut ditandai sebagai foto
+# site plan). Caption asli ("Gambar N. <deskripsi>") yang menempel tepat
+# di gambarnya sendiri jauh lebih dipercaya karena tidak bergantung pada
+# section/urutan fisik gambar di dokumen sumber -- maka ini jadi metode
+# UTAMA, dengan cara lama sebagai fallback kalau caption tidak ditemukan.
+
+CAPTION_RE = re.compile(r"^(gambar|lampiran|foto)\s*\d*[.:]?\s*", re.IGNORECASE)
+
+CAPTION_PATTERNS_PROPOSAL = [
+    (r"site\s*plan|rencana\s*tapak", "siteplan"),
+    (r"peta\s*lokasi|sebaran\s*titik\s*koordinat|\bkoordinat\b", "peta_lokasi"),
+    (r"garis\s*pantai|eksisting\s*perairan", "foto_pantai"),
+    (r"mangrove", "foto_mangrove"),
+    (r"in-?situ|terumbu\s*karang", "foto_karang_insitu"),
+    (r"pola\s*ruang", "peta_pola_ruang"),
+]
+
+CAPTION_PATTERNS_LAPORAN = [
+    (r"mawar\s*gelombang|\bgelombang\b", "mawar_gelombang"),
+    (r"mawar\s*arus|\barus\b", "mawar_arus"),
+    (r"pasang\s*surut|\bpasut\b", "siklus_pasut"),
+    (r"batimetri", "profil_batimetri"),
+    (r"ekosistem", "peta_ekosistem"),
+]
+
+
+def _tag_from_caption(caption_text, patterns):
+    """Cocokkan teks caption (biasanya berbunyi 'Gambar N. <deskripsi>') ke
+    tag yang tepat berdasar kata kunci pada DESKRIPSI caption itu sendiri --
+    bukan berdasar section/heading yang mungkin jauh sebelumnya di dokumen.
+    Return None kalau tidak ada pola yang cocok, supaya pemanggil bisa
+    memakai fallback lama."""
+    if not caption_text:
+        return None
+    text = norm(caption_text)
+    for pattern, tag in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return tag
+    return None
+
+
+def _page_caption_for_image(page, img_rect):
+    """Cari blok teks caption yang paling dekat secara vertikal dengan
+    sebuah gambar pada halaman PDF yang sama (konvensi umum: caption
+    'Gambar N. ...' diletakkan tepat di bawah gambarnya; kalau tidak ada,
+    coba blok tepat di atasnya sebagai upaya kedua)."""
+    if img_rect is None:
+        return None
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return None
+    below, above = [], []
+    for b in blocks:
+        x0, y0, x1, y1, text = b[0], b[1], b[2], b[3], b[4]
+        text = (text or "").strip()
+        if not text:
+            continue
+        if y0 >= img_rect.y1 - 2:
+            below.append((y0 - img_rect.y1, text))
+        elif y1 <= img_rect.y0 + 2:
+            above.append((img_rect.y0 - y1, text))
+    below.sort(key=lambda t: t[0])
+    above.sort(key=lambda t: t[0])
+    for _, text in below[:2]:
+        if CAPTION_RE.match(norm(text)):
+            return norm(text)
+    for _, text in above[:1]:
+        if CAPTION_RE.match(norm(text)):
+            return norm(text)
+    return None
 
 
 def extract_proposal(pdf_path):
@@ -151,12 +273,24 @@ def extract_proposal(pdf_path):
             if w < 150 or ht < 150:
                 continue
 
-            tag = _tag_proposal_image(current_section, section_img_count)
-            section_img_count += 1
-
             if h in seen_hash:
                 continue
             seen_hash.add(h)
+
+            # 1) coba tandai dari CAPTION ASLI di dekat gambar ini di
+            #    halaman yang sama (metode utama, paling akurat).
+            rects = page.get_image_rects(xref)
+            img_rect = rects[0] if rects else None
+            caption = _page_caption_for_image(page, img_rect)
+            caption_tag = _tag_from_caption(caption, CAPTION_PATTERNS_PROPOSAL)
+
+            if caption_tag:
+                tag = caption_tag
+            else:
+                # 2) fallback: tebak dari section/heading terakhir yang
+                #    terlihat (perilaku lama).
+                tag = _tag_proposal_image(current_section, section_img_count)
+                section_img_count += 1
 
             images.append({
                 "tag": tag, "bytes": data_bytes, "ext": base["ext"],
@@ -174,22 +308,59 @@ def extract_proposal_docx(docx_path):
     tidak punya batas halaman yang tetap)."""
     from docx import Document
     from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    def _iter_block_items(document):
+        """Iterasi Paragraph & Table dalam URUTAN ASLI kemunculannya di body
+        dokumen. python-docx secara default memisahkan `doc.paragraphs` dan
+        `doc.tables` ke dua koleksi terpisah, sehingga urutan campuran
+        aslinya (mis. tabel field di awal, lalu paragraf narasi sesudahnya)
+        hilang -- padahal parsing regex label->nilai di bawah bergantung
+        pada urutan tampilan asli itu."""
+        for child in document.element.body.iterchildren():
+            if child.tag == qn("w:p"):
+                yield Paragraph(child, document)
+            elif child.tag == qn("w:tbl"):
+                yield Table(child, document)
 
     doc = Document(docx_path)
 
-    parts = [p.text for p in doc.paragraphs]
+    # PENTING: baca paragraf & tabel sesuai URUTAN ASLI kemunculannya di body
+    # dokumen (bukan semua paragraf dulu baru semua tabel di akhir) --
+    # parsing regex field di bawah ini mengasumsikan label & nilainya
+    # berurutan seperti tampilan dokumen. Kalau tabel field (yang biasanya
+    # ada di AWAL dokumen) malah ditumpuk ke akhir teks, regex label bisa
+    # salah nyangkut ke kemunculan kata yang sama di kalimat/caption lain
+    # sebelum tabel yang sesungguhnya ditemukan.
+    parts = []
+    for block in _iter_block_items(doc):
+        if isinstance(block, Table):
+            for row in block.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+        else:
+            parts.append(block.text)
     full_text_raw = "\n".join(parts)
     full_text = norm(full_text_raw)
     data = _parse_proposal_text(full_text, full_text_raw)
 
-    # ---------------- IMAGES (pelacakan section per-paragraf) ----------------
+    # ---------------- IMAGES ----------------
+    # Metode utama: cocokkan tiap gambar ke tag berdasar CAPTION ASLI yang
+    # menempel di paragraf yang sama / 1-3 paragraf sesudahnya (konvensi
+    # umum: "Gambar N. <deskripsi>" ditulis tepat di bawah gambar). Kalau
+    # tidak ada caption yang cocok pola manapun, baru pakai fallback lama
+    # (tebak dari section/heading terakhir yang terlihat).
+    paragraphs = doc.paragraphs
+    para_texts_norm = [norm(p.text) for p in paragraphs]
+
     seen_hash = set()
     images = []
     current_section = None
     section_img_count = 0
 
-    for para in doc.paragraphs:
-        para_text_norm = norm(para.text)
+    for pi, para in enumerate(paragraphs):
+        para_text_norm = para_texts_norm[pi]
         if para_text_norm:
             matches = []
             for pattern, tag in PROPOSAL_HEADINGS:
@@ -218,8 +389,13 @@ def extract_proposal_docx(docx_path):
                     continue
                 seen_hash.add(h)
 
-                tag = _tag_proposal_image(current_section, section_img_count)
-                section_img_count += 1
+                caption_tag = _nearby_caption_tag(para_texts_norm, pi, CAPTION_PATTERNS_PROPOSAL)
+
+                if caption_tag:
+                    tag = caption_tag
+                else:
+                    tag = _tag_proposal_image(current_section, section_img_count)
+                    section_img_count += 1
 
                 ext = image_part.content_type.split("/")[-1] if "/" in image_part.content_type else "png"
                 images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
@@ -248,8 +424,7 @@ LAPORAN_HEADINGS = [
     (r"siklus\s*pasut", "siklus_pasut"),
     (r"(peta\s*)?sebaran\s*(spasial\s*)?ekosistem", "peta_ekosistem"),
     (r"peta\s*ekosistem", "peta_ekosistem"),
-    (r"profil\s*(garis\s*)?batimetri", "profil_batimetri"),
-    (r"profil\s*dasar\s*laut", "profil_batimetri"),
+    (r"batimetri", "profil_batimetri"),
     (r"kontur\s*batimetri", "profil_batimetri"),
 ]
 
@@ -275,26 +450,14 @@ def _detect_laporan_tag(text_before, current_tag):
 # kalimat template generik yang cuma diisi angka.
 NARASI_SECTIONS = [
     (r"\d\.\s*Gelombang\b", "gelombang"),
-    (r"(analisis|kondisi|karakteristik|data)\s*gelombang\b", "gelombang"),
     (r"\d\.\s*Arus\b", "arus"),
-    (r"(analisis|kondisi|karakteristik|pola|data)\s*arus\b", "arus"),
     (r"\d\.\s*Pasang\s*Surut\b", "pasut"),
-    (r"(analisis|kondisi|karakteristik|tipe|data)\s*pasang\s*surut\b", "pasut"),
     (r"[A-Z]\.\s*Profil\s*Dasar\s*Laut\b", "batimetri"),
     (r"Profil\s*Batimetri\b", "batimetri"),
-    (r"(analisis|kondisi|data)\s*batimetri\b", "batimetri"),
-    (r"kedalaman\s*perairan\b", "batimetri"),
-    (r"\d\.\s*Mangrove\b", "mangrove"),
-    (r"(kondisi|ekosistem)\s*mangrove\b", "mangrove"),
-    (r"\d\.\s*Lamun\b", "lamun"),
-    (r"(kondisi|ekosistem|padang)\s*lamun\b", "lamun"),
-    (r"\d\.\s*Terumbu\s*Karang\b", "karang"),
-    (r"(kondisi|ekosistem)\s*terumbu\s*karang\b", "karang"),
     (r"(identifikasi|kondisi)\s*ekosistem\b", "ekosistem"),
 ]
 
 MAX_NARASI_LEN = 2000  # batas aman biar tidak "kebablasan" ambil isi dokumen kalau heading berikutnya tidak kedeteksi
-MIN_NARASI_LEN = 60  # di bawah ini dianggap bukan narasi berarti (cuma angka/label pendek)
 
 
 def extract_narasi_sections(full_text):
@@ -302,12 +465,7 @@ def extract_narasi_sections(full_text):
     satu heading dengan heading berikutnya sebagai narasi utuh section itu.
     Mengembalikan dict {tag: teks_narasi}. Kalau heading tidak ditemukan
     sama sekali, dict yang dikembalikan kosong (pemanggil lalu pakai
-    fallback kalimat template seperti sebelumnya).
-
-    Teks SEBELUM heading pertama yang ditemukan (kalau cukup panjang untuk
-    dianggap narasi, bukan sekadar judul dokumen/header halaman) juga
-    ditangkap terpisah sebagai tag 'pendahuluan' -- supaya paragraf
-    pembuka/konteks yang biasanya ada di awal Laporan tidak ikut hilang."""
+    fallback kalimat template seperti sebelumnya)."""
     matches = []
     for pattern, tag in NARASI_SECTIONS:
         for m in re.finditer(pattern, full_text, re.IGNORECASE):
@@ -317,16 +475,11 @@ def extract_narasi_sections(full_text):
     matches.sort(key=lambda x: x[0])
 
     narasi = {}
-
-    awal = full_text[:matches[0][0]].strip(" .:-")
-    if len(awal) >= 200:  # cukup panjang, kemungkinan besar paragraf pembuka sungguhan
-        narasi["pendahuluan"] = awal[:MAX_NARASI_LEN].strip()
-
     for i, (start, end, tag) in enumerate(matches):
         next_start = matches[i + 1][0] if i + 1 < len(matches) else len(full_text)
         chunk = full_text[end:next_start].strip(" .:-")
         chunk = chunk[:MAX_NARASI_LEN].strip()
-        if len(chunk) >= MIN_NARASI_LEN and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
+        if chunk and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
             narasi[tag] = chunk
     return narasi
 
@@ -426,7 +579,18 @@ def extract_laporan(pdf_path):
             if w < 150 or ht < 150 or h in seen_hash:
                 continue
             seen_hash.add(h)
-            if current_tag and current_tag not in used_tags:
+
+            # 1) coba tandai dari CAPTION ASLI di dekat gambar ini di halaman
+            #    yang sama (metode utama -- caption melekat ke gambarnya
+            #    sendiri, tak peduli urutan fisik gambar di dokumen sumber).
+            rects = page.get_image_rects(xref)
+            img_rect = rects[0] if rects else None
+            caption = _page_caption_for_image(page, img_rect)
+            caption_tag = _tag_from_caption(caption, CAPTION_PATTERNS_LAPORAN)
+
+            if caption_tag and caption_tag not in used_tags:
+                tag = caption_tag
+            elif current_tag and current_tag not in used_tags:
                 tag = current_tag
             else:
                 tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
@@ -461,12 +625,15 @@ def extract_laporan_docx(docx_path):
     # seperti versi PDF, tapi resolusinya lebih presisi karena docx tidak
     # punya batas halaman tetap) ----------------
     from docx.oxml.ns import qn as _qn
+    paragraphs = doc.paragraphs
+    para_texts_norm = [norm(p.text) for p in paragraphs]
+
     seen_hash = set()
     images = []
     used_tags = set()
     current_tag = None
-    for para in doc.paragraphs:
-        para_text_norm = norm(para.text)
+    for pi, para in enumerate(paragraphs):
+        para_text_norm = para_texts_norm[pi]
         if para_text_norm:
             current_tag = _detect_laporan_tag(para_text_norm, current_tag)
         for run in para.runs:
@@ -484,7 +651,15 @@ def extract_laporan_docx(docx_path):
                 if h in seen_hash:
                     continue
                 seen_hash.add(h)
-                if current_tag and current_tag not in used_tags:
+
+                # 1) coba tandai dari CAPTION ASLI di paragraf ini/1-3
+                #    paragraf sesudahnya (metode utama, lihat catatan di
+                #    extract_proposal_docx).
+                caption_tag = _nearby_caption_tag(para_texts_norm, pi, CAPTION_PATTERNS_LAPORAN)
+
+                if caption_tag and caption_tag not in used_tags:
+                    tag = caption_tag
+                elif current_tag and current_tag not in used_tags:
                     tag = current_tag
                 else:
                     tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")

@@ -14,7 +14,7 @@ from llm_fallback import perkuat_narasi_ilmiah
 
 NAVY = RGBColor(0x1F, 0x4E, 0x79)
 LIGHTBLUE = "DCE6F1"
-FONT = "Arial"
+FONT = "Calibri"
 
 NA = "[data tidak terdeteksi otomatis \u2013 mohon lengkapi manual]"
 
@@ -268,9 +268,6 @@ class Builder:
 
     def bullet(self, text):
         para = self.doc.add_paragraph(style="List Bullet")
-        para.paragraph_format.space_after = Pt(6)
-        para.paragraph_format.line_spacing = 1.25
-        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         r = para.add_run(text)
         set_font(r, size=11)
         return para
@@ -461,17 +458,14 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"perairan {perairan} dengan total kebutuhan luas ruang laut sebesar {luas}.{status_sentence} Pengajuan PKKPRL dilakukan "
         f"dalam rangka pemenuhan perizinan dasar di lokasi yang dimohonkan sebelum mengajukan perizinan lanjutan.")
     img_no = 1
-    siteplan_list = [im for im in prop_imgs if im["tag"] == "siteplan"]
-    if siteplan_list:
-        for idx, im in enumerate(siteplan_list):
-            b.image(im["bytes"], width_cm=13)
-            label = "Peta Rencana Tapak (Site Plan)" if idx == 0 else f"Peta Rencana Tapak (Site Plan) -- Tampilan Tambahan {idx + 1}"
-            b.caption(f"Gambar {img_no}. {label} Kegiatan {perusahaan}.")
-            img_no += 1
+    site_img = get_image_bytes(prop_imgs, "siteplan")
+    if site_img:
+        b.image(site_img, width_cm=13)
+        b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
     else:
         b.image_missing("siteplan")
         b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
-        img_no += 1
+    img_no += 1
 
     dok_kegiatan_img = get_image_bytes(prop_imgs, "dok_kegiatan_eksisting")
     if dok_kegiatan_img:
@@ -486,9 +480,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     if activities:
         b.p(f"Adapun kegiatan utama yang akan dilakukan ialah pembangunan dan pengembangan lokasi {jenis_kegiatan} "
             f"akan dilakukan sebagaimana ditampilkan pada Tabel 1. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
-        parsed_tgl = parse_tanggal_indonesia(prop.get("Tanggal Penyusunan", ""))
-        tahun_acuan = parsed_tgl[1] if parsed_tgl else __import__("datetime").datetime.now().year
-        start_bt = (1, tahun_acuan)  # "Bulan 1" SELALU = Januari, "Bulan 2" = Februari, dst.
+        start_bt = parse_tanggal_indonesia(prop.get("Tanggal Penyusunan", "")) or (
+            __import__("datetime").datetime.now().month, __import__("datetime").datetime.now().year
+        )
         build_gantt_table(b, activities, start_bt)
         b.caption("Tabel 1. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya.")
     else:
@@ -589,7 +583,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     # ================= BAB III =================
     b.h1("III. DATA KONDISI TERKINI LOKASI DAN SEKITARNYA")
-    narasi_lap = lap.get("_narasi", {}) or {}
 
     b.h2("A. Ekosistem Sekitar")
     b.h3("1. Mangrove")
@@ -604,8 +597,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(f"Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, terdapat ekosistem "
             f"mangrove yang didominasi oleh jenis {spesies}, dengan persentase tutupan mencapai {persen_mgv}% "
             f"pada kondisi {kondisi_mgv}.")
-    if narasi_lap.get("mangrove"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["mangrove"], konteks="kondisi ekosistem mangrove"))
     mgv_img = get_image_bytes(prop_imgs, "foto_mangrove")
     if mgv_img:
         b.image(mgv_img, width_cm=11)
@@ -627,8 +618,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     else:
         b.p("Berdasarkan data sekunder perairan di sekitar lokasi kegiatan, tidak teridentifikasi keberadaan "
             "ekosistem lamun (seagrass) pada area yang dimohonkan.")
-    if narasi_lap.get("lamun"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["lamun"], konteks="kondisi ekosistem lamun/padang lamun"))
 
     lamun_ada_manual = prop.get("lamun_ada_manual", "")
     if lamun_ada_manual == "Terdapat ekosistem lamun":
@@ -656,8 +645,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"area kajian seluas {total_ha} Ha, tutupan terumbu karang tercatat seluas {karang_ha} Ha ({karang_pct}%), "
         f"diikuti substrat dasar non-terumbu seluas {lainnya_ha} Ha ({lainnya_pct}%), dan area laut terbuka "
         f"tanpa ekosistem seluas {terbuka_ha} Ha ({terbuka_pct}%).")
-    if narasi_lap.get("karang"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["karang"], konteks="kondisi ekosistem terumbu karang"))
     kondisi_karang_lap = klasifikasi_karang(karang_pct)
     if kondisi_karang_lap:
         b.p(f"Berdasarkan kriteria baku kerusakan terumbu karang, persentase tutupan sebesar {karang_pct}% "
@@ -706,8 +693,6 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     b.h2("B. Hidro-Oseanografi")
     narasi_lap = lap.get("_narasi", {}) or {}
-    if narasi_lap.get("pendahuluan"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["pendahuluan"], konteks="pendahuluan/ringkasan Laporan Hidro-Oseanografi"))
     b.h3("1. Gelombang")
     b.p(f"Tinggi gelombang signifikan (Hs) rata-rata tercatat sebesar {g(lap,'hs_rata')} meter, sedangkan Hs "
         f"maksimum ekstrem tercatat sebesar {g(lap,'hs_maks')} meter dengan arah dominan dari "
