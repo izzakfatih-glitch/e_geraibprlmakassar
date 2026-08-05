@@ -1239,6 +1239,19 @@ def dukung_item_html(idx, checkbox_name, label):
     )
 
 
+def join_dan(items):
+    """Gabungkan list string jadi satu kalimat natural pakai kata 'dan' untuk
+    item terakhir (mis. ['Permukaan Laut','Dasar Laut'] -> 'Permukaan Laut
+    dan Dasar Laut'). Dipakai untuk field checklist yang boleh pilih lebih
+    dari satu (mis. Instalasi Bangunan Laut Berada Pada)."""
+    items = [i.strip() for i in items if i and i.strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " dan " + items[-1]
+
+
 # Pemetaan nama field upload (form) -> tag gambar internal, dipakai baik
 # untuk membaca file upload (build_prop_data_from_manual_form) maupun untuk
 # menampilkan kembali thumbnail gambar yang sudah tersimpan (render_manual_form_page).
@@ -1663,7 +1676,10 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
 
           <div class="field-row">
             <label>Instalasi Bangunan Laut Berada Pada</label>
-            """ + render_select_html("instalasi_posisi", SELECT_FIELDS[("prop", "instalasi_posisi")]["options"]) + """
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa pilih lebih dari satu kalau instalasi berada di beberapa posisi sekaligus.</div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Permukaan Laut" id="instpos_permukaan"><label for="instpos_permukaan">Permukaan Laut</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Kolom Laut" id="instpos_kolom"><label for="instpos_kolom">Kolom Laut</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Dasar Laut" id="instpos_dasar"><label for="instpos_dasar">Dasar Laut</label></div>
           </div>
 
           <div class="field-row">
@@ -1705,8 +1721,11 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
               <option value="Eksisting dan Pengembangan">Eksisting dan Pengembangan</option>
             </select>
           </div>
-          <div class="checkbox-row"><input type="checkbox" name="non_reklamasi" id="cb1"><label for="cb1">Kegiatan tanpa reklamasi</label></div>
-          <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk kegiatan berusaha</label></div>
+          <div class="ff-hint" style="margin:0 0 8px;">Centang salah satu dari tiap pasangan berikut sesuai kondisi kegiatan yang dimohonkan. Kalau tidak dicentang sama sekali, bagian terkait di draft akan ditandai perlu dilengkapi manual (tidak ditebak otomatis).</div>
+          <div class="checkbox-row"><input type="checkbox" name="non_reklamasi" id="cb1"><label for="cb1">Kegiatan Tanpa Reklamasi</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="reklamasi" id="cb1b"><label for="cb1b">Kegiatan Reklamasi</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk Kegiatan Berusaha</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="non_berusaha" id="cb2b"><label for="cb2b">Kegiatan Non Berusaha</label></div>
           <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3"><label for="cb3">Termasuk kegiatan non-strategis nasional</label></div>
         </div>
       </details>
@@ -2080,6 +2099,16 @@ document.querySelectorAll('[data-eco-trigger]').forEach(function(sel) {
   update();
 });
 
+// Pasangan checkbox status kegiatan yang saling eksklusif (centang salah
+// satu otomatis melepas centang pasangannya, supaya tidak kontradiktif).
+[["non_reklamasi", "reklamasi"], ["kegiatan_berusaha", "non_berusaha"]].forEach(function(pair) {
+  var a = document.querySelector('input[name="' + pair[0] + '"]');
+  var b = document.querySelector('input[name="' + pair[1] + '"]');
+  if (!a || !b) return;
+  a.addEventListener('change', function() { if (a.checked) b.checked = false; });
+  b.addEventListener('change', function() { if (b.checked) a.checked = false; });
+});
+
 // Dropdown dengan opsi "Lainnya..." -> munculkan input teks tambahan
 document.querySelectorAll('select[data-allow-other="true"]').forEach(function(sel) {
   var otherInput = document.getElementById(sel.id + '_other');
@@ -2273,11 +2302,67 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
     }}
     Array.prototype.forEach.call(els, function(el) {{
       if (el.type === 'checkbox') {{ el.checked = (val === true || val === 'true'); }}
-      else if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+      else if (el.tagName === 'SELECT') {{
+        el.value = val;
+        if (el.value !== val) {{
+          // Nilai tersimpan tidak cocok opsi manapun di dropdown -- ini
+          // hasil isian "Lainnya..." sebelumnya (custom text). Kalau
+          // dropdown ini mendukungnya, pindah ke opsi "Lainnya..." dan isi
+          // teks bebasnya, supaya tidak diam-diam kosong/hilang.
+          if (el.dataset.allowOther === 'true') {{
+            el.value = '__other__';
+            var otherInput = document.getElementById(el.id + '_other');
+            if (otherInput) {{
+              otherInput.value = val;
+              otherInput.classList.add('show');
+            }}
+          }}
+        }}
+        el.dispatchEvent(new Event('change'));
+        el.dispatchEvent(new Event('input'));
+        // Field tanggal: input asli yang terlihat adalah <input type="date"
+        // id="{{name}}_picker">, sedangkan {{name}} sendiri cuma hidden input
+        // penyimpan nilai -- keduanya perlu disamakan supaya terlihat terisi.
+        var picker = document.getElementById(el.id + '_picker');
+        if (picker) picker.value = val;
+      }}
+      else if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
         el.value = val;
         el.dispatchEvent(new Event('change'));
         el.dispatchEvent(new Event('input'));
+        var picker2 = document.getElementById(el.id + '_picker');
+        if (picker2) picker2.value = val;
       }}
+    }});
+  }}
+
+  // "_lokasi_parts" (Desa/Kecamatan/Kabupaten/Provinsi) diproses LEBIH DULU,
+  // sebelum aturan umum "key.startsWith('_') -> lewati" di bawah -- kalau
+  // tidak, field ini akan ikut terlewati juga karena namanya diawali "_".
+  //
+  // PENTING soal urutan: skrip datalist bertingkat (Provinsi -> Kabupaten ->
+  // Kecamatan -> Desa) otomatis MENGOSONGKAN semua level di BAWAHNYA setiap
+  // kali sebuah level berubah (supaya user tidak salah pilih kombinasi usang).
+  // Kalau kita isi dari Desa ke Provinsi (searah array), mengisi Provinsi
+  // PALING AKHIR akan langsung menghapus Kabupaten/Kecamatan/Desa yang baru
+  // saja diisi. Maka isi SEARAH CASCADE: Provinsi -> Kabupaten -> Kecamatan
+  // -> Desa, supaya tiap pengisian terjadi SETELAH pengosongan level di
+  // bawahnya oleh level sebelumnya, bukan sebelum.
+  if (Array.isArray(data._lokasi_parts)) {{
+    var lp = data._lokasi_parts; // [desa, kecamatan, kabupaten, provinsi]
+    setField('prop_loc__3', lp[3]);
+    setField('prop_loc__2', lp[2]);
+    setField('prop_loc__1', lp[1]);
+    setField('prop_loc__0', lp[0]);
+  }}
+
+  // "instalasi_posisi" disimpan sebagai satu string gabungan (mis. "Permukaan
+  // Laut dan Dasar Laut"), tapi elemennya sekarang berupa beberapa checkbox
+  // terpisah (name="instalasi_posisi[]") -- pecah lagi jadi per-checkbox.
+  if (typeof data.instalasi_posisi === 'string' && data.instalasi_posisi) {{
+    var posisiTerpilih = data.instalasi_posisi.split(/,\\s*| dan /);
+    document.querySelectorAll('input[name="instalasi_posisi[]"]').forEach(function(cb) {{
+      cb.checked = posisiTerpilih.indexOf(cb.value) !== -1;
     }});
   }}
 
@@ -2287,11 +2372,6 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
     if (key === 'koordinat' && Array.isArray(val)) {{
       var ta = document.getElementById('koordinat_manual');
       if (ta) ta.value = val.map(function(row) {{ return row[1] + '\\t' + row[2]; }}).join('\\n');
-      return;
-    }}
-    if (key === '_lokasi_parts' && Array.isArray(val)) {{
-      var labels = ['prop_loc__0', 'prop_loc__1', 'prop_loc__2', 'prop_loc__3'];
-      val.forEach(function(v, i) {{ if (labels[i]) setField(labels[i], v); }});
       return;
     }}
     if (typeof val === 'boolean') {{
@@ -2582,7 +2662,9 @@ def build_prop_data_from_manual_form(form, files):
     prop_data = {}
     prop_data, _ = apply_form_values(form, prop_data, {})
     prop_data["non_reklamasi"] = "non_reklamasi" in form
+    prop_data["reklamasi"] = "reklamasi" in form
     prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in form
+    prop_data["non_berusaha"] = "non_berusaha" in form
     prop_data["non_strategis"] = "non_strategis" in form
     prop_data["kegiatan_status"] = form.get("kegiatan_status", "")
     prop_data["sumber_peta"] = form.get("sumber_peta", "")
@@ -2590,7 +2672,7 @@ def build_prop_data_from_manual_form(form, files):
     prop_data["manfaat_kegiatan"] = form.get("manfaat_kegiatan", "")
     prop_data["tujuan_kegiatan"] = form.get("tujuan_kegiatan", "")
     prop_data["instalasi_bangunan"] = form.get("instalasi_bangunan", "")
-    prop_data["instalasi_posisi"] = form.get("instalasi_posisi", "")
+    prop_data["instalasi_posisi"] = join_dan(form.getlist("instalasi_posisi[]"))
     prop_data["jadwal_kegiatan"] = form.get("jadwal_kegiatan", "")
     DUKUNG_ITEMS = [
         ("dukung_nib", "NIB"),

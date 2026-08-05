@@ -431,7 +431,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     invest_str = f"Rp{invest}" if invest != NA else NA
     tenaga = g(prop, "tenaga_kerja")
     tenaga_asing = g(prop, "tenaga_kerja_asing", "0")
-    b.p(f"Rencana tenaga kerja yang digunakan berjumlah {tenaga} orang per siklus, dengan tenaga kerja asing "
+    b.p(f"Rencana tenaga kerja yang digunakan berjumlah {tenaga} orang WNI/lokal, dengan tenaga kerja asing "
         f"berjumlah {tenaga_asing}. Total komitmen pendanaan investasi kegiatan ini sebesar {invest_str}, "
         f"mencakup perencanaan teknis, pengadaan sarana-prasarana, operasional, serta pengelolaan lingkungan hidup.")
 
@@ -496,11 +496,21 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             b.p(NA)
 
     b.h3("4. Reklamasi / Non-Reklamasi")
-    reklamasi_txt = "tanpa reklamasi" if prop.get("non_reklamasi") else "dengan reklamasi"
+    if prop.get("non_reklamasi"):
+        reklamasi_txt = "tanpa reklamasi"
+    elif prop.get("reklamasi"):
+        reklamasi_txt = "dengan reklamasi"
+    else:
+        reklamasi_txt = NA
     b.p(f"Kegiatan {jenis_kegiatan} yang dilakukan oleh {perusahaan} merupakan kegiatan yang dilaksanakan {reklamasi_txt}.")
 
     b.h2("B. Kegiatan Berusaha atau Non-Berusaha")
-    berusaha_txt = "kegiatan berusaha" if prop.get("kegiatan_berusaha") else "kegiatan non-berusaha"
+    if prop.get("kegiatan_berusaha"):
+        berusaha_txt = "kegiatan berusaha"
+    elif prop.get("non_berusaha"):
+        berusaha_txt = "kegiatan non-berusaha"
+    else:
+        berusaha_txt = NA
     b.p(f"Kegiatan {jenis_kegiatan} yang dilakukan {perusahaan} di {lokasi_lengkap}, yang menggunakan perairan "
         f"{perairan}, merupakan {berusaha_txt}.")
 
