@@ -980,6 +980,10 @@ REVIEW_CSS = """
 .img-thumb .img-remove { position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%;
   background:rgba(0,0,0,.55); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer;
   display:flex; align-items:center; justify-content:center; }
+.img-thumb-saved { border-color:#8fd19e; }
+.img-thumb-badge { position:absolute; bottom:0; left:0; right:0; background:rgba(30,120,60,.85); color:#fff;
+  font-size:8.5px; font-weight:700; text-align:center; padding:2px 0; }
+.img-preview-saved:empty { display:none; margin:0; }
 
 .img-input-row { display:flex; gap:8px; align-items:stretch; justify-content:center; max-width:30%; margin:0 auto; }
 .img-upload-btn { flex:none; width:110px; display:flex; align-items:center; justify-content:center; gap:6px; background:#fff;
@@ -1235,9 +1239,38 @@ def dukung_item_html(idx, checkbox_name, label):
     )
 
 
-def img_field_html(field_name, label, desc="", multiple=False, note=""):
+# Pemetaan nama field upload (form) -> tag gambar internal, dipakai baik
+# untuk membaca file upload (build_prop_data_from_manual_form) maupun untuk
+# menampilkan kembali thumbnail gambar yang sudah tersimpan (render_manual_form_page).
+IMAGE_FIELD_TAGS = [
+    ("img_siteplan", "siteplan"),
+    ("img_peta_lokasi", "peta_lokasi"),
+    ("img_foto_mangrove", "foto_mangrove"),
+    ("img_foto_karang_insitu", "foto_karang_insitu"),
+    ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
+    ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
+    ("img_foto_lamun", "foto_lamun"),
+    ("img_aksesibilitas", "gambar_aksesibilitas"),
+    ("img_sertifikat_lahan", "sertifikat_lahan"),
+    ("img_dok_sosialisasi", "dok_sosialisasi"),
+    ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
+]
+
+
+def img_field_html(field_name, label, desc="", multiple=False, note="", saved_previews=None):
     desc_html = f'<div class="ff-hint" style="margin-bottom:6px;">{desc}</div>' if desc else ""
     note_html = f'<span style="font-weight:400;color:var(--muted);"> {note}</span>' if note else ""
+    saved_html = ""
+    if saved_previews:
+        thumbs = "".join(
+            f'<div class="img-thumb img-thumb-saved" title="Tersimpan dari isian sebelumnya &mdash; '
+            f'tidak perlu diunggah ulang, kecuali ingin menggantinya">'
+            f'<img src="{p["url"]}" alt="{label}">'
+            f'<span class="img-thumb-badge">\u2713 Tersimpan</span>'
+            f'</div>'
+            for p in saved_previews
+        )
+        saved_html = f'<div class="img-preview-list img-preview-saved">{thumbs}</div>'
     return (
         f'<div class="file-field-row">'
         f'<label>{label}{note_html}</label>{desc_html}'
@@ -1247,6 +1280,7 @@ def img_field_html(field_name, label, desc="", multiple=False, note=""):
         f'<span class="ipt-text"><b>Ctrl+V</b><br>paste</span></div>'
         f'</div>'
         f'<input type="file" name="{field_name}" id="{field_name}" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple style="display:none">'
+        f'{saved_html}'
         f'<div class="img-preview-list" id="{field_name}_preview"></div>'
         f'</div>'
     )
@@ -1526,6 +1560,22 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             "tetap akan dipakai walau tidak diunggah ulang. Unggah ulang di kolom terkait kalau ingin menggantinya."
             "</div>"
         )
+
+    # Peta tag gambar -> daftar preview (URL thumbnail) untuk gambar yang
+    # sudah tersimpan lewat tombol "Simpan" sebelumnya, dikelompokkan per
+    # NAMA FIELD form (bukan per tag) supaya gampang disisipkan ke tiap
+    # pemanggilan img_field_html() di bawah.
+    by_tag = {}
+    for m in (saved_images_meta or []):
+        by_tag.setdefault(m.get("tag"), []).append(m)
+    saved_previews_map = {}
+    if job_id:
+        for field_name, tag in IMAGE_FIELD_TAGS:
+            metas = by_tag.get(tag)
+            if metas:
+                saved_previews_map[field_name] = [
+                    {"url": f"/proposal-manual/draft-image/{job_id}/{m['filename']}"} for m in metas
+                ]
 
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
@@ -1808,10 +1858,12 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
 
           """ + img_field_html("img_siteplan", "Gambaran Rencana Tapak Site",
-                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.") + """
+                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.",
+                                note="(bisa lebih dari 1)", saved_previews=saved_previews_map.get("img_siteplan")) + """
 
           """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
-                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.") + """
+                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.",
+                                saved_previews=saved_previews_map.get("img_peta_lokasi")) + """
 
           <div class="field-row">
             <label>Sumber Peta</label>
@@ -1821,26 +1873,35 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
           </div>
 
-          """ + img_field_html("img_foto_mangrove", "Foto Kondisi Mangrove") + """
+          """ + img_field_html("img_foto_mangrove", "Foto Kondisi Mangrove",
+                                saved_previews=saved_previews_map.get("img_foto_mangrove")) + """
 
-          """ + img_field_html("img_foto_karang_insitu", "Foto Survei Terumbu Karang") + """
+          """ + img_field_html("img_foto_karang_insitu", "Foto Survei Terumbu Karang",
+                                saved_previews=saved_previews_map.get("img_foto_karang_insitu")) + """
 
           """ + img_field_html("img_dok_kegiatan", "Dokumentasi Kegiatan Eksisting/Rencana",
-                                "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.") + """
+                                "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.",
+                                saved_previews=saved_previews_map.get("img_dok_kegiatan")) + """
 
           """ + img_field_html("img_dok_pemanfaatan_sekitar", "Dokumentasi Pemanfaatan Ruang Laut Sekitar",
-                                "Maksimal 3 dokumentasi.", note="(bisa lebih dari 1)") + """
+                                "Maksimal 3 dokumentasi.", note="(bisa lebih dari 1)",
+                                saved_previews=saved_previews_map.get("img_dok_pemanfaatan_sekitar")) + """
 
-          """ + img_field_html("img_foto_lamun", "Dokumentasi Ekosistem Lamun") + """
+          """ + img_field_html("img_foto_lamun", "Dokumentasi Ekosistem Lamun",
+                                saved_previews=saved_previews_map.get("img_foto_lamun")) + """
 
-          """ + img_field_html("img_aksesibilitas", "Gambar Peta Aksesibilitas Menuju Lokasi") + """
+          """ + img_field_html("img_aksesibilitas", "Gambar Peta Aksesibilitas Menuju Lokasi",
+                                saved_previews=saved_previews_map.get("img_aksesibilitas")) + """
 
-          """ + img_field_html("img_sertifikat_lahan", "Sertifikat Kepemilikan Lahan Darat") + """
+          """ + img_field_html("img_sertifikat_lahan", "Sertifikat Kepemilikan Lahan Darat",
+                                saved_previews=saved_previews_map.get("img_sertifikat_lahan")) + """
 
           """ + img_field_html("img_dok_sosialisasi", "Dokumen Hasil Sosialisasi",
-                                "Berita acara atau surat pernyataan tidak keberatan dari masyarakat.") + """
+                                "Berita acara atau surat pernyataan tidak keberatan dari masyarakat.",
+                                saved_previews=saved_previews_map.get("img_dok_sosialisasi")) + """
 
-          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", note="(bisa lebih dari 1)") + """
+          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", note="(bisa lebih dari 1)",
+                                saved_previews=saved_previews_map.get("img_dok_pendukung_lainnya")) + """
         </div>
       </details>
     </div>
@@ -2608,20 +2669,7 @@ def build_prop_data_from_manual_form(form, files):
     if koordinat_file_pesan:
         prop_data["_koordinat_file_pesan"] = koordinat_file_pesan
 
-    image_field_tags = [
-        ("img_siteplan", "siteplan"),
-        ("img_peta_lokasi", "peta_lokasi"),
-        ("img_foto_mangrove", "foto_mangrove"),
-        ("img_foto_karang_insitu", "foto_karang_insitu"),
-        ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
-        ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
-        ("img_foto_lamun", "foto_lamun"),
-        ("img_aksesibilitas", "gambar_aksesibilitas"),
-        ("img_sertifikat_lahan", "sertifikat_lahan"),
-        ("img_dok_sosialisasi", "dok_sosialisasi"),
-        ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
-    ]
-    for field_name, tag in image_field_tags:
+    for field_name, tag in IMAGE_FIELD_TAGS:
         for f in files.getlist(field_name):
             if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
                 prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
@@ -2630,6 +2678,25 @@ def build_prop_data_from_manual_form(form, files):
 
 
 EMPTY_LAP_DATA = {}  # dipakai saat generate draft tanpa Laporan Hidro-Oseanografi
+
+
+@app.route("/proposal-manual/draft-image/<job_id>/<path:filename>")
+def proposal_manual_draft_image(job_id, filename):
+    """Sajikan kembali satu file gambar yang sudah tersimpan lewat tombol
+    \"Simpan\", supaya bisa ditampilkan sebagai thumbnail preview di form.
+    Hanya bisa diakses oleh pemilik draft yang sedang login (dicocokkan
+    lewat kode pegawai di session)."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return "", 403
+    safe_kode = _safe_kode(user["kode"])
+    # Cegah path traversal -- filename harus persis nama file, tanpa "/" atau "..".
+    filename = os.path.basename(filename)
+    img_dir = _draft_images_dir(safe_kode, job_id)
+    fpath = os.path.join(img_dir, filename)
+    if not os.path.isfile(fpath) or not os.path.abspath(fpath).startswith(os.path.abspath(img_dir)):
+        return "", 404
+    return send_file(fpath)
 
 
 @app.route("/proposal-manual/simpan", methods=["POST"])
@@ -2657,10 +2724,16 @@ def proposal_manual_simpan():
 
     n_img = len(prop_images)
     pesan = f"Draft tersimpan ({n_img} gambar ikut tersimpan)." if n_img else "Draft tersimpan."
+    # Baca ulang metadata gambar dari draft yang baru saja disimpan supaya
+    # thumbnail-nya langsung tampil di halaman ini juga (bukan cuma
+    # setelah reload lewat "Lanjutkan").
+    saved_draft = load_draft(user["kode"], job_id)
+    saved_images_meta = (saved_draft or {}).get("prop_images_meta", [])
     return render_template_string(render_manual_form_page(
         prefill_data=prop_data,
         job_id=job_id,
         saved_msg=pesan,
+        saved_images_meta=saved_images_meta,
     ))
 
 

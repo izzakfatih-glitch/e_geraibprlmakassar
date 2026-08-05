@@ -458,14 +458,17 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"perairan {perairan} dengan total kebutuhan luas ruang laut sebesar {luas}.{status_sentence} Pengajuan PKKPRL dilakukan "
         f"dalam rangka pemenuhan perizinan dasar di lokasi yang dimohonkan sebelum mengajukan perizinan lanjutan.")
     img_no = 1
-    site_img = get_image_bytes(prop_imgs, "siteplan")
-    if site_img:
-        b.image(site_img, width_cm=13)
-        b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
+    siteplan_list = [im for im in prop_imgs if im["tag"] == "siteplan"]
+    if siteplan_list:
+        for idx, im in enumerate(siteplan_list):
+            b.image(im["bytes"], width_cm=13)
+            label = "Peta Rencana Tapak (Site Plan)" if idx == 0 else "Dokumentasi Tambahan Rencana Tapak (Site Plan)"
+            b.caption(f"Gambar {img_no}. {label} Kegiatan {perusahaan}.")
+            img_no += 1
     else:
         b.image_missing("siteplan")
         b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
-    img_no += 1
+        img_no += 1
 
     dok_kegiatan_img = get_image_bytes(prop_imgs, "dok_kegiatan_eksisting")
     if dok_kegiatan_img:
