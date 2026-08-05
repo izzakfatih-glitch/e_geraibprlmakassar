@@ -448,48 +448,95 @@ def _detect_laporan_tag(text_before, current_tag):
 # angka) dari Laporan Hidro-Oseanografi -- supaya deskripsi/analisis asli
 # yang ditulis surveyor tetap masuk ke dokumen final, bukan sekadar
 # kalimat template generik yang cuma diisi angka.
-NARASI_SECTIONS = [
-    (r"\d\.\s*Gelombang\b", "gelombang"),
-    (r"\d\.\s*Arus\b", "arus"),
-    (r"\d\.\s*Pasang\s*Surut\b", "pasut"),
-    (r"[A-Z]\.\s*Profil\s*Dasar\s*Laut\b", "batimetri"),
-    (r"Profil\s*Batimetri\b", "batimetri"),
-    (r"(identifikasi|kondisi)\s*ekosistem\b", "ekosistem"),
+#
+# PENTING: heading dicocokkan terhadap SATU BARIS UTUH (bukan potongan
+# substring di tengah kalimat manapun) -- karena beberapa dokumen sumber
+# memakai penomoran ANGKA ROMAWI ("I. PENDAHULUAN", "II. BATIMETRI", "III.
+# GELOMBANG", dst.), bukan cuma angka biasa ("1. Gelombang") atau huruf
+# ("C. Profil Dasar Laut"). Mencocokkan di seluruh teks yang sudah
+# digabung jadi satu paragraf besar (tanpa peduli baris) gampang salah
+# nyangkut ke kalimat lain yang KEBETULAN menyinggung kata yang sama --
+# padahal kalimat itu bukan heading section-nya sendiri (mis. paragraf
+# Pendahuluan yang menyebut "...gelombang, arus, pasang surut, serta
+# kondisi ekosistem pesisir" secara sekilas, ikut tertangkap sebagai
+# section "ekosistem" walau itu cuma kalimat pengantar).
+#
+# "PENDAHULUAN" dan "PENUTUP" sengaja didaftarkan dengan tag None supaya
+# section itu dikenali sebagai BATAS (supaya isinya tidak "bocor" ikut ke
+# section lain), tapi kontennya sendiri TIDAK diambil sebagai narasi --
+# sesuai permintaan: judul & Pendahuluan sumber tidak perlu ikut masuk ke
+# dokumen final.
+_NUM_PREFIX = r"(?:[IVXLCDM]{1,4}|\d{1,2}|[A-Z])"
+
+NARASI_HEADING_RE = re.compile(
+    r"^" + _NUM_PREFIX + r"\s*[.\-–:]?\s*"
+    r"(GELOMBANG"
+    r"|ARUS"
+    r"|PASANG\s*SURUT|SIKLUS\s*PASUT"
+    r"|PROFIL\s*(GARIS\s*)?BATIMETRI|PROFIL\s*DASAR\s*LAUT|BATIMETRI"
+    r"|EKOSISTEM(\s*PESISIR)?"
+    r"|PENDAHULUAN"
+    r"|PENUTUP)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+NARASI_TAG_BY_KEYWORD = [
+    (r"gelombang", "gelombang"),
+    (r"arus", "arus"),
+    (r"pasang\s*surut|pasut", "pasut"),
+    (r"batimetri|profil\s*dasar\s*laut", "batimetri"),
+    (r"ekosistem", "ekosistem"),
+    (r"pendahuluan", None),
+    (r"penutup", None),
 ]
 
-MAX_NARASI_LEN = 2000  # batas aman biar tidak "kebablasan" ambil isi dokumen kalau heading berikutnya tidak kedeteksi
+MAX_NARASI_LEN = 4000  # batas aman biar tidak "kebablasan" ambil isi dokumen kalau heading berikutnya tidak kedeteksi
 
 
-def extract_narasi_sections(full_text):
-    """Cari posisi tiap heading section, lalu ambil semua teks di antara
-    satu heading dengan heading berikutnya sebagai narasi utuh section itu.
-    Mengembalikan dict {tag: teks_narasi}. Kalau heading tidak ditemukan
-    sama sekali, dict yang dikembalikan kosong (pemanggil lalu pakai
-    fallback kalimat template seperti sebelumnya)."""
-    matches = []
-    for pattern, tag in NARASI_SECTIONS:
-        for m in re.finditer(pattern, full_text, re.IGNORECASE):
-            matches.append((m.start(), m.end(), tag))
-    if not matches:
+def extract_narasi_sections(full_text_raw):
+    """Cari baris heading section (lihat catatan di atas), lalu ambil semua
+    teks di antara satu heading dengan heading berikutnya sebagai narasi
+    utuh section itu. Mengembalikan dict {tag: teks_narasi}. Kalau heading
+    tidak ditemukan sama sekali, dict yang dikembalikan kosong (pemanggil
+    lalu pakai fallback kalimat template seperti sebelumnya)."""
+    lines = (full_text_raw or "").split("\n")
+
+    headings = []  # [(indeks_baris, tag_atau_None)]
+    for i, line in enumerate(lines):
+        line_norm = norm(line)
+        if not line_norm:
+            continue
+        if NARASI_HEADING_RE.match(line_norm):
+            tag = None
+            for pattern, t in NARASI_TAG_BY_KEYWORD:
+                if re.search(pattern, line_norm, re.IGNORECASE):
+                    tag = t
+                    break
+            headings.append((i, tag))
+
+    if not headings:
         return {}
-    matches.sort(key=lambda x: x[0])
 
     narasi = {}
-    for i, (start, end, tag) in enumerate(matches):
-        next_start = matches[i + 1][0] if i + 1 < len(matches) else len(full_text)
-        chunk = full_text[end:next_start].strip(" .:-")
+    for idx, (line_i, tag) in enumerate(headings):
+        next_line_i = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+        chunk_lines = lines[line_i + 1: next_line_i]
+        chunk = norm(" ".join(chunk_lines)).strip(" .:-")
         chunk = chunk[:MAX_NARASI_LEN].strip()
-        if chunk and tag not in narasi:  # ambil kemunculan PERTAMA tiap tag
+        # tag None (PENDAHULUAN/PENUTUP) sengaja TIDAK disimpan -- lihat
+        # catatan di atas. Ambil kemunculan PERTAMA tiap tag yang valid.
+        if tag and chunk and tag not in narasi:
             narasi[tag] = chunk
     return narasi
 
 
-def _parse_laporan_text(full_text):
+def _parse_laporan_text(full_text, full_text_raw):
     """Semua regex parsing Laporan Hidro-Oseanografi, dipakai bersama baik
     sumbernya PDF maupun DOCX -- karena keduanya sama-sama sudah berupa teks
     biasa pada titik ini, regex tidak peduli asalnya dari format file apa."""
     data = {}
-    data["_narasi"] = extract_narasi_sections(full_text)
+    data["_narasi"] = extract_narasi_sections(full_text_raw)
 
     m = re.search(r"LOKASI TITIK PUSAT RENCANA KEGIATAN\s*(.+?)\s*I\.\s*PENDAHULUAN", full_text)
     data["lokasi_studi"] = norm(m.group(1)) if m else ""
@@ -556,7 +603,7 @@ def extract_laporan(pdf_path):
     doc = fitz.open(pdf_path)
     full_text_raw = "\n".join(page.get_text() for page in doc)
     full_text = norm(full_text_raw)
-    data = _parse_laporan_text(full_text)
+    data = _parse_laporan_text(full_text, full_text_raw)
 
     # ---------------- IMAGES (deteksi berdasar heading per-halaman, dengan
     # fallback ke urutan tetap untuk tag yang belum kepakai) ----------------
@@ -619,7 +666,7 @@ def extract_laporan_docx(docx_path):
                 parts.append(cell.text)
     full_text_raw = "\n".join(parts)
     full_text = norm(full_text_raw)
-    data = _parse_laporan_text(full_text)
+    data = _parse_laporan_text(full_text, full_text_raw)
 
     # ---------------- IMAGES (lacak per-paragraf, deteksi heading -- sama
     # seperti versi PDF, tapi resolusinya lebih presisi karena docx tidak

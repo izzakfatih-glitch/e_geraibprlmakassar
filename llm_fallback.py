@@ -126,6 +126,50 @@ LAPORAN_FIELD_HINTS = {
 }
 
 
+def buat_analisis_ekosistem(jenis, spesies, persentase, kondisi, konteks_lokasi=""):
+    """Buat SATU paragraf analisis ilmiah singkat berdasarkan DATA PRIMER/MANUAL
+    hasil isian form pengguna (jenis ekosistem, spesies dominan, persentase
+    tutupan, kondisi/status) -- dipakai untuk memperkaya sub-bagian
+    Mangrove/Lamun/Terumbu Karang ketika datanya berasal dari isian manual
+    (bukan dari narasi dokumen sumber, yang sudah ditangani terpisah lewat
+    perkuat_narasi_ilmiah()).
+
+    Kalau ANTHROPIC_API_KEY tidak diset atau proses gagal, kembalikan string
+    kosong (TIDAK mengarang analisis apa pun -- paragraf tambahan ini cukup
+    dilewati, kalimat template dasar tetap tampil seperti biasa)."""
+    if not api_key_available():
+        return ""
+    try:
+        client = _client()
+        lokasi_txt = f" di {konteks_lokasi}" if konteks_lokasi else ""
+        prompt = (
+            f"Data primer/hasil pengamatan lapangan untuk ekosistem {jenis}{lokasi_txt}:\n"
+            f"- Spesies/jenis dominan: {spesies or '(tidak disebutkan)'}\n"
+            f"- Persentase tutupan: {persentase or '(tidak disebutkan)'}%\n"
+            f"- Kondisi/status: {kondisi or '(tidak disebutkan)'}\n\n"
+            "Tugas Anda: tulis SATU paragraf analisis ilmiah singkat (3-5 kalimat) "
+            "untuk dokumen resmi permohonan PKKPRL, membahas signifikansi ekologis "
+            "dari data di atas -- misalnya fungsi ekosistem tersebut bagi lingkungan "
+            "pesisir, makna status/kondisi yang ditemukan, serta implikasinya "
+            "terhadap rencana kegiatan (mis. kebutuhan mitigasi/pengelolaan) bila "
+            "relevan.\n"
+            "ATURAN KETAT:\n"
+            "1. JANGAN mengarang data/angka baru -- hanya gunakan data yang diberikan di atas.\n"
+            "2. JANGAN mengulang kalimat template yang sudah ada sebelumnya, cukup "
+            "tambahkan analisis/konteks ilmiah baru.\n"
+            "3. Balas HANYA dengan teks paragraf (tanpa pembuka/penutup/markdown apa pun)."
+        )
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
+        return hasil
+    except Exception:
+        return ""
+
+
 def perkuat_narasi_ilmiah(teks_asli, konteks=""):
     """Perhalus & perkuat narasi asli (dari Laporan Hidro-Oseanografi/kondisi
     eksisting) supaya lebih ilmiah, TANPA menghilangkan informasi apa pun

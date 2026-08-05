@@ -10,7 +10,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from llm_fallback import perkuat_narasi_ilmiah
+from llm_fallback import perkuat_narasi_ilmiah, buat_analisis_ekosistem
 
 NAVY = RGBColor(0x1F, 0x4E, 0x79)
 LIGHTBLUE = "DCE6F1"
@@ -476,7 +476,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.h3("3. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya")
     activities = parse_jadwal_kegiatan(prop.get("jadwal_kegiatan", ""))
     bangunan_txt2 = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
-    posisi_txt2 = f" yang berada di {instalasi_posisi}" if instalasi_posisi else ""
+    posisi_txt2 = f" yang berada di {instalasi_posisi.lower()}" if instalasi_posisi else ""
     if activities:
         b.p(f"Adapun kegiatan utama yang akan dilakukan ialah pembangunan dan pengembangan lokasi {jenis_kegiatan} "
             f"akan dilakukan sebagaimana ditampilkan pada Tabel 1. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
@@ -597,6 +597,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(f"Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, terdapat ekosistem "
             f"mangrove yang didominasi oleh jenis {spesies}, dengan persentase tutupan mencapai {persen_mgv}% "
             f"pada kondisi {kondisi_mgv}.")
+        analisis_mgv = buat_analisis_ekosistem("mangrove", spesies, persen_mgv, kondisi_mgv, lokasi_lengkap)
+        if analisis_mgv:
+            b.p(analisis_mgv)
     mgv_img = get_image_bytes(prop_imgs, "foto_mangrove")
     if mgv_img:
         b.image(mgv_img, width_cm=11)
@@ -626,6 +629,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         lamun_kondisi = g(prop, "lamun_kondisi")
         b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem lamun yang didominasi "
             f"oleh jenis {lamun_spesies}, dengan persentase tutupan mencapai {lamun_persen}% pada kondisi {lamun_kondisi}.")
+        analisis_lamun = buat_analisis_ekosistem("lamun (seagrass)", lamun_spesies, lamun_persen, lamun_kondisi, lokasi_lengkap)
+        if analisis_lamun:
+            b.p(analisis_lamun)
         lamun_img = get_image_bytes(prop_imgs, "foto_lamun")
         if lamun_img:
             b.image(lamun_img, width_cm=11)
@@ -668,6 +674,11 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem terumbu karang yang "
             f"didominasi oleh jenis {karang_spesies_m}, dengan persentase tutupan mencapai {karang_persen_m}% "
             f"pada kondisi {karang_kondisi_m}.")
+        analisis_karang = buat_analisis_ekosistem(
+            "terumbu karang", karang_spesies_m, karang_persen_m, karang_kondisi_m, lokasi_lengkap
+        )
+        if analisis_karang:
+            b.p(analisis_karang)
     elif karang_ada_manual == "Tidak terdapat ekosistem terumbu karang":
         b.p("Berdasarkan hasil pengamatan pemohon di lapangan, tidak teridentifikasi keberadaan ekosistem "
             "terumbu karang secara langsung pada area yang dimohonkan.")
@@ -690,6 +701,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b.p(f"Jarak ekosistem terdekat dari titik pusat rencana kegiatan adalah {jarak_eko} km, sehingga mitigasi "
         f"dampak perlu difokuskan pada upaya penghindaran (avoidance) terhadap area terumbu karang, pengendalian "
         f"sedimen, serta pengelolaan kualitas air.")
+    narasi_lap_eko = lap.get("_narasi", {}) or {}
+    if narasi_lap_eko.get("ekosistem"):
+        b.p(perkuat_narasi_ilmiah(narasi_lap_eko["ekosistem"], konteks="analisis ekosistem pesisir"))
 
     b.h2("B. Hidro-Oseanografi")
     narasi_lap = lap.get("_narasi", {}) or {}
