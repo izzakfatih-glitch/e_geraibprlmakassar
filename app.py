@@ -50,7 +50,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
 DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
-DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
+DRAFT_MAX_AGE_DAYS = 30  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
     "/export?format=csv&gid=0"
