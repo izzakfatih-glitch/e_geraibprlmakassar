@@ -120,7 +120,31 @@ Lalu arahkan domain/Nginx ke port 8000.
 
 ---
 
-## 5. Batasan
+## 6. Fitur Baru: Asisten Tanya-Jawab KKPRL (`/asisten`)
+
+Selain fitur generate dokumen, aplikasi ini kini punya halaman **Asisten
+e-GeRAI — Tanya KKPRL** yang bisa diakses lewat menu **Bantuan** di
+navbar, atau langsung ke `/asisten`.
+
+- Halaman ini **publik** (tidak perlu login staf) — dirancang untuk
+  masyarakat umum bertanya seputar persyaratan, alur OSS/e-SEA, biaya
+  PNBP, reklamasi, dan tracking permohonan KKPRL.
+- Jawaban dijawab otomatis oleh Claude API **di sisi server**
+  (`asisten_kkprl.py`), memakai environment variable `ANTHROPIC_API_KEY`
+  yang sama seperti fitur fallback ekstraksi (lihat bagian 3 di atas).
+  API key **tidak pernah** dikirim/terlihat di browser pengguna.
+- Kalau `ANTHROPIC_API_KEY` belum diset, halaman tetap tampil normal,
+  tapi asisten akan membalas dengan pesan bahwa layanan belum aktif dan
+  mengarahkan ke hotline/e-SEA.
+- Basis pengetahuan asisten (system prompt di `asisten_kkprl.py`) berisi
+  ringkasan materi sosialisasi KKPRL BPRL Makassar: landasan yuridis,
+  tahapan & SLA permohonan, dokumen persyaratan, tarif PNBP (PP 85/2021),
+  cek fakta, dan kewajiban pemegang KKPRL. Silakan sunting isi
+  `SYSTEM_PROMPT` di file tersebut jika ada pembaruan peraturan.
+
+---
+
+## 7. Batasan
 
 - Didesain untuk template dokumen yang formatnya konsisten (seperti
   dua contoh dokumen yang sudah diuji). Field yang gagal terbaca akan
