@@ -18,6 +18,17 @@ import re
 import uuid
 import shutil
 import traceback
+
+# Muat file .env (kalau ada) supaya ANTHROPIC_API_KEY & variabel lain terbaca
+# otomatis saat dijalankan lokal (python3 app.py). Di hosting (Render/Railway),
+# environment variable biasanya sudah diset lewat dashboard platform, jadi
+# baris ini aman dilewati kalau library/​file .env tidak ada.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for, jsonify
 import mammoth
 import asisten_kkprl
@@ -51,7 +62,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
 DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
-DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
+DRAFT_MAX_AGE_DAYS = 30  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
     "/export?format=csv&gid=0"
@@ -690,6 +701,33 @@ a { text-decoration:none; }
 .trust-brand { display:flex; align-items:center; gap:10px; }
 .trust-brand .tt { font-size:14px; font-weight:800; color:var(--navy); }
 .trust-brand .td { font-size:11px; color:var(--muted); max-width:220px; }
+
+/* ---- Asisten promo card (Beranda) ---- */
+.asisten-promo-wrap { max-width:1600px; margin:0 auto 40px; padding:0 40px; }
+.asisten-promo-card { display:flex; align-items:center; gap:22px; text-decoration:none;
+  background:linear-gradient(120deg,#0A2557 0%,#12468C 45%,#1AA6E0 100%);
+  border-radius:18px; padding:24px 28px; box-shadow:0 14px 34px rgba(10,37,87,.24);
+  position:relative; overflow:hidden; transition:.18s; }
+.asisten-promo-card::after { content:""; position:absolute; right:-60px; top:-70px; width:220px; height:220px;
+  border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.38), transparent 70%); }
+.asisten-promo-card:hover { transform:translateY(-2px); box-shadow:0 18px 40px rgba(10,37,87,.3); }
+.asisten-promo-badge { flex:none; width:60px; height:60px; border-radius:14px; background:rgba(255,255,255,.96);
+  display:flex; align-items:center; justify-content:center; padding:7px; position:relative; z-index:1;
+  box-shadow:0 6px 16px rgba(0,0,0,.18); }
+.asisten-promo-badge img { width:100%; height:100%; object-fit:contain; }
+.asisten-promo-text { flex:1; min-width:0; position:relative; z-index:1; }
+.asisten-promo-eyebrow { font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase;
+  color:#F2A83B; margin-bottom:5px; }
+.asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
+.asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
+.asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
+  color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
+  position:relative; z-index:1; box-shadow:0 6px 16px rgba(214,130,26,.35); transition:.15s; }
+.asisten-promo-card:hover .asisten-promo-cta { filter:brightness(1.06); }
+@media (max-width: 780px) {
+  .asisten-promo-card { flex-direction:column; align-items:flex-start; text-align:left; padding:22px; }
+  .asisten-promo-cta { width:100%; justify-content:center; }
+}
 """
 
 ICONS = {
@@ -1078,6 +1116,23 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </form>
+</div>
+
+<div class="asisten-promo-wrap">
+  <a href="/asisten" class="asisten-promo-card">
+    <div class="asisten-promo-badge">
+      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GeRAI">
+    </div>
+    <div class="asisten-promo-text">
+      <div class="asisten-promo-eyebrow">Asisten e-GeRAI &middot; Tanya Jawab Otomatis</div>
+      <div class="asisten-promo-title">Punya pertanyaan seputar KKPRL? Tanya langsung ke asisten kami</div>
+      <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
+    </div>
+    <div class="asisten-promo-cta">
+      <span>Tanya Sekarang</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </div>
+  </a>
 </div>
 
 <script>

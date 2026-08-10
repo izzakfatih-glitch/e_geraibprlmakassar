@@ -90,21 +90,53 @@ Lalu arahkan domain/Nginx ke port 8000.
 
 ---
 
-## 3. Soal Claude API Key (opsional, untuk ekstraksi yang lebih tahan banting)
+## 3. Soal Claude API Key (opsional, untuk ekstraksi yang lebih tahan banting & untuk fitur Asisten KKPRL)
 
 - **Tanpa API key**: aplikasi tetap berfungsi penuh, hanya mengandalkan
   regex (pola teks). Ini cukup untuk dokumen dengan format template yang
-  sama seperti contoh yang sudah diuji.
+  sama seperti contoh yang sudah diuji. Halaman Asisten (`/asisten`)
+  akan tetap tampil normal, hanya membalas bahwa layanan belum aktif.
 - **Dengan API key**: jika suatu field gagal dibaca regex (misalnya
   karena format kalimat sedikit berbeda), aplikasi otomatis bertanya ke
-  Claude API untuk mencari nilainya dari teks dokumen.
+  Claude API untuk mencari nilainya dari teks dokumen. API key yang sama
+  juga menghidupkan fitur **Asisten Tanya-Jawab KKPRL** di `/asisten`.
 - API key **cukup diset SEKALI oleh pemilik aplikasi** (Anda) sebagai
   environment variable `ANTHROPIC_API_KEY` di platform hosting (lihat
   langkah 5 di Opsi A). **Pengguna lain yang memakai aplikasi via
   browser TIDAK perlu punya atau memasukkan API key sendiri** — mereka
-  cukup unggah PDF dan unduh hasilnya.
+  cukup unggah PDF dan unduh hasilnya, atau bertanya lewat Asisten.
 - Dapatkan API key di **console.anthropic.com → API Keys → Create Key**.
-  Pemakaian API dikenakan biaya per token (cek anthropic.com/pricing).
+  Pemakaian API dikenakan biaya per token (cek anthropic.com/pricing) —
+  **pastikan saldo/kredit akun tersedia**, kalau tidak API akan menolak
+  permintaan dengan pesan "credit balance too low" dan fitur otomatis
+  jatuh ke mode fallback (regex-only / pesan asisten belum aktif).
+
+### Menjalankan di komputer lokal dengan API key (file `.env`)
+
+Untuk kemudahan tes lokal, folder ini sudah menyertakan file **`.env`**
+berisi `ANTHROPIC_API_KEY` yang otomatis terbaca saat menjalankan
+`python3 app.py` (lewat library `python-dotenv`, sudah ada di
+`requirements.txt`).
+
+**PENTING — soal keamanan file `.env` ini:**
+- File `.env` sudah masuk daftar `.gitignore`, jadi **tidak akan ikut
+  ter-commit** kalau Anda mengikuti instruksi "Upload folder webapp/ ke
+  GitHub" di bagian 2 di atas — asalkan Anda upload lewat `git` normal,
+  bukan drag-and-drop manual di web GitHub (fitur upload manual GitHub
+  **tidak membaca `.gitignore`**, jadi kalau pakai cara itu, **hapus
+  dulu file `.env` secara manual sebelum upload**, lalu isi API key
+  lewat dashboard Environment Variables platform hosting seperti biasa).
+- **Jangan pernah** membagikan file `.env` ini, mengunggahnya ke
+  repository publik, atau menempelkan isinya di chat/dokumen yang bisa
+  diakses orang lain.
+- Untuk **deploy online** (Render/Railway/VPS), **jangan** andalkan file
+  `.env` ini — tetap ikuti langkah 5 di Opsi A: set `ANTHROPIC_API_KEY`
+  lewat dashboard Environment Variables platform hosting. File `.env`
+  di sini murni untuk kenyamanan tes di komputer sendiri.
+- Karena kunci ini sempat dikirim melalui percakapan teks, sebagai
+  langkah kehati-hatian pertimbangkan untuk **membuat ulang (rotate)**
+  API key ini di console.anthropic.com kapan pun Anda merasa perlu, lalu
+  perbarui isi `.env` / environment variable hosting dengan key baru.
 
 ---
 
