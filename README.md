@@ -55,15 +55,10 @@ buka `http://192.168.1.5:5000` dari HP.
 4. Isi pengaturan:
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `gunicorn -w 4 -b 0.0.0.0:$PORT app:app --timeout 120`
-5. Di bagian **Environment Variables**, tambahkan (isi minimal salah
-   satu supaya Asisten `/asisten` aktif; boleh isi lebih dari satu untuk
-   cadangan otomatis):
-   - Key: `GEMINI_API_KEY` &rarr; Value: API key dari aistudio.google.com/apikey
-     (disarankan diisi pertama, gratis)
-   - Key: `ANTHROPIC_API_KEY` &rarr; Value: API key dari console.anthropic.com
-     (dipakai juga untuk fallback ekstraksi PDF)
-   - Key: `OPENAI_API_KEY` &rarr; Value: API key dari platform.openai.com/api-keys
-     (opsional, cadangan terakhir)
+5. (Opsional, untuk fallback Claude API) Di bagian **Environment
+   Variables**, tambahkan:
+   - Key: `ANTHROPIC_API_KEY`
+   - Value: API key Anda dari console.anthropic.com
 6. Klik **Create Web Service**. Tunggu beberapa menit sampai status
    "Live". Render akan memberi Anda URL seperti:
    `https://proposal-pkkprl.onrender.com`
@@ -79,9 +74,8 @@ buka `http://192.168.1.5:5000` dari HP.
 1. Daftar di **railway.app** dengan GitHub.
 2. **New Project** → **Deploy from GitHub repo** → pilih repo Anda.
 3. Railway otomatis mendeteksi `Procfile` dan `requirements.txt`.
-4. Tambahkan environment variable di tab **Variables** (isi minimal
-   satu): `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, dan/atau
-   `OPENAI_API_KEY`.
+4. Tambahkan environment variable `ANTHROPIC_API_KEY` (opsional) di tab
+   **Variables**.
 5. Setelah deploy selesai, buka tab **Settings → Networking → Generate
    Domain** untuk mendapatkan URL publik.
 
@@ -89,91 +83,28 @@ buka `http://192.168.1.5:5000` dari HP.
 
 ```bash
 pip install -r requirements.txt
-export GEMINI_API_KEY="AIza..."          # disarankan, gratis
-export ANTHROPIC_API_KEY="sk-ant-..."    # opsional, cadangan + fallback ekstraksi PDF
-export OPENAI_API_KEY="sk-..."           # opsional, cadangan terakhir
+export ANTHROPIC_API_KEY="sk-ant-..."   # opsional
 gunicorn -w 4 -b 0.0.0.0:8000 app:app --timeout 120
 ```
 Lalu arahkan domain/Nginx ke port 8000.
 
 ---
 
-## 3. Soal API Key (opsional untuk ekstraksi PDF, disarankan untuk fitur Asisten KKPRL)
+## 3. Soal Claude API Key (opsional, untuk ekstraksi yang lebih tahan banting)
 
-Aplikasi ini bisa memakai **hingga 3 provider AI sekaligus** untuk fitur
-Asisten Tanya-Jawab (`/asisten`), dengan **fallback otomatis**: kalau
-provider pertama gagal (kredit habis, server down, dsb), sistem otomatis
-coba provider berikutnya secara transparan tanpa pengguna sadar ada
-pergantian. Anda **tidak wajib isi ketiganya** — isi satu saja sudah
-cukup supaya Asisten aktif; isi lebih dari satu hanya untuk cadangan.
-
-Urutan percobaan otomatis: **Gemini → Claude → ChatGPT**.
-
-### 3a. Google Gemini — `GEMINI_API_KEY` (disarankan diisi pertama, gratis)
-
-- Dapatkan **gratis** di **aistudio.google.com/apikey** (klik "Create API
-  key") — tidak perlu kartu kredit untuk free tier.
-- Model dipakai: `gemini-2.0-flash`.
-
-### 3b. Anthropic Claude — `ANTHROPIC_API_KEY` (dua fungsi sekaligus)
-
-- Kalau diisi, dipakai untuk **dua hal**: (1) fallback ekstraksi PDF —
-  kalau suatu field gagal dibaca regex, aplikasi bertanya ke Claude API
-  untuk mencari nilainya dari teks dokumen; dan (2) **provider cadangan**
-  untuk Asisten kalau Gemini gagal.
-- Dapatkan di **console.anthropic.com → API Keys → Create Key**.
-  Pemakaian dikenakan biaya per token (cek anthropic.com/pricing) —
-  pastikan saldo/kredit tersedia, kalau tidak API menolak dengan pesan
-  "credit balance too low".
-
-### 3c. OpenAI ChatGPT — `OPENAI_API_KEY` (opsional, cadangan ke-2)
-
-- Kalau diisi, jadi provider cadangan terakhir untuk Asisten kalau
-  Gemini **dan** Claude berdua gagal.
-- Dapatkan di **platform.openai.com/api-keys**. Model dipakai:
-  `gpt-4o-mini`. Pemakaian dikenakan biaya per token (cek
-  openai.com/pricing).
-
-**Tanpa API key sama sekali**: fitur generate dokumen tetap berfungsi
-penuh (regex-only). Halaman `/asisten` tetap tampil normal, tapi
-membalas bahwa layanan belum aktif.
-
-Ketiga key ini **cukup diset SEKALI oleh pemilik aplikasi** (Anda) sebagai
-environment variable di platform hosting (lihat langkah 5 di Opsi A).
-**Pengguna lain yang memakai aplikasi via browser TIDAK perlu punya atau
-memasukkan API key sendiri** — mereka cukup unggah PDF dan unduh
-hasilnya, atau bertanya lewat Asisten.
-
-### Menjalankan di komputer lokal dengan API key (file `.env`)
-
-Untuk kemudahan tes lokal, folder ini sudah menyertakan file **`.env`**
-berisi ketiga variable (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
-`OPENAI_API_KEY`) yang otomatis terbaca saat menjalankan `python3 app.py`
-(lewat library `python-dotenv`, sudah ada di `requirements.txt`). Isi
-`GEMINI_API_KEY` dan `OPENAI_API_KEY` masih placeholder — ganti dengan
-key asli, atau biarkan kosong/placeholder kalau tidak ingin memakai
-provider tersebut (sistem otomatis melewatinya).
-
-**PENTING — soal keamanan file `.env` ini:**
-- File `.env` sudah masuk daftar `.gitignore`, jadi **tidak akan ikut
-  ter-commit** kalau Anda mengikuti instruksi "Upload folder webapp/ ke
-  GitHub" di bagian 2 di atas — asalkan Anda upload lewat `git` normal,
-  bukan drag-and-drop manual di web GitHub (fitur upload manual GitHub
-  **tidak membaca `.gitignore`**, jadi kalau pakai cara itu, **hapus
-  dulu file `.env` secara manual sebelum upload**, lalu isi API key
-  lewat dashboard Environment Variables platform hosting seperti biasa).
-- **Jangan pernah** membagikan file `.env` ini, mengunggahnya ke
-  repository publik, atau menempelkan isinya di chat/dokumen yang bisa
-  diakses orang lain.
-- Untuk **deploy online** (Render/Railway/VPS), **jangan** andalkan file
-  `.env` ini — tetap ikuti langkah 5 di Opsi A: set environment variable
-  langsung lewat dashboard Environment Variables platform hosting. File
-  `.env` di sini murni untuk kenyamanan tes di komputer sendiri.
-- Karena key Claude sempat dikirim melalui percakapan teks, sebagai
-  langkah kehati-hatian pertimbangkan untuk **membuat ulang (rotate)**
-  API key tersebut di console.anthropic.com kapan pun Anda merasa perlu,
-  lalu perbarui isi `.env` / environment variable hosting dengan key
-  baru.
+- **Tanpa API key**: aplikasi tetap berfungsi penuh, hanya mengandalkan
+  regex (pola teks). Ini cukup untuk dokumen dengan format template yang
+  sama seperti contoh yang sudah diuji.
+- **Dengan API key**: jika suatu field gagal dibaca regex (misalnya
+  karena format kalimat sedikit berbeda), aplikasi otomatis bertanya ke
+  Claude API untuk mencari nilainya dari teks dokumen.
+- API key **cukup diset SEKALI oleh pemilik aplikasi** (Anda) sebagai
+  environment variable `ANTHROPIC_API_KEY` di platform hosting (lihat
+  langkah 5 di Opsi A). **Pengguna lain yang memakai aplikasi via
+  browser TIDAK perlu punya atau memasukkan API key sendiri** — mereka
+  cukup unggah PDF dan unduh hasilnya.
+- Dapatkan API key di **console.anthropic.com → API Keys → Create Key**.
+  Pemakaian API dikenakan biaya per token (cek anthropic.com/pricing).
 
 ---
 
@@ -189,31 +120,7 @@ provider tersebut (sistem otomatis melewatinya).
 
 ---
 
-## 6. Fitur Baru: Asisten Tanya-Jawab KKPRL (`/asisten`)
-
-Selain fitur generate dokumen, aplikasi ini kini punya halaman **Asisten
-e-GeRAI — Tanya KKPRL** yang bisa diakses lewat menu **Bantuan** di
-navbar, atau langsung ke `/asisten`.
-
-- Halaman ini **publik** (tidak perlu login staf) — dirancang untuk
-  masyarakat umum bertanya seputar persyaratan, alur OSS/e-SEA, biaya
-  PNBP, reklamasi, dan tracking permohonan KKPRL.
-- Jawaban dijawab otomatis oleh **Gemini / Claude / ChatGPT** (mana pun
-  yang key-nya diisi) di sisi server (`asisten_kkprl.py`), dengan
-  fallback otomatis kalau provider pertama gagal (lihat bagian 3 di
-  atas). API key **tidak pernah** dikirim/terlihat di browser pengguna.
-- Kalau tidak ada satupun API key yang diisi, halaman tetap tampil
-  normal, tapi asisten akan membalas dengan pesan bahwa layanan belum
-  aktif dan mengarahkan ke hotline/e-SEA.
-- Basis pengetahuan asisten (system prompt di `asisten_kkprl.py`) berisi
-  ringkasan materi sosialisasi KKPRL BPRL Makassar: landasan yuridis,
-  tahapan & SLA permohonan, dokumen persyaratan, tarif PNBP (PP 85/2021),
-  cek fakta, dan kewajiban pemegang KKPRL. Silakan sunting isi
-  `SYSTEM_PROMPT` di file tersebut jika ada pembaruan peraturan.
-
----
-
-## 7. Batasan
+## 5. Batasan
 
 - Didesain untuk template dokumen yang formatnya konsisten (seperti
   dua contoh dokumen yang sudah diuji). Field yang gagal terbaca akan
