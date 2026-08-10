@@ -18,8 +18,20 @@ import re
 import uuid
 import shutil
 import traceback
-from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for
+
+# Muat file .env (kalau ada) supaya ANTHROPIC_API_KEY & variabel lain terbaca
+# otomatis saat dijalankan lokal (python3 app.py). Di hosting (Render/Railway),
+# environment variable biasanya sudah diset lewat dashboard platform, jadi
+# baris ini aman dilewati kalau library/​file .env tidak ada.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for, jsonify
 import mammoth
+import asisten_kkprl
 
 # Login Google (authlib) bersifat OPSIONAL: kalau library ini gagal di-import
 # atau gagal diinisialisasi (misal karena versi Python di server belum kompatibel),
@@ -50,7 +62,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
 DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
-DRAFT_MAX_AGE_DAYS = 4  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
+DRAFT_MAX_AGE_DAYS = 30  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
 STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
     "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
     "/export?format=csv&gid=0"
@@ -689,6 +701,33 @@ a { text-decoration:none; }
 .trust-brand { display:flex; align-items:center; gap:10px; }
 .trust-brand .tt { font-size:14px; font-weight:800; color:var(--navy); }
 .trust-brand .td { font-size:11px; color:var(--muted); max-width:220px; }
+
+/* ---- Asisten promo card (Beranda) ---- */
+.asisten-promo-wrap { max-width:1600px; margin:0 auto 40px; padding:0 40px; }
+.asisten-promo-card { display:flex; align-items:center; gap:22px; text-decoration:none;
+  background:linear-gradient(120deg,#0A2557 0%,#12468C 45%,#1AA6E0 100%);
+  border-radius:18px; padding:24px 28px; box-shadow:0 14px 34px rgba(10,37,87,.24);
+  position:relative; overflow:hidden; transition:.18s; }
+.asisten-promo-card::after { content:""; position:absolute; right:-60px; top:-70px; width:220px; height:220px;
+  border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.38), transparent 70%); }
+.asisten-promo-card:hover { transform:translateY(-2px); box-shadow:0 18px 40px rgba(10,37,87,.3); }
+.asisten-promo-badge { flex:none; width:60px; height:60px; border-radius:14px; background:rgba(255,255,255,.96);
+  display:flex; align-items:center; justify-content:center; padding:7px; position:relative; z-index:1;
+  box-shadow:0 6px 16px rgba(0,0,0,.18); }
+.asisten-promo-badge img { width:100%; height:100%; object-fit:contain; }
+.asisten-promo-text { flex:1; min-width:0; position:relative; z-index:1; }
+.asisten-promo-eyebrow { font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase;
+  color:#F2A83B; margin-bottom:5px; }
+.asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
+.asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
+.asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
+  color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
+  position:relative; z-index:1; box-shadow:0 6px 16px rgba(214,130,26,.35); transition:.15s; }
+.asisten-promo-card:hover .asisten-promo-cta { filter:brightness(1.06); }
+@media (max-width: 780px) {
+  .asisten-promo-card { flex-direction:column; align-items:flex-start; text-align:left; padding:22px; }
+  .asisten-promo-cta { width:100%; justify-content:center; }
+}
 """
 
 ICONS = {
@@ -729,7 +768,7 @@ HEADER_HTML = """
     <a href="#" class="nav-link" onclick="return false;">Layanan """ + ICONS["chevron-down"] + """</a>
     <a href="#" class="nav-link" onclick="return false;">Informasi """ + ICONS["chevron-down"] + """</a>
     <a href="#" class="nav-link" onclick="return false;">""" + ICONS["book"] + """ Panduan</a>
-    <a href="#" class="nav-link" onclick="return false;">""" + ICONS["life-buoy"] + """ Bantuan</a>
+    <a href="/asisten" class="nav-link">""" + ICONS["life-buoy"] + """ Bantuan</a>
     <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
   </nav>
 
@@ -745,6 +784,244 @@ HEADER_HTML = """
   {% endif %}
 </header>
 """
+
+
+ASISTEN_CSS = """
+.chat-shell {
+  --deep:#0A2557; --sea:#12468C; --tide:#1AA6E0; --gold:#F2A83B; --gold-deep:#D6821A;
+  --foam:#EAF6FC; --sand:#F3F7FB; --cink:#0A2557; --cline:rgba(10,37,87,0.13); --cwhite:#FFFFFF;
+  max-width:720px; margin:0 auto;
+  font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+}
+.chat-card {
+  display:flex; flex-direction:column; height:min(680px, 78vh);
+  background:var(--cwhite); border-radius:18px; overflow:hidden;
+  box-shadow:0 10px 34px rgba(10,37,87,.16); border:1px solid var(--cline);
+}
+.chat-head {
+  background:linear-gradient(135deg,var(--deep) 0%, var(--sea) 45%, var(--tide) 100%);
+  color:#fff; padding:18px 20px 16px; position:relative; overflow:hidden;
+  display:flex; align-items:flex-start; gap:13px;
+}
+.chat-head::after { content:""; position:absolute; right:-40px; bottom:-60px; width:180px; height:180px;
+  border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.4), transparent 70%); }
+.chat-logo-badge { flex-shrink:0; width:44px; height:44px; border-radius:11px; background:rgba(255,255,255,.96);
+  display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(0,0,0,.18);
+  position:relative; z-index:1; padding:5px; }
+.chat-logo-badge img { width:100%; height:100%; object-fit:contain; }
+.chat-head-text { position:relative; z-index:1; flex:1; min-width:0; }
+.chat-eyebrow { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; opacity:.78; font-weight:700; }
+.chat-head h2 { margin:3px 0 3px; font-size:18px; font-weight:800; letter-spacing:-.01em; }
+.chat-sub { font-size:12px; opacity:.85; max-width:440px; line-height:1.5; }
+.chat-status { display:inline-flex; align-items:center; gap:6px; margin-top:10px; font-size:10.5px;
+  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); padding:3px 9px 3px 7px; border-radius:999px; }
+.chat-dot { width:6px; height:6px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 3px rgba(242,168,59,.3); }
+
+.chat-chips { display:flex; gap:8px; padding:12px 14px; overflow-x:auto; background:var(--foam);
+  border-bottom:1px solid var(--cline); scrollbar-width:none; }
+.chat-chips::-webkit-scrollbar { display:none; }
+.chat-chip { flex:0 0 auto; font-size:12px; font-weight:600; color:var(--sea); background:#fff;
+  border:1px solid var(--cline); padding:6px 12px; border-radius:999px; cursor:pointer; white-space:nowrap; transition:.15s; }
+.chat-chip:hover { border-color:var(--gold); color:var(--gold-deep); background:#FFF9EF; transform:translateY(-1px);
+  box-shadow:0 4px 10px rgba(242,168,59,.22); }
+
+.chat-thread { flex:1; overflow-y:auto; padding:16px 14px; display:flex; flex-direction:column; gap:12px; background:#fff; }
+.chat-msg { max-width:86%; font-size:13.3px; line-height:1.55; padding:9px 12px; border-radius:12px; white-space:pre-wrap; }
+.chat-msg.bot { align-self:flex-start; background:var(--foam); border:1px solid var(--cline); border-left:3px solid var(--tide);
+  border-top-left-radius:3px; color:var(--cink); }
+.chat-msg.user { align-self:flex-end; background:linear-gradient(135deg,var(--deep),var(--sea)); color:#fff;
+  border-top-right-radius:3px; box-shadow:0 4px 12px rgba(10,37,87,.22); }
+.chat-msg.bot b { color:var(--sea); }
+.chat-msg-label { font-size:9.5px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; margin-bottom:4px;
+  color:var(--gold-deep); opacity:.85; }
+.chat-typing { align-self:flex-start; display:flex; gap:4px; padding:11px 13px; background:var(--foam);
+  border:1px solid var(--cline); border-left:3px solid var(--tide); border-radius:12px; border-top-left-radius:3px; }
+.chat-typing span { width:6px; height:6px; border-radius:50%; background:var(--tide); animation:chatblink 1.2s infinite ease-in-out; }
+.chat-typing span:nth-child(2) { animation-delay:.2s; }
+.chat-typing span:nth-child(3) { animation-delay:.4s; }
+@keyframes chatblink { 0%,80%,100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-2px); } }
+
+.chat-form { display:flex; gap:8px; padding:11px 13px; border-top:1px solid var(--cline); background:#fff; }
+.chat-form textarea { flex:1; resize:none; border:1px solid var(--cline); border-radius:10px; padding:9px 11px;
+  font-size:13px; font-family:inherit; line-height:1.4; max-height:86px; outline:none; background:var(--sand); color:var(--cink); }
+.chat-form textarea:focus { border-color:var(--tide); background:#fff; }
+.chat-send { border:none; background:linear-gradient(135deg,var(--gold),var(--gold-deep)); color:#fff; width:42px;
+  border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:.15s;
+  flex-shrink:0; box-shadow:0 4px 10px rgba(214,130,26,.35); }
+.chat-send:hover { filter:brightness(1.06); transform:translateY(-1px); }
+.chat-send:disabled { opacity:.5; cursor:default; transform:none; }
+.chat-foot { text-align:center; font-size:10px; color:#8a97a3; padding:5px 10px 0; }
+@media (max-width: 640px) { .chat-shell { max-width:100%; } .chat-card { height:min(640px, 82vh); border-radius:14px; } }
+"""
+
+def render_asisten_page():
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Asisten e-GeRAI &mdash; Tanya KKPRL | BPRL Makassar</title>
+<meta name="description" content="Asisten tanya-jawab otomatis seputar KKPRL (Kesesuaian Kegiatan Pemanfaatan Ruang Laut) oleh BPRL Makassar.">
+<style>""" + LANDING_CSS + ASISTEN_CSS + """
+.asisten-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%); padding:26px 32px 30px; }
+.asisten-hero-inner { max-width:1600px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap; }
+.asisten-hero h1 { font-size:24px; font-weight:800; color:var(--navy); margin:0 0 6px; }
+.asisten-hero p { font-size:13.5px; color:#33495e; margin:0; max-width:560px; line-height:1.5; }
+.asisten-wrap { max-width:1600px; margin:-10px auto 40px; padding:24px 40px 0; position:relative; z-index:2; }
+.asisten-back { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700; color:var(--blue); margin-bottom:18px; }
+@media (max-width: 640px) { .asisten-wrap { padding:20px 16px 0; } .asisten-hero { padding:22px 18px 26px; } }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="asisten-hero">
+  <div class="asisten-hero-inner">
+    <div>
+      <h1>Asisten e-GeRAI &mdash; Tanya KKPRL</h1>
+      <p>Tanyakan apa pun seputar persyaratan, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan KKPRL. Dijawab singkat dan jelas oleh asisten BPRL Makassar.</p>
+    </div>
+    <img src="/static/logo-egerai-v2.png" alt="e-GeRAI BPRL Makassar" style="height:56px; width:auto; object-fit:contain;">
+  </div>
+</section>
+
+<div class="asisten-wrap">
+  <a href="/" class="asisten-back">&larr; Kembali ke Beranda</a>
+
+  <div class="chat-shell">
+    <div class="chat-card">
+      <div class="chat-head">
+        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GeRAI"></div>
+        <div class="chat-head-text">
+          <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
+          <h2>Halo e-GeRAI BPRL Makassar</h2>
+          <div class="chat-sub">Jawaban singkat &amp; jelas seputar Kesesuaian Kegiatan Pemanfaatan Ruang Laut.</div>
+          <div class="chat-status"><span class="chat-dot"></span> Siap menjawab</div>
+        </div>
+      </div>
+
+      <div class="chat-chips" id="chatChips">
+        <div class="chat-chip" data-q="Apa itu KKPRL?">Apa itu KKPRL?</div>
+        <div class="chat-chip" data-q="Apa saja dokumen persyaratan KKPRL?">Dokumen persyaratan</div>
+        <div class="chat-chip" data-q="Bagaimana cara mendaftar KKPRL di OSS?">Cara daftar OSS</div>
+        <div class="chat-chip" data-q="Berapa biaya PNBP KKPRL?">Biaya PNBP</div>
+        <div class="chat-chip" data-q="Bagaimana cara melacak status permohonan KKPRL?">Lacak status</div>
+        <div class="chat-chip" data-q="Berapa lama proses (SLA) penerbitan KKPRL?">SLA proses</div>
+        <div class="chat-chip" data-q="Apa saja mitos yang salah tentang KKPRL?">Cek fakta KKPRL</div>
+      </div>
+
+      <div class="chat-thread" id="chatThread">
+        <div class="chat-msg bot">
+          <div class="chat-msg-label">e-GeRAI BPRL Makassar</div>
+          Selamat datang. Silakan tanyakan hal seputar <b>KKPRL</b> &mdash; persyaratan, prosedur OSS, reklamasi, biaya, atau tracking permohonan. Jawaban akan diberikan singkat dan jelas.
+        </div>
+      </div>
+
+      <form id="chatForm" class="chat-form">
+        <textarea id="chatInput" rows="1" placeholder="Tulis pertanyaan seputar KKPRL..."></textarea>
+        <button class="chat-send" id="chatSendBtn" type="submit" aria-label="Kirim">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+        </button>
+      </form>
+    </div>
+    <div class="chat-foot">Jawaban bersifat informatif, bukan pengganti dokumen resmi peraturan KKP.</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var thread = document.getElementById('chatThread');
+  var form = document.getElementById('chatForm');
+  var input = document.getElementById('chatInput');
+  var sendBtn = document.getElementById('chatSendBtn');
+  var chips = document.getElementById('chatChips');
+  var history = [];
+
+  function escapeHtml(t){ return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function formatText(t){ return escapeHtml(t).replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\\n/g,'<br>'); }
+
+  function addMessage(role, text){
+    var div = document.createElement('div');
+    div.className = 'chat-msg ' + (role === 'user' ? 'user' : 'bot');
+    if(role === 'bot'){
+      var label = document.createElement('div');
+      label.className = 'chat-msg-label';
+      label.textContent = 'e-GeRAI BPRL Makassar';
+      div.appendChild(label);
+      var body = document.createElement('div');
+      body.innerHTML = formatText(text);
+      div.appendChild(body);
+    } else {
+      div.textContent = text;
+    }
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function showTyping(){
+    var div = document.createElement('div');
+    div.className = 'chat-typing';
+    div.id = 'chatTypingIndicator';
+    div.innerHTML = '<span></span><span></span><span></span>';
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+  function hideTyping(){
+    var t = document.getElementById('chatTypingIndicator');
+    if(t) t.remove();
+  }
+
+  function askAsisten(question){
+    history.push({role:'user', content: question});
+    showTyping();
+    sendBtn.disabled = true;
+
+    fetch('/api/asisten-chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: history})
+    }).then(function(r){ return r.json(); }).then(function(data){
+      hideTyping();
+      var text = (data && data.reply) ? data.reply : 'Maaf, terjadi kendala saat memproses pertanyaan. Silakan coba lagi.';
+      history.push({role:'assistant', content: text});
+      addMessage('bot', text);
+    }).catch(function(){
+      hideTyping();
+      addMessage('bot', 'Maaf, terjadi kesalahan koneksi. Silakan coba lagi sesaat lagi.');
+    }).finally(function(){
+      sendBtn.disabled = false;
+    });
+  }
+
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var q = input.value.trim();
+    if(!q) return;
+    addMessage('user', q);
+    input.value = '';
+    input.style.height = 'auto';
+    askAsisten(q);
+  });
+
+  input.addEventListener('input', function(){
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 86) + 'px';
+  });
+  input.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  chips.addEventListener('click', function(e){
+    var chip = e.target.closest('.chat-chip');
+    if(!chip) return;
+    var q = chip.dataset.q;
+    addMessage('user', q);
+    askAsisten(q);
+  });
+})();
+</script>
+</body></html>"""
+
 
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
@@ -839,6 +1116,23 @@ UPLOAD_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </form>
+</div>
+
+<div class="asisten-promo-wrap">
+  <a href="/asisten" class="asisten-promo-card">
+    <div class="asisten-promo-badge">
+      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GeRAI">
+    </div>
+    <div class="asisten-promo-text">
+      <div class="asisten-promo-eyebrow">Asisten e-GeRAI &middot; Tanya Jawab Otomatis</div>
+      <div class="asisten-promo-title">Punya pertanyaan seputar KKPRL? Tanya langsung ke asisten kami</div>
+      <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
+    </div>
+    <div class="asisten-promo-cta">
+      <span>Tanya Sekarang</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </div>
+  </a>
 </div>
 
 <script>
@@ -2469,7 +2763,7 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
 </body></html>"""
 
 
-PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health"}
+PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health", "/asisten", "/api/asisten-chat"}
 PUBLIC_PREFIXES = ("/static/",)
 
 
@@ -2493,6 +2787,31 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}
+
+
+@app.route("/asisten", methods=["GET"])
+def asisten_page():
+    return render_template_string(render_asisten_page())
+
+
+@app.route("/api/asisten-chat", methods=["POST"])
+def api_asisten_chat():
+    payload = request.get_json(silent=True) or {}
+    messages = payload.get("messages") or []
+
+    # Validasi ringan: hanya loloskan role/content yang diharapkan API,
+    # supaya input dari browser tidak bisa menyuntikkan field lain.
+    clean_messages = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean_messages.append({"role": role, "content": content[:4000]})
+
+    reply = asisten_kkprl.chat_reply(clean_messages)
+    return jsonify({"reply": reply})
 
 
 @app.route("/api/wilayah/<level>/<code>")
