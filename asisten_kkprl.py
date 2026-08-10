@@ -2,28 +2,16 @@
 Asisten Tanya-Jawab e-GeRAI BPRL Makassar (KKPRL)
 ====================================================
 Chatbot ringan untuk menjawab pertanyaan publik seputar KKPRL, memakai
-API key TIDAK pernah dikirim ke browser -- semua panggilan LLM terjadi
-di sisi server.
+Claude API di sisi server (API key TIDAK pernah dikirim ke browser).
 
-Mendukung 3 provider sekaligus dengan mekanisme FALLBACK OTOMATIS:
-  1. Google Gemini  (env: GEMINI_API_KEY)     -- dicoba pertama (gratis)
-  2. Anthropic Claude (env: ANTHROPIC_API_KEY) -- dicoba kalau Gemini gagal
-  3. OpenAI ChatGPT  (env: OPENAI_API_KEY)     -- dicoba kalau keduanya gagal
-
-Anda tidak perlu mengisi ketiganya -- isi salah satu saja sudah cukup
-supaya asisten aktif. Kalau lebih dari satu diisi, urutan di atas dipakai
-sebagai urutan percobaan: kalau provider pertama gagal (misalnya kredit
-habis / server down), otomatis lanjut coba provider berikutnya secara
-transparan tanpa pengguna sadar ada pergantian provider.
-
-Kalau tidak ada satupun key yang diisi, endpoint chat mengembalikan
-pesan yang menjelaskan bahwa asisten sedang tidak tersedia.
+Membutuhkan environment variable ANTHROPIC_API_KEY (sama seperti fitur
+fallback ekstraksi lain di llm_fallback.py). Jika tidak diset, endpoint
+chat akan mengembalikan pesan yang menjelaskan bahwa asisten sedang
+tidak tersedia.
 """
 import os
 
-GEMINI_MODEL = "gemini-2.0-flash"
-CLAUDE_MODEL = "claude-sonnet-4-6"
-OPENAI_MODEL = "gpt-4o-mini"
+MODEL = "claude-sonnet-4-6"
 MAX_HISTORY_MESSAGES = 20  # batasi riwayat yang dikirim ke API per request
 
 SYSTEM_PROMPT = """Kamu adalah asisten e-GeRAI BPRL Makassar (Gerai Elektronik Balai Penataan Ruang Laut Makassar), sebuah chatbot resmi bantu-jawab untuk publik terkait perizinan KKPRL (Kesesuaian Kegiatan Pemanfaatan Ruang Laut) di Indonesia (Kementerian Kelautan dan Perikanan, sistem OSS).
@@ -179,108 +167,44 @@ Fitur tracking tersedia di e-SEA (https://e-sea.kkp.go.id/): masukkan nomor perm
 Catatan sumber: materi disusun berdasarkan bahan sosialisasi KKPRL oleh Balai Penataan Ruang Laut (BPRL) Makassar, Direktorat Jenderal Penataan Ruang Laut, KKP, mengacu pada UU No.6/2023, PP No.21/2021, PP No.28/2025, Permen KP No.28/2021, dan PP No.85/2021. Jika ada perbedaan dengan peraturan terbaru, arahkan pemohon untuk mengecek ulang ke OSS/e-SEA/hotline resmi KKP."""
 
 
-def _is_real_key(value, placeholder):
-    return bool(value) and value != placeholder
-
-
-def _keys_configured():
-    """Return list of (nama_provider, env_var) yang key-nya sudah diisi (bukan placeholder)."""
-    configured = []
-    if _is_real_key(os.environ.get("GEMINI_API_KEY"), "isi_api_key_gemini_anda_di_sini"):
-        configured.append(("Gemini", "GEMINI_API_KEY"))
-    if _is_real_key(os.environ.get("ANTHROPIC_API_KEY"), "isi_api_key_claude_anda_di_sini"):
-        configured.append(("Claude", "ANTHROPIC_API_KEY"))
-    if _is_real_key(os.environ.get("OPENAI_API_KEY"), "isi_api_key_openai_anda_di_sini"):
-        configured.append(("ChatGPT", "OPENAI_API_KEY"))
-    return configured
-
-
 def api_key_available():
-    return bool(_keys_configured())
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def _call_gemini(messages):
-    from google import genai
-    from google.genai import types
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    contents = [
-        {"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]}
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=1000,
-        ),
-    )
-    return (getattr(resp, "text", "") or "").strip()
-
-
-def _call_claude(messages):
+def _client():
     from anthropic import Anthropic
-    client = Anthropic()  # otomatis baca ANTHROPIC_API_KEY dari environment
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1000,
-        system=SYSTEM_PROMPT,
-        messages=messages,  # sudah berformat role user/assistant, cocok langsung
-    )
-    return "".join(block.text for block in resp.content if hasattr(block, "text")).strip()
-
-
-def _call_openai(messages):
-    from openai import OpenAI
-    client = OpenAI()  # otomatis baca OPENAI_API_KEY dari environment
-    resp = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        max_tokens=1000,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-    )
-    return (resp.choices[0].message.content or "").strip()
-
-
-_PROVIDER_FUNCS = {
-    "Gemini": _call_gemini,
-    "Claude": _call_claude,
-    "ChatGPT": _call_openai,
-}
+    return Anthropic()  # otomatis baca ANTHROPIC_API_KEY dari environment
 
 
 def chat_reply(messages):
     """
     messages: list of {"role": "user"|"assistant", "content": str}
     Return: string balasan asisten. Tidak pernah melempar exception ke
-    pemanggil -- kalau semua provider gagal, kembalikan pesan error yang
-    ramah pengguna.
-
-    Mencoba provider yang key-nya sudah diisi secara berurutan (Gemini ->
-    Claude -> ChatGPT). Kalau satu gagal (network error, kredit habis,
-    dsb), otomatis lanjut ke provider berikutnya tanpa pengguna sadar.
+    pemanggil -- kalau gagal, kembalikan pesan error yang ramah pengguna.
     """
-    configured = _keys_configured()
-
-    if not configured:
-        return ("Maaf, asisten belum aktif karena konfigurasi server belum "
-                "diset oleh admin (isi salah satu dari GEMINI_API_KEY, "
-                "ANTHROPIC_API_KEY, atau OPENAI_API_KEY). Silakan hubungi "
+    if not api_key_available():
+        return ("Maaf, asisten belum aktif karena konfigurasi server "
+                "(ANTHROPIC_API_KEY) belum diset oleh admin. Silakan hubungi "
                 "hotline BPRL Makassar atau cek informasi KKPRL di e-SEA "
                 "(https://e-sea.kkp.go.id/).")
 
     if not messages:
         return "Silakan tuliskan pertanyaan Anda seputar KKPRL."
 
+    # Batasi jumlah riwayat yang dikirim supaya request tetap ringan
     trimmed = messages[-MAX_HISTORY_MESSAGES:]
 
-    for provider_name, _env_var in configured:
-        try:
-            text = _PROVIDER_FUNCS[provider_name](trimmed)
-            if text:
-                return text
-        except Exception as e:
-            print(f"[asisten_kkprl] provider {provider_name} gagal: {e}")
-            continue  # coba provider berikutnya di daftar
-
-    return ("Maaf, terjadi kendala teknis saat menghubungi asisten. "
-            "Silakan coba lagi sebentar lagi, atau hubungi hotline BPRL Makassar.")
+    try:
+        client = _client()
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=1000,
+            system=SYSTEM_PROMPT,
+            messages=trimmed,
+        )
+        text = "".join(block.text for block in resp.content if hasattr(block, "text")).strip()
+        return text or "Maaf, terjadi kendala saat memproses pertanyaan. Silakan coba lagi."
+    except Exception as e:
+        print(f"[asisten_kkprl] gagal memanggil Claude API: {e}")
+        return ("Maaf, terjadi kendala teknis saat menghubungi asisten. "
+                "Silakan coba lagi sebentar lagi, atau hubungi hotline BPRL Makassar.")
