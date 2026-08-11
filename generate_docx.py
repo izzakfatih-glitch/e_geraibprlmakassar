@@ -272,6 +272,51 @@ class Builder:
         set_font(r, size=11)
         return para
 
+    def bullet_with_link(self, prefix_text, link_text, url, suffix_text=""):
+        """Bullet list yang bagian tautannya (mis. link Google Drive) dibuat
+        sebagai hyperlink asli yang bisa diklik di Word, bukan cuma teks
+        biasa. python-docx belum punya API bawaan untuk hyperlink, jadi
+        dibangun manual lewat XML (w:hyperlink + relationship id)."""
+        para = self.doc.add_paragraph(style="List Bullet")
+        if prefix_text:
+            r0 = para.add_run(prefix_text)
+            set_font(r0, size=11)
+
+        part = para.part
+        r_id = part.relate_to(
+            url,
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+            is_external=True,
+        )
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), r_id)
+        new_run = OxmlElement("w:r")
+        rpr = OxmlElement("w:rPr")
+        color = OxmlElement("w:color")
+        color.set(qn("w:val"), "1155CC")
+        rpr.append(color)
+        u = OxmlElement("w:u")
+        u.set(qn("w:val"), "single")
+        rpr.append(u)
+        rfonts = OxmlElement("w:rFonts")
+        rfonts.set(qn("w:ascii"), FONT)
+        rfonts.set(qn("w:hAnsi"), FONT)
+        rpr.append(rfonts)
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), "22")
+        rpr.append(sz)
+        new_run.append(rpr)
+        t = OxmlElement("w:t")
+        t.text = link_text
+        new_run.append(t)
+        hyperlink.append(new_run)
+        para._p.append(hyperlink)
+
+        if suffix_text:
+            r2 = para.add_run(suffix_text)
+            set_font(r2, size=11)
+        return para
+
     def caption(self, text):
         para = self.doc.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -841,12 +886,12 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             label = item.get("label", "")
             drive = item.get("drive", "")
             fname = item.get("file", "")
-            extra = ""
             if drive:
-                extra = f" (tautan Google Drive: {drive})"
+                b.bullet_with_link(f"{label}. (tautan Google Drive: ", drive, drive, ")")
             elif fname:
-                extra = f" (file terlampir: {fname})"
-            b.bullet(f"{label}.{extra}")
+                b.bullet(f"{label}. (file terlampir: {fname} \u2013 lihat lampiran halaman berikut)")
+            else:
+                b.bullet(f"{label}.")
     else:
         b.bullet("Sertifikat Kepemilikan Lahan Darat.")
         b.bullet("Dokumen identitas dan legalitas pemohon/perusahaan.")
@@ -868,7 +913,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     dukung_dok_list = [im for im in prop_imgs if im["tag"] == "dukung_dokumen"]
     for im in dukung_dok_list:
         b.image(im["bytes"], width_cm=13)
-        b.caption(f"Gambar {img_no}. Dokumen Data Dukung Terlampir.")
+        b.caption(f"Gambar {img_no}. {im.get('caption') or 'Dokumen Data Dukung Terlampir.'}")
         img_no += 1
 
     pendukung_lain_list = [im for im in prop_imgs if im["tag"] == "dok_pendukung_lainnya"]

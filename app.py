@@ -18,6 +18,10 @@ import re
 import uuid
 import shutil
 import traceback
+import fitz  # PyMuPDF -- dipakai untuk merender halaman PDF dokumen dukung
+            # (mis. Surat Izin Lingkungan, Berita Acara) jadi gambar, supaya
+            # isinya ikut tampil di lampiran dokumen final, bukan cuma
+            # disebut nama filenya saja.
 
 # Muat file .env (kalau ada) supaya ANTHROPIC_API_KEY & variabel lain terbaca
 # otomatis saat dijalankan lokal (python3 app.py). Di hosting (Render/Railway),
@@ -1616,6 +1620,31 @@ def spesies_terpilih(form, field_name):
     return join_dan(dipilih)
 
 
+def render_pdf_pages_to_images(pdf_bytes, dpi=150, max_pages=15):
+    """Render tiap halaman PDF jadi gambar PNG (bytes), supaya isi dokumen
+    PDF yang diunggah pemohon (mis. Surat Izin Lingkungan, Berita Acara
+    Sosialisasi, dsb.) bisa langsung disusun sebagai lampiran gambar di
+    dokumen final -- bukan cuma disebut nama filenya saja. Dibatasi
+    max_pages supaya dokumen PDF yang sangat tebal tidak membuat dokumen
+    Word hasil akhir jadi terlalu besar/lambat."""
+    hasil = []
+    try:
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return hasil
+    try:
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        n = min(len(pdf), max_pages)
+        for i in range(n):
+            page = pdf[i]
+            pix = page.get_pixmap(matrix=mat)
+            hasil.append(pix.tobytes("png"))
+    finally:
+        pdf.close()
+    return hasil
+
+
 def join_dan(items):
     """Gabungkan list string jadi satu kalimat natural pakai kata 'dan' untuk
     item terakhir (mis. ['Permukaan Laut','Dasar Laut'] -> 'Permukaan Laut
@@ -2180,19 +2209,27 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="ff-hint" style="margin-bottom:12px;">Isi kondisi di 4 penjuru arah mata angin di sekitar lokasi kegiatan. Akan otomatis tersusun jadi kalimat deskripsi di dokumen final.</div>
           <div class="field-row">
             <label>Sebelah Utara</label>
-            <input type="text" name="batas_utara" id="batas_utara" placeholder="Contoh: area penangkapan ikan skala kecil dan kawasan pemukiman nelayan berjarak sekitar 1 km">
+            <input type="text" name="batas_utara" id="batas_utara" placeholder="Isi kondisi di sebelah utara lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil dan kawasan pemukiman nelayan berjarak sekitar 1 km</span>
+            <button type="button" class="ex-fill" data-target="batas_utara">Pakai contoh ini</button></div>
           </div>
           <div class="field-row">
             <label>Sebelah Timur</label>
-            <input type="text" name="batas_timur" id="batas_timur" placeholder="Contoh: area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km">
+            <input type="text" name="batas_timur" id="batas_timur" placeholder="Isi kondisi di sebelah timur lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km</span>
+            <button type="button" class="ex-fill" data-target="batas_timur">Pakai contoh ini</button></div>
           </div>
           <div class="field-row">
             <label>Sebelah Selatan</label>
-            <input type="text" name="batas_selatan" id="batas_selatan" placeholder="Contoh: area penangkapan ikan skala kecil serta koridor kabel/pipa bawah laut berjarak sekitar 1.4 km">
+            <input type="text" name="batas_selatan" id="batas_selatan" placeholder="Isi kondisi di sebelah selatan lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil serta koridor kabel/pipa bawah laut berjarak sekitar 1.4 km</span>
+            <button type="button" class="ex-fill" data-target="batas_selatan">Pakai contoh ini</button></div>
           </div>
           <div class="field-row">
             <label>Sebelah Barat</label>
-            <input type="text" name="batas_barat" id="batas_barat" placeholder="Contoh: area penangkapan ikan skala kecil serta kegiatan Keramba Jaring Apung (KJA) berjarak sekitar 1.1 km">
+            <input type="text" name="batas_barat" id="batas_barat" placeholder="Isi kondisi di sebelah barat lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil serta kegiatan Keramba Jaring Apung (KJA) berjarak sekitar 1.1 km</span>
+            <button type="button" class="ex-fill" data-target="batas_barat">Pakai contoh ini</button></div>
           </div>
           <div class="field-row">
             <label>Deskripsi Tambahan (Opsional)</label>
@@ -3137,8 +3174,18 @@ def build_prop_data_from_manual_form(form, files):
             if f and f.filename:
                 entry["file"] = f.filename
                 ext = os.path.splitext(f.filename)[1].lstrip(".").lower()
+                file_bytes = f.read()
                 if ext in ("png", "jpg", "jpeg"):
-                    prop_images.append({"tag": "dukung_dokumen", "bytes": f.read(), "ext": file_ext(f.filename)})
+                    prop_images.append({
+                        "tag": "dukung_dokumen", "bytes": file_bytes, "ext": file_ext(f.filename),
+                        "caption": f"Dokumen {label} ({f.filename}).",
+                    })
+                elif ext == "pdf":
+                    halaman_list = render_pdf_pages_to_images(file_bytes)
+                    total = len(halaman_list)
+                    for idx, png_bytes in enumerate(halaman_list, start=1):
+                        cap = f"Dokumen {label} ({f.filename}), halaman {idx}" + (f" dari {total}" if total > 1 else "") + "."
+                        prop_images.append({"tag": "dukung_dokumen", "bytes": png_bytes, "ext": "png", "caption": cap})
             dukung_list.append(label)
             dukung_detail.append(entry)
     for nama_custom, drive_custom in zip(form.getlist("dukung_custom_nama[]"), form.getlist("dukung_custom_drive[]")):
