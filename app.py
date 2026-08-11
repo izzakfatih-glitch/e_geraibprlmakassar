@@ -1306,6 +1306,12 @@ REVIEW_CSS = """
 .eco-lock-note { font-size:11px; color:var(--muted); font-style:italic; margin:2px 0 10px; }
 
 .dukung-item { margin-bottom:6px; }
+.species-picker { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fbfcfd; }
+.species-search { width:100%; box-sizing:border-box; padding:8px 10px; margin-bottom:10px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+.species-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:2px 14px; max-height:260px; overflow-y:auto; padding-right:4px; }
+.species-row { margin-bottom:6px; }
+.species-row label i { font-style:italic; }
+.species-row.species-hide { display:none; }
 .dukung-detail { padding:10px 0 6px 26px; border-left:2px solid #e0e8f0; margin:2px 0 8px 8px; }
 .dukung-detail .field-row { margin-bottom:8px; }
 .dukung-custom-row { display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; }
@@ -1474,6 +1480,69 @@ KRITERIA_KARANG = [
 ]
 
 
+# Daftar spesies acuan (SIP Jenis Mangrove/Lamun/Terumbu Karang) -- dipakai
+# untuk menampilkan pilihan spesies (checkbox) pada form isian ekosistem,
+# menggantikan isian teks bebas. Boleh pilih lebih dari satu spesies
+# sekaligus (mis. mangrove sering dijumpai lebih dari satu jenis dominan).
+DAFTAR_SPESIES_MANGROVE = [
+    "Bruguiera parviflora", "Bruguiera cylindrica", "Bruguiera gymnorrhiza",
+    "Rhizophora mucronata", "Rhizophora apiculata", "Rhizophora stylosa",
+    "Sonneratia caseolaris", "Sonneratia alba",
+    "Avicennia officinalis", "Avicennia alba", "Avicennia marina",
+    "Avicennia lanata", "Avicennia germinans",
+    "Lumnitzera racemosa", "Lumnitzera littorea",
+    "Ceriops tagal", "Ceriops decandra",
+    "Kandelia candel",
+    "Aegiceras floridum", "Aegiceras corniculatum",
+    "Xylocarpus granatum", "Xylocarpus moluccensis",
+    "Excoecaria agallocha",
+]
+DAFTAR_SPESIES_LAMUN = [
+    "Enhalus acoroides", "Thalassia hemprichii",
+    "Cymodocea rotundata", "Cymodocea serrulata",
+    "Halodule pinifolia", "Halodule uninervis",
+    "Halophila decipiens", "Halophila ovalis", "Halophila minor",
+    "Halophila spinulosa", "Halophila sulawesii", "Halophila major",
+    "Syringodium isoetifolium", "Thalassodendron ciliatum",
+]
+DAFTAR_SPESIES_KARANG = [
+    "Acropora cervicornis", "Acropora elegantula", "Acropora microphthalma",
+    "Acropora millepora", "Acropora humilis", "Acropora hyacinthus",
+    "Acropora grandis",
+    "Siderastrea siderea",
+    "Montipora danae", "Montipora aequituberculata",
+]
+
+
+def render_species_picker_html(field_name, species_list):
+    """Render kelompok checkbox pilihan spesies (mis. mangrove/lamun/karang)
+    lengkap dengan kotak pencarian (filter) dan opsi "Spesies Lainnya" untuk
+    menambahkan spesies di luar daftar acuan. Nama tiap checkbox pakai
+    format "{field_name}[]" supaya bisa dibaca lewat form.getlist() dan
+    boleh pilih lebih dari satu -- hasilnya akan digabung otomatis (mis.
+    "Rhizophora mucronata, Avicennia alba dan Sonneratia alba") dan langsung
+    dipakai sebagai kalimat deskripsi ekosistem di draft maupun dokumen
+    proposal final."""
+    rows = []
+    for i, sp in enumerate(species_list):
+        cb_id = f"{field_name}_{i}"
+        rows.append(
+            f'<div class="checkbox-row species-row"><input type="checkbox" name="{field_name}[]" '
+            f'value="{sp}" id="{cb_id}" disabled><label for="{cb_id}"><i>{sp}</i></label></div>'
+        )
+    return (
+        f'<div class="species-picker" data-species-for="{field_name}">'
+        f'<input type="text" class="species-search" placeholder="Cari nama spesies..." disabled '
+        f'data-filter-for="{field_name}">'
+        f'<div class="species-grid" id="{field_name}_grid">{"".join(rows)}</div>'
+        f'<div class="field-row" style="margin-top:8px;">'
+        f'<label style="font-weight:600;font-size:12.5px;">Spesies Lainnya (di luar daftar, opsional)</label>'
+        f'<input type="text" name="{field_name}_lainnya" id="{field_name}_lainnya" disabled '
+        f'placeholder="Pisahkan dengan koma kalau lebih dari satu, mis. Nypa fruticans, Acanthus ilicifolius">'
+        f'</div></div>'
+    )
+
+
 def klasifikasi_kondisi(persen_str, kriteria):
     """Cari label kondisi yang sesuai dari daftar kriteria berdasarkan nilai
     persentase (string, boleh pakai koma atau titik). Kembalikan '' kalau
@@ -1531,6 +1600,20 @@ def dukung_item_html(idx, checkbox_name, label):
         f'<input type="file" name="{checkbox_name}_file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"></div>'
         f'</div></div>'
     )
+
+
+def spesies_terpilih(form, field_name):
+    """Gabungkan spesies yang dicentang (checkbox "{field_name}[]") dengan
+    isian bebas "{field_name}_lainnya" (dipisah koma) jadi satu kalimat
+    natural, mis. "Rhizophora mucronata, Avicennia alba dan Nypa fruticans".
+    Dipakai untuk field spesies mangrove/lamun/karang di form ekosistem."""
+    dipilih = list(form.getlist(f"{field_name}[]"))
+    lainnya = form.get(f"{field_name}_lainnya", "")
+    for extra in lainnya.split(","):
+        extra = extra.strip()
+        if extra:
+            dipilih.append(extra)
+    return join_dan(dipilih)
 
 
 def join_dan(items):
@@ -2034,9 +2117,8 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="eco-children locked" data-for="mangrove_ada">
             <div class="field-row">
               <label>Spesies Mangrove Dominan</label>
-              <input type="text" name="prop__mangrove_spesies" id="prop__mangrove_spesies" placeholder="Isi spesies mangrove" disabled>
-              <div class="field-example">Contoh: <span class="ex-text">Rhizophora mucronata</span>
-              <button type="button" class="ex-fill" data-target="prop__mangrove_spesies">Pakai contoh ini</button></div>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem mangrove di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("prop__mangrove_spesies", DAFTAR_SPESIES_MANGROVE) + """
             </div>
             <div class="field-row">
               <label>Persentase Tutupan Mangrove (%)</label>
@@ -2055,7 +2137,8 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="eco-children locked" data-for="lamun_ada_manual">
             <div class="field-row">
               <label>Spesies Lamun</label>
-              <input type="text" name="lamun_spesies" id="lamun_spesies" placeholder="Isi spesies lamun" disabled>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem lamun di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("lamun_spesies", DAFTAR_SPESIES_LAMUN) + """
             </div>
             <div class="field-row">
               <label>Persentase Tutupan Lamun</label>
@@ -2075,7 +2158,8 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="eco-children locked" data-for="karang_ada">
             <div class="field-row">
               <label>Spesies Terumbu Karang</label>
-              <input type="text" name="karang_spesies" id="karang_spesies" placeholder="Isi spesies terumbu karang" disabled>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem terumbu karang di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("karang_spesies", DAFTAR_SPESIES_KARANG) + """
             </div>
             <div class="field-row">
               <label>Persentase Tutupan Terumbu Karang</label>
@@ -2393,6 +2477,20 @@ document.querySelectorAll('[data-eco-trigger]').forEach(function(sel) {
   update();
 });
 
+// Kotak pencarian di daftar pilihan spesies mangrove/lamun/karang --
+// mengetik akan menyaring baris checkbox yang namanya cocok saja.
+document.querySelectorAll('.species-search').forEach(function(inp) {
+  inp.addEventListener('input', function() {
+    var q = inp.value.trim().toLowerCase();
+    var grid = document.getElementById(inp.dataset.filterFor + '_grid');
+    if (!grid) return;
+    grid.querySelectorAll('.species-row').forEach(function(row) {
+      var txt = row.textContent.toLowerCase();
+      row.classList.toggle('species-hide', q !== '' && txt.indexOf(q) === -1);
+    });
+  });
+});
+
 // Pasangan checkbox status kegiatan yang saling eksklusif (centang salah
 // satu otomatis melepas centang pasangannya, supaya tidak kontradiktif).
 [["non_reklamasi", "reklamasi"], ["kegiatan_berusaha", "non_berusaha"]].forEach(function(pair) {
@@ -2659,6 +2757,32 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
       cb.checked = posisiTerpilih.indexOf(cb.value) !== -1;
     }});
   }}
+
+  // Field spesies mangrove/lamun/karang disimpan sebagai satu string gabungan
+  // (mis. "Rhizophora mucronata, Avicennia alba dan Nypa fruticans"), tapi
+  // elemennya sekarang berupa checkbox per-spesies (name="{{field}}[]") plus
+  // satu input teks "Lainnya" -- pecah lagi: yang cocok dengan daftar acuan
+  // dicentang, sisanya (tidak dikenali) masuk ke kolom "Lainnya".
+  function restoreSpeciesField(fieldName, value) {{
+    if (typeof value !== 'string' || !value) return;
+    var items = value.split(/,\\s*| dan /).map(function(s) {{ return s.trim(); }}).filter(Boolean);
+    var boxes = document.querySelectorAll('input[name="' + fieldName + '[]"]');
+    var sisa = [];
+    items.forEach(function(item) {{
+      var cocok = false;
+      boxes.forEach(function(cb) {{
+        if (cb.value.toLowerCase() === item.toLowerCase()) {{ cb.checked = true; cocok = true; }}
+      }});
+      if (!cocok) sisa.push(item);
+    }});
+    if (sisa.length) {{
+      var lainnyaInput = document.getElementById(fieldName + '_lainnya');
+      if (lainnyaInput) lainnyaInput.value = sisa.join(', ');
+    }}
+  }}
+  restoreSpeciesField('prop__mangrove_spesies', data.mangrove_spesies);
+  restoreSpeciesField('lamun_spesies', data.lamun_spesies);
+  restoreSpeciesField('karang_spesies', data.karang_spesies);
 
   Object.keys(data).forEach(function(key) {{
     if (key.startsWith('_')) return;
@@ -3026,15 +3150,15 @@ def build_prop_data_from_manual_form(form, files):
     prop_data["dokumen_data_dukung_detail"] = dukung_detail
 
     prop_data["mangrove_ada"] = form.get("mangrove_ada", "")
-    prop_data["mangrove_spesies"] = form.get("prop__mangrove_spesies", "")
+    prop_data["mangrove_spesies"] = spesies_terpilih(form, "prop__mangrove_spesies")
     prop_data["mangrove_persen"] = form.get("prop__mangrove_persen", "")
     prop_data["mangrove_kondisi"] = form.get("prop__mangrove_kondisi", "")
     prop_data["lamun_ada_manual"] = form.get("lamun_ada_manual", "")
-    prop_data["lamun_spesies"] = form.get("lamun_spesies", "")
+    prop_data["lamun_spesies"] = spesies_terpilih(form, "lamun_spesies")
     prop_data["lamun_persen"] = form.get("lamun_persen", "")
     prop_data["lamun_kondisi"] = form.get("lamun_kondisi", "")
     prop_data["karang_ada"] = form.get("karang_ada", "")
-    prop_data["karang_spesies"] = form.get("karang_spesies", "")
+    prop_data["karang_spesies"] = spesies_terpilih(form, "karang_spesies")
     prop_data["karang_persen_manual"] = form.get("karang_persen_manual", "")
     prop_data["karang_kondisi"] = form.get("karang_kondisi", "")
 
