@@ -7,6 +7,7 @@ Catatan teknis: PDF sumber mengekstrak teks dengan satu kata per baris pada
 beberapa bagian, sehingga semua regex dijalankan terhadap teks yang sudah
 dinormalisasi (semua whitespace/newline diubah menjadi satu spasi).
 """
+import os
 import re
 import hashlib
 import fitz  # PyMuPDF
@@ -802,3 +803,26 @@ def extract_laporan_with_fallback(pdf_path, use_llm=True, log=print):
             log(f"      -> {len(missing)} field kosong, ANTHROPIC_API_KEY tidak diset (lewati fallback).")
 
     return data, images
+
+
+def extract_full_text_any(file_path):
+    """Ekstrak SELURUH teks polos (tanpa parsing field/regex apa pun) dari
+    sebuah dokumen PDF atau DOCX -- dipakai untuk fitur Analisis Konsistensi
+    Proposal, yang mengirim teks utuh dokumen ke Claude API untuk dibaca &
+    dibandingkan langsung (bukan mengandalkan regex kaku, karena dokumen
+    yang sudah jadi/ditulis manual bisa berformat sangat bervariasi)."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".docx":
+        from docx import Document
+        doc = Document(file_path)
+        parts = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+        return "\n".join(parts)
+    else:
+        doc = fitz.open(file_path)
+        text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        return text

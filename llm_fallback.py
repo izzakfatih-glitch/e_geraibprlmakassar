@@ -15,10 +15,72 @@ import json
 import re
 
 MODEL = "claude-sonnet-4-6"
+MAX_DOC_CHARS = 20000  # batas aman per dokumen supaya tidak kelebihan token
 
 
 def api_key_available():
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def analisis_konsistensi_proposal(teks_proposal, teks_laporan):
+    """Bandingkan dokumen Proposal Teknis PKKPRL yang SUDAH JADI (ditulis
+    manual oleh pengguna jasa, bisa format apa saja) dengan dokumen Laporan
+    Kondisi Eksisting/Hidro-Oseanografi sebagai sumber data pembanding.
+    Mengembalikan laporan analisis dalam format Markdown (str), atau dict
+    {"error": pesan} kalau API tidak tersedia/gagal."""
+    if not api_key_available():
+        return {"error": "ANTHROPIC_API_KEY belum diset di server -- fitur analisis ini butuh akses Claude API."}
+
+    proposal_trunc = teks_proposal[:MAX_DOC_CHARS]
+    laporan_trunc = teks_laporan[:MAX_DOC_CHARS] if teks_laporan else ""
+
+    prompt = f"""Anda adalah auditor teknis dokumen permohonan PKKPRL (Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut) di Indonesia. Anda akan diberikan dua dokumen mentah (hasil ekstraksi teks apa adanya, mungkin ada noise format):
+
+=== DOKUMEN 1: PROPOSAL TEKNIS (yang akan diperiksa) ===
+{proposal_trunc}
+
+=== DOKUMEN 2: LAPORAN KONDISI EKSISTING / HIDRO-OSEANOGRAFI & EKOSISTEM (sumber data pembanding) ===
+{laporan_trunc if laporan_trunc else "(tidak diunggah -- lewati pengecekan konsistensi data, fokus ke kelengkapan Dokumen 1 saja)"}
+
+TUGAS ANDA:
+1. Cek KONSISTENSI DATA: bandingkan setiap angka/nilai teknis yang disebutkan di Proposal (tinggi gelombang, kecepatan arus, pasang surut/HAT/LAT, kedalaman/batimetri, jenis & persentase tutupan ekosistem mangrove/lamun/terumbu karang, luas kebutuhan ruang, lokasi, dll) dengan nilai yang tercantum di Laporan sumber (kalau ada). Untuk SETIAP parameter yang disebutkan di SALAH SATU ATAU KEDUA dokumen, laporkan nilainya di masing-masing dan status kecocokannya.
+2. Cek KELENGKAPAN: apakah ada bagian standar proposal PKKPRL yang tampak kosong/belum lengkap (misalnya ada teks placeholder semacam "[data tidak terdeteksi otomatis]" yang masih tertinggal, atau bagian penting yang seharusnya ada tapi tidak ditemukan)?
+3. Beri REKOMENDASI PERBAIKAN yang konkret untuk tiap temuan.
+
+ATURAN KETAT:
+- JANGAN mengarang data yang tidak benar-benar ada di salah satu dokumen.
+- Kalau suatu parameter tidak disebutkan di salah satu/kedua dokumen, katakan "tidak disebutkan" apa adanya -- jangan menebak angka.
+- Balas HANYA dalam format Markdown berikut, tanpa teks pembuka/penutup apa pun di luar format ini:
+
+## Ringkasan
+(1 paragraf singkat kesimpulan keseluruhan: apakah dokumen proposal ini secara umum konsisten dengan data sumber atau ada banyak ketidaksesuaian)
+
+## Ketidaksesuaian & Perbandingan Data
+| Parameter | Nilai di Proposal | Nilai di Laporan Sumber | Status |
+|---|---|---|---|
+(satu baris per parameter yang berhasil dibandingkan; Status salah satu dari: Cocok / Tidak Cocok / Hanya di Proposal / Hanya di Laporan)
+
+## Kelengkapan Dokumen Proposal
+(daftar poin -- apa saja yang tampak kosong/placeholder/belum lengkap; kalau semuanya lengkap, katakan begitu)
+
+## Rekomendasi Perbaikan
+(daftar bernomor, konkret, urut prioritas)
+"""
+
+    try:
+        client = _client()
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=170.0,
+        )
+        hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
+        if not hasil:
+            return {"error": "Claude API mengembalikan respons kosong. Silakan coba lagi."}
+        return hasil
+    except Exception as e:
+        return {"error": f"Gagal memproses analisis: {type(e).__name__}: {str(e)[:300]}"}
 
 
 def _client():
