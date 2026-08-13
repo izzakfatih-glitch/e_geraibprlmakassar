@@ -563,12 +563,25 @@ def fetch_staff_list(force=False):
         reader = csv.DictReader(_io.StringIO(raw))
         staff = {}
         for row in reader:
-            nama = (row.get("Nama") or "").strip()
-            kode_nama = (row.get("Kode Nama") or "").strip()
-            kode_petugas = (row.get("Kode petugas") or "").strip()
-            admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
+            # Cocokkan nama kolom secara case-insensitive & abaikan spasi
+            # ekstra di header (mis. "Analisis " atau "ANALISIS" tetap
+            # kepakai), supaya tidak gagal diam-diam kalau header di Google
+            # Sheet ditulis beda kapitalisasi/spasi dari yang diharapkan.
+            row_ci = {(k or "").strip().lower(): v for k, v in row.items()}
+
+            def col(*names, default=""):
+                for name in names:
+                    v = row_ci.get(name.strip().lower())
+                    if v is not None and str(v).strip() != "":
+                        return v
+                return default
+
+            nama = str(col("Nama")).strip()
+            kode_nama = str(col("Kode Nama")).strip()
+            kode_petugas = str(col("Kode petugas")).strip()
+            admin_raw = col("Admin", "Peran", "Role")
             is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
-            analisis_raw = row.get("Analisis") or row.get("analisis") or ""
+            analisis_raw = col("Analisis", "Akses Analisis", "Analisis Proposal")
             can_analisis = _is_yes_value(analisis_raw)
             if nama and kode_nama and kode_petugas:
                 staff[kode_nama] = {
@@ -3568,6 +3581,51 @@ def _require_analisis_access():
 Hubungi admin kalau Anda seharusnya punya akses ke fitur ini.</p>
 </div></div></body></html>"""), 403
     return None
+
+
+@app.route("/admin/staff-debug")
+def admin_staff_debug():
+    """Halaman diagnostik khusus admin: menampilkan apa adanya hasil
+    pembacaan Google Sheet pegawai (tanpa password), supaya gampang cek
+    kenapa suatu petugas dapat/tidak dapat akses admin atau Analisis
+    Proposal -- tanpa perlu logout-login coba-coba berulang."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    staff = fetch_staff_list(force=True)
+    rows = "".join(
+        f"<tr><td>{kode}</td><td>{d['nama']}</td>"
+        f"<td>{'&#10003; Ya' if d['is_admin'] else '&mdash;'}</td>"
+        f"<td>{'&#10003; Ya' if d['can_analisis'] else '&mdash;'}</td></tr>"
+        for kode, d in sorted(staff.items())
+    )
+    table_html = ("""<table class="history-table"><thead><tr>
+      <th>Kode Nama</th><th>Nama</th><th>Admin</th><th>Bisa Akses Analisis Proposal</th>
+    </tr></thead><tbody>""" + rows + """</tbody></table>""") if staff else (
+        '<p style="color:var(--muted);font-size:13.5px;">Gagal membaca data pegawai dari Google Sheet, '
+        'atau sheet-nya kosong. Cek kembali URL sheet & apakah sudah di-publish sebagai CSV.</p>'
+    )
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diagnostik Data Pegawai &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Diagnostik Data Pegawai</h1>
+  <p>Data ini dibaca LANGSUNG dari Google Sheet (bukan dari cache) supaya mencerminkan kondisi
+  terbaru. Kalau kolom "Bisa Akses Analisis Proposal" untuk seseorang tidak sesuai harapan,
+  berarti kolom "Analisis" di Google Sheet untuk baris tersebut belum terisi "Ya" dengan benar,
+  atau nama header kolomnya berbeda dari yang diharapkan sistem.</p>
+</section>
+
+<div class="review-wrap">
+  <div class="review-card">""" + table_html + """</div>
+  <p style="margin-top:10px;"><a href="/" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Beranda</a></p>
+</div>
+</body></html>"""
 
 
 @app.route("/admin/riwayat")
