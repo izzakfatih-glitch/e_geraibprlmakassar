@@ -393,12 +393,13 @@ import time
 _staff_cache = {"data": {}, "fetched_at": 0}
 STAFF_CACHE_TTL = 300  # detik (5 menit)
 
-# Kode Nama yang SELALU dianggap admin apa pun isi Google Sheet-nya (jaring
-# pengaman kalau kolom "Admin" di sheet belum/lupa diisi). Tambahkan kode
-# lain di sini kalau perlu, atau (lebih fleksibel) tandai lewat kolom
-# "Admin" di Google Sheet -- isi "Ya"/"TRUE"/"1"/"Admin" pada baris pegawai
-# yang bersangkutan, tidak perlu redeploy.
-ADMIN_KODE_HARDCODED = {"101"}
+# Kode Nama (username login, BUKAN kode petugas/password) yang SELALU
+# dianggap admin apa pun isi Google Sheet-nya -- jaring pengaman kalau
+# kolom "Admin" di sheet belum/lupa diisi. Tambahkan kode nama lain di sini
+# kalau perlu, atau (lebih fleksibel) tandai lewat kolom "Admin" di Google
+# Sheet -- isi "Ya"/"TRUE"/"1"/"Admin" pada baris pegawai yang bersangkutan,
+# tidak perlu redeploy.
+ADMIN_KODE_HARDCODED = {"01"}
 
 
 def _is_admin_value(v):
