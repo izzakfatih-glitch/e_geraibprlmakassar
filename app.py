@@ -411,6 +411,14 @@ def _is_admin_value(v):
     return (v or "").strip().lower() in ("ya", "yes", "true", "1", "admin", "y")
 
 
+# Alias -- dipakai untuk kolom "Analisis" di Google Sheet (nilai "Ya"/"TRUE"/
+# "1" berarti petugas tsb boleh mengakses fitur Analisis & Koreksi Proposal).
+# Nama fungsinya sengaja dipisah dari _is_admin_value supaya jelas maksudnya
+# di titik pemanggilan, walau logikanya sama persis.
+def _is_yes_value(v):
+    return _is_admin_value(v)
+
+
 def parse_koordinat_file(file_storage):
     """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, Word
     (.docx), atau gambar (PNG/JPG) yang diupload -- 2 kolom pertama tiap
@@ -560,8 +568,13 @@ def fetch_staff_list(force=False):
             kode_petugas = (row.get("Kode petugas") or "").strip()
             admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
             is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
+            analisis_raw = row.get("Analisis") or row.get("analisis") or ""
+            can_analisis = _is_yes_value(analisis_raw)
             if nama and kode_nama and kode_petugas:
-                staff[kode_nama] = {"nama": nama, "password": kode_petugas, "is_admin": is_admin}
+                staff[kode_nama] = {
+                    "nama": nama, "password": kode_petugas, "is_admin": is_admin,
+                    "can_analisis": can_analisis,
+                }
         if staff:
             _staff_cache["data"] = staff
             _staff_cache["fetched_at"] = now
@@ -1988,8 +2001,12 @@ def render_admin_riwayat_staff_page(kode):
 
 
 def render_analisis_proposal_page(error=None):
-    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
-    api_note = "" if llm_api_key_available() else (
+    api_available = llm_api_key_available()
+    # Kalau API key belum diset: jangan tampilkan error submit yang sama
+    # persis dengan peringatan permanen di bawah -- cukup satu saja.
+    show_error = error and not (not api_available and "ANTHROPIC_API_KEY" in (error or ""))
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if show_error else ""
+    api_note = "" if api_available else (
         '<div class="error-banner" style="margin-bottom:16px;background:#fff4e5;border-color:#ffd9a0;">'
         '\u26A0 ANTHROPIC_API_KEY belum diset di server -- fitur ini butuh akses Claude API untuk berjalan. '
         'Hubungi admin untuk mengaktifkannya.</div>'
@@ -2057,7 +2074,7 @@ def render_analisis_proposal_page(error=None):
       </div>
 
       <div class="gen-btn">
-        <button type="submit">""" + ICONS["bolt"] + """ Analisis Dokumen</button>
+        <button type="submit" """ + ("disabled title=\"ANTHROPIC_API_KEY belum diset di server\"" if not api_available else "") + """>""" + ICONS["bolt"] + """ Analisis Dokumen</button>
         <div class="gen-note">Proses bisa memakan waktu sampai 1 menit tergantung panjang dokumen.</div>
         <div class="spinner" id="aspinner">\u23F3 Menganalisis dokumen, mohon tunggu...</div>
       </div>
@@ -3355,6 +3372,9 @@ PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/healt
 PUBLIC_PREFIXES = ("/static/",)
 
 
+ANALISIS_PREFIXES = ("/analisis-proposal", "/analisis-riwayat")
+
+
 @app.before_request
 def require_login_pegawai():
     """Seluruh aplikasi WAJIB login dulu (Kode Nama + Kode Petugas) sebelum
@@ -3364,6 +3384,12 @@ def require_login_pegawai():
         return None
     if not session.get("user"):
         return render_login_pegawai_page()
+    # Fitur Analisis & Koreksi Proposal dibatasi hanya untuk admin atau
+    # petugas yang ditandai "Ya" di kolom "Analisis" pada Google Sheet.
+    if request.path.startswith(ANALISIS_PREFIXES):
+        denied = _require_analisis_access()
+        if denied:
+            return denied
     return None
 
 
@@ -3439,6 +3465,7 @@ def login_pegawai_submit():
         session["user"] = {
             "name": entry["nama"], "email": "", "picture": "", "kode": kode_nama,
             "is_admin": entry.get("is_admin", False) or kode_nama in ADMIN_KODE_HARDCODED,
+            "can_analisis": entry.get("can_analisis", False),
         }
         session.permanent = True
         return redirect(url_for("index"))
@@ -3519,6 +3546,26 @@ def _require_admin():
 <div class="review-wrap"><div class="review-card history-login-gate">
 <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Akses Ditolak</h3>
 <p>Halaman ini hanya bisa diakses oleh akun admin.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
+def _require_analisis_access():
+    """Helper guard untuk fitur Analisis & Koreksi Proposal -- hanya boleh
+    diakses oleh admin ATAU petugas yang kolom "Analisis" di Google Sheet-nya
+    diisi "Ya" (lihat fetch_staff_list -- flag can_analisis). Return response
+    penolakan kalau tidak berwenang, atau None kalau boleh lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    if not (user.get("is_admin") or user.get("can_analisis")):
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Akses Ditolak</h3>
+<p>Fitur Analisis &amp; Koreksi Proposal hanya bisa diakses oleh petugas yang ditunjuk.
+Hubungi admin kalau Anda seharusnya punya akses ke fitur ini.</p>
 </div></div></body></html>"""), 403
     return None
 
