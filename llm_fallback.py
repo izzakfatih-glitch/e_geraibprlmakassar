@@ -37,6 +37,8 @@ def analisis_konsistensi_proposal(teks_proposal, teks_laporan):
 
     prompt = f"""Anda adalah auditor teknis dokumen permohonan PKKPRL (Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut) di Indonesia. Anda akan diberikan dua dokumen mentah (hasil ekstraksi teks apa adanya, mungkin ada noise format). Setiap dokumen bisa terdiri dari GABUNGAN BEBERAPA BERKAS (PDF/Word/Excel) yang merupakan satu kesatuan -- tiap berkas dipisahkan dengan penanda "===== BERKAS: nama_file =====". Perlakukan semua berkas dalam satu dokumen sebagai satu kesatuan informasi, tapi bila menemukan ketidaksesuaian atau data penting, sebutkan juga di berkas mana temuan itu berada (pakai nama berkas dari penanda tersebut) supaya mudah dirujuk.
 
+Beberapa berkas mungkin juga menyertakan bagian "===== DESKRIPSI GAMBAR DALAM DOKUMEN (dibuat otomatis oleh AI) =====" -- ini adalah deskripsi objektif dari gambar/foto/peta/diagram yang TERTANAM di dalam dokumen aslinya (dibuat otomatis lewat AI vision, bukan ditulis manusia). Perlakukan ini sebagai bukti pendukung yang setara dengan teks biasa: misalnya cocokkan apakah foto lokasi/tapak kegiatan yang dideskripsikan sesuai dengan alamat/koordinat yang disebutkan di teks, apakah peta/layout area sesuai dengan luas & batas yang diklaim, dsb. Kalau ada ketidaksesuaian antara isi gambar dan klaim teks, itu temuan penting yang harus dilaporkan.
+
 === DOKUMEN 1: PROPOSAL TEKNIS (yang akan diperiksa) ===
 {proposal_trunc}
 

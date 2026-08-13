@@ -2057,7 +2057,9 @@ def render_analisis_proposal_page(error=None):
         <div class="step-title">Proposal Teknis PKKPRL yang Sudah Jadi (PDF/Word/Excel)</div>
         <div class="step-desc">Dokumen yang ingin diperiksa/dikoreksi. Wajib diunggah -- boleh lebih dari satu
         berkas kalau proposalnya terdiri dari beberapa file (mis. dokumen utama + lampiran koordinat/data),
-        semua akan digabung & dianalisis sekaligus dalam satu kali klik.</div>
+        semua akan digabung & dianalisis sekaligus dalam satu kali klik. PDF hasil scan juga didukung
+        (dibaca otomatis via OCR), dan gambar/foto/peta yang tertanam di dalam dokumen ikut dijelaskan
+        & dianalisis otomatis -- mungkin butuh waktu sedikit lebih lama.</div>
         <div class="dropzone analisis-dropzone" id="adz1">
           """ + ICONS["cloud"] + """
           <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
@@ -2159,13 +2161,19 @@ document.getElementById('analisisForm').addEventListener('submit', function() {
 
 
 def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_laporan,
-                                entry_id=None, saved_notice=None):
+                                entry_id=None, saved_notice=None, ocr_status=None):
     import markdown as _md
     import html as _html
     html_body = _md.markdown(hasil_markdown, extensions=["tables"])
     laporan_txt = (" &middot; Laporan pembanding: <b>" + nama_file_laporan + "</b>") if nama_file_laporan else " &middot; <i>(tanpa Laporan pembanding -- hanya cek kelengkapan)</i>"
 
     notice_html = f'<div class="error-banner" style="margin-bottom:16px;background:#eafaf0;border-color:#b7e9c9;color:#1a6b3c;">\u2705 {saved_notice}</div>' if saved_notice else ""
+    ocr_notice_html = ""
+    if ocr_status:
+        items = "".join(f"<li>{s}</li>" for s in ocr_status)
+        ocr_notice_html = ('<div class="error-banner" style="margin-bottom:16px;background:#eaf1fc;border-color:#cfe0f5;color:#1F4E79;">'
+                            f'{ICONS["chart-bar"]} Sebagian konten diproses otomatis lewat AI (OCR dokumen scan / deskripsi gambar tertanam):'
+                            f'<ul style="margin:6px 0 0;padding-left:20px;">{items}</ul></div>')
 
     md_escaped = _html.escape(hasil_markdown or "")
     prop_escaped = _html.escape(nama_file_proposal or "")
@@ -2233,6 +2241,7 @@ def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_lap
 
 <div class="review-wrap">
   """ + notice_html + """
+  """ + ocr_notice_html + """
   """ + actions_html + """
   <div class="review-card analisis-report">
     """ + html_body + """
@@ -3713,12 +3722,14 @@ def analisis_proposal_submit():
             f.save(path)
             laporan_paths.append(path)
 
-        teks_proposal = extract_full_text_multi(proposal_paths)
-        teks_laporan = extract_full_text_multi(laporan_paths) if laporan_paths else ""
+        ocr_status = []
+        teks_proposal = extract_full_text_multi(proposal_paths, ocr_status_list=ocr_status)
+        teks_laporan = extract_full_text_multi(laporan_paths, ocr_status_list=ocr_status) if laporan_paths else ""
 
         if not teks_proposal.strip():
             return render_template_string(render_analisis_proposal_page(
-                error="Tidak ada teks yang berhasil dibaca dari dokumen Proposal. Pastikan filenya valid dan bukan hasil scan gambar."
+                error="Tidak ada teks yang berhasil dibaca dari dokumen Proposal, walau sudah dicoba OCR "
+                      "(kemungkinan hasil scan kualitas rendah/buram, atau bukan dokumen berisi tulisan)."
             ))
 
         hasil = analisis_konsistensi_proposal(teks_proposal, teks_laporan)
@@ -3729,7 +3740,7 @@ def analisis_proposal_submit():
         nama_laporan = ", ".join(f.filename for f in laporan_files) if laporan_files else ""
 
         return render_template_string(render_analisis_hasil_page(
-            hasil, nama_proposal, nama_laporan
+            hasil, nama_proposal, nama_laporan, ocr_status=ocr_status,
         ))
     except Exception as e:
         traceback.print_exc()
