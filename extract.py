@@ -807,10 +807,10 @@ def extract_laporan_with_fallback(pdf_path, use_llm=True, log=print):
 
 def extract_full_text_any(file_path):
     """Ekstrak SELURUH teks polos (tanpa parsing field/regex apa pun) dari
-    sebuah dokumen PDF atau DOCX -- dipakai untuk fitur Analisis Konsistensi
-    Proposal, yang mengirim teks utuh dokumen ke Claude API untuk dibaca &
-    dibandingkan langsung (bukan mengandalkan regex kaku, karena dokumen
-    yang sudah jadi/ditulis manual bisa berformat sangat bervariasi)."""
+    sebuah dokumen PDF, DOCX, atau XLSX -- dipakai untuk fitur Analisis
+    Konsistensi Proposal, yang mengirim teks utuh dokumen ke Claude API untuk
+    dibaca & dibandingkan langsung (bukan mengandalkan regex kaku, karena
+    dokumen yang sudah jadi/ditulis manual bisa berformat sangat bervariasi)."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".docx":
         from docx import Document
@@ -821,8 +821,33 @@ def extract_full_text_any(file_path):
                 for cell in row.cells:
                     parts.append(cell.text)
         return "\n".join(parts)
+    elif ext in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(file_path, data_only=True, read_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            parts.append(f"[Sheet: {ws.title}]")
+            for row in ws.iter_rows(values_only=True):
+                cells = ["" if c is None else str(c) for c in row]
+                if any(c.strip() for c in cells):
+                    parts.append(" | ".join(cells))
+        wb.close()
+        return "\n".join(parts)
     else:
         doc = fitz.open(file_path)
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
         return text
+
+
+def extract_full_text_multi(file_paths):
+    """Ekstrak & gabungkan teks dari BEBERAPA file (PDF/DOCX/XLSX) yang
+    merupakan bagian dari satu dokumen/proposal yang sama. Tiap file diberi
+    penanda nama sumbernya supaya temuan analisis bisa dirujuk ke file asal."""
+    parts = []
+    for fp in file_paths:
+        nama = os.path.basename(fp)
+        # buang prefix acak "proposal_0_" / "laporan_0_" dst kalau ada, sisakan nama asli
+        teks = extract_full_text_any(fp)
+        parts.append(f"\n\n===== BERKAS: {nama} =====\n{teks}")
+    return "".join(parts).strip()

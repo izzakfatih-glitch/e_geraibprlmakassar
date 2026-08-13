@@ -930,3 +930,142 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     b.save(output_path)
     return img_no - 1
+
+
+# ---------------------------------------------------------------------------
+# Konversi laporan Markdown (hasil fitur "Analisis & Koreksi Proposal") ke
+# dokumen Word, supaya pengguna bisa mengunduh & mengarsipkan hasil analisis.
+# Parser ini sengaja dibuat sederhana & khusus untuk format Markdown yang
+# dihasilkan oleh prompt di llm_fallback.analisis_konsistensi_proposal
+# (heading ##, tabel |...|, list bernomor/bullet, teks tebal **...**) --
+# bukan konverter Markdown umum.
+# ---------------------------------------------------------------------------
+_MD_BOLD_RE = re.compile(r"(\*\*[^*]+\*\*)")
+_MD_SEP_ROW_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def _md_add_inline(paragraph, text, bold_all=False):
+    for part in _MD_BOLD_RE.split(text):
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**"):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        else:
+            run = paragraph.add_run(part)
+            if bold_all:
+                run.bold = True
+        run_font = run.font
+        run_font.name = FONT
+
+
+def markdown_report_to_docx_bytes(markdown_text, judul="Hasil Analisis & Koreksi Proposal",
+                                   subjudul=None):
+    """Ubah teks Markdown hasil analisis Claude (## heading, tabel, list)
+    menjadi dokumen Word rapi. Mengembalikan bytes file .docx (siap dikirim
+    lewat send_file/BytesIO)."""
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Cm(2.2)
+        section.bottom_margin = Cm(2.2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.2)
+
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_p.add_run(judul)
+    title_run.bold = True
+    title_run.font.size = Pt(16)
+    title_run.font.color.rgb = NAVY
+    title_run.font.name = FONT
+
+    if subjudul:
+        sub_p = doc.add_paragraph()
+        sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sub_run = sub_p.add_run(subjudul)
+        sub_run.italic = True
+        sub_run.font.size = Pt(10.5)
+        sub_run.font.name = FONT
+
+    doc.add_paragraph()
+
+    lines = (markdown_text or "").replace("\r\n", "\n").split("\n")
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i].rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("## "):
+            h = doc.add_heading(stripped[3:].strip(), level=1)
+            for run in h.runs:
+                run.font.color.rgb = NAVY
+                run.font.name = FONT
+            i += 1
+            continue
+
+        if stripped.startswith("### "):
+            h = doc.add_heading(stripped[4:].strip(), level=2)
+            for run in h.runs:
+                run.font.name = FONT
+            i += 1
+            continue
+
+        if stripped.startswith("|"):
+            table_lines = []
+            while i < n and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            rows = []
+            for tl in table_lines:
+                cells = [c.strip() for c in tl.strip("|").split("|")]
+                if cells and all(_MD_SEP_ROW_RE.match(c) for c in cells):
+                    continue
+                rows.append(cells)
+            if rows:
+                ncols = max(len(r) for r in rows)
+                table = doc.add_table(rows=len(rows), cols=ncols)
+                try:
+                    table.style = "Light Grid Accent 1"
+                except KeyError:
+                    pass
+                for r, row in enumerate(rows):
+                    for c in range(ncols):
+                        cell_text = row[c] if c < len(row) else ""
+                        cell = table.cell(r, c)
+                        cell.text = ""
+                        p = cell.paragraphs[0]
+                        _md_add_inline(p, cell_text, bold_all=(r == 0))
+                        if r == 0:
+                            shading = OxmlElement("w:shd")
+                            shading.set(qn("w:fill"), "1F4E79")
+                            cell._tc.get_or_add_tcPr().append(shading)
+                            for run in p.runs:
+                                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                doc.add_paragraph()
+            continue
+
+        if re.match(r"^\d+\.\s", stripped):
+            p = doc.add_paragraph(style="List Number")
+            _md_add_inline(p, re.sub(r"^\d+\.\s", "", stripped))
+            i += 1
+            continue
+
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            p = doc.add_paragraph(style="List Bullet")
+            _md_add_inline(p, stripped[2:].strip())
+            i += 1
+            continue
+
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(6)
+        _md_add_inline(p, stripped)
+        i += 1
+
+    bio = io.BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()

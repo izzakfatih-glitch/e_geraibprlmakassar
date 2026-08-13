@@ -15,6 +15,7 @@ CARA MENJALANKAN (LOKAL / TES):
 """
 import os
 import re
+import io
 import uuid
 import shutil
 import traceback
@@ -49,7 +50,10 @@ except Exception:
     OAuth = None
     AUTHLIB_AVAILABLE = False
 
-from extract import extract_proposal_with_fallback, extract_laporan_with_fallback, extract_full_text_any
+from extract import extract_proposal_with_fallback, extract_laporan_with_fallback, extract_full_text_any, extract_full_text_multi
+from werkzeug.utils import secure_filename
+import analisis_store
+from generate_docx import markdown_report_to_docx_bytes
 from llm_fallback import analisis_konsistensi_proposal, api_key_available as llm_api_key_available
 from generate_docx import build_document
 from review_fields import FIELD_GROUPS, form_field_name, get_value, apply_form_values
@@ -65,6 +69,7 @@ DATA_DIR = os.environ.get("DATA_DIR") or BASE_DIR
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
+ANALISIS_STORE_DIR = os.path.join(DATA_DIR, "analisis_tersimpan")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
 DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
 DRAFT_MAX_AGE_DAYS = 30  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
@@ -720,6 +725,8 @@ a { text-decoration:none; }
 .dropzone .dz-max { font-size:11px; color:var(--muted); margin-top:8px; }
 .dropzone input[type=file] { display:none; }
 
+.file-list { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.file-list .file-chip { margin-top:0; }
 .file-chip { display:none; margin-top:12px; align-items:center; justify-content:space-between;
   background:var(--green-bg); border:1px solid #cdeedb; border-radius:10px; padding:9px 12px; }
 .file-chip.show { display:flex; }
@@ -2005,6 +2012,7 @@ def render_analisis_proposal_page(error=None):
   <p>Unggah Proposal Teknis PKKPRL yang sudah jadi untuk diperiksa otomatis -- sistem akan membandingkan data yang
   disebutkan di dalamnya dengan Laporan Kondisi Eksisting/Hidro-Oseanografi sebagai sumber data pembanding, lalu
   memberi rekomendasi perbaikan.</p>
+  <p style="margin-top:6px;"><a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a></p>
 </section>
 
 <div class="main-wrap">
@@ -2016,20 +2024,18 @@ def render_analisis_proposal_page(error=None):
           <div class="step-num">1</div>
           <div class="step-icon">""" + ICONS["doc"] + """</div>
         </div>
-        <div class="step-title">Proposal Teknis PKKPRL yang Sudah Jadi (PDF/Word)</div>
-        <div class="step-desc">Dokumen yang ingin diperiksa/dikoreksi. Wajib diunggah.</div>
+        <div class="step-title">Proposal Teknis PKKPRL yang Sudah Jadi (PDF/Word/Excel)</div>
+        <div class="step-desc">Dokumen yang ingin diperiksa/dikoreksi. Wajib diunggah -- boleh lebih dari satu
+        berkas kalau proposalnya terdiri dari beberapa file (mis. dokumen utama + lampiran koordinat/data),
+        semua akan digabung & dianalisis sekaligus dalam satu kali klik.</div>
         <div class="dropzone analisis-dropzone" id="adz1">
           """ + ICONS["cloud"] + """
-          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
-          <div class="dz-sub">atau klik untuk memilih file</div>
-          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
-          <input type="file" name="proposal" id="aproposal" accept="application/pdf,.docx" required>
+          <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file (bisa pilih lebih dari satu)</div>
+          <div class="dz-max">Maksimum 10 MB per berkas &middot; PDF, .docx, atau .xlsx</div>
+          <input type="file" name="proposal" id="aproposal" accept="application/pdf,.docx,.xlsx,.xlsm" multiple required>
         </div>
-        <div class="file-chip" id="achip1">
-          <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="aname1"></span></div>
-          <span class="fc-size" id="asize1"></span>
-          <button type="button" class="fc-remove" data-target="a1">""" + ICONS["x"] + """</button>
-        </div>
+        <div class="file-list" id="alist1"></div>
       </div>
 
       <div class="upload-card">
@@ -2037,21 +2043,17 @@ def render_analisis_proposal_page(error=None):
           <div class="step-num">2</div>
           <div class="step-icon">""" + ICONS["wave"] + """</div>
         </div>
-        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word)</div>
+        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word/Excel)</div>
         <div class="step-desc">Sumber data pembanding. Opsional, tapi tanpa ini sistem hanya bisa mengecek
-        kelengkapan Proposal, tidak bisa mengecek konsistensi datanya.</div>
+        kelengkapan Proposal, tidak bisa mengecek konsistensi datanya. Juga boleh lebih dari satu berkas.</div>
         <div class="dropzone analisis-dropzone" id="adz2">
           """ + ICONS["cloud"] + """
-          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
-          <div class="dz-sub">atau klik untuk memilih file (opsional)</div>
-          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
-          <input type="file" name="laporan" id="alaporan" accept="application/pdf,.docx">
+          <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file (opsional, bisa lebih dari satu)</div>
+          <div class="dz-max">Maksimum 10 MB per berkas &middot; PDF, .docx, atau .xlsx</div>
+          <input type="file" name="laporan" id="alaporan" accept="application/pdf,.docx,.xlsx,.xlsm" multiple>
         </div>
-        <div class="file-chip" id="achip2">
-          <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="aname2"></span></div>
-          <span class="fc-size" id="asize2"></span>
-          <button type="button" class="fc-remove" data-target="a2">""" + ICONS["x"] + """</button>
-        </div>
+        <div class="file-list" id="alist2"></div>
       </div>
 
       <div class="gen-btn">
@@ -2064,31 +2066,61 @@ def render_analisis_proposal_page(error=None):
 </div>
 
 <script>
-function setupDropzone(dzId, inputId, chipId, nameId, sizeId, removeTarget) {
+function fmtSize(bytes) {
+  var kb = bytes / 1024;
+  return kb >= 1024 ? (kb/1024).toFixed(2) + ' MB' : Math.round(kb) + ' KB';
+}
+function setupMultiDropzone(dzId, inputId, listId) {
   var dz = document.getElementById(dzId);
   var input = document.getElementById(inputId);
-  var chip = document.getElementById(chipId);
-  function showChip(file) {
-    document.getElementById(nameId).textContent = file.name;
-    var kb = file.size / 1024;
-    document.getElementById(sizeId).textContent = kb >= 1024 ? (kb/1024).toFixed(2) + ' MB' : Math.round(kb) + ' KB';
-    chip.classList.add('show');
-    dz.classList.add('has-file');
+  var list = document.getElementById(listId);
+  var files = []; // akumulasi File objects yang dipilih pengguna
+
+  function sync() {
+    var dt = new DataTransfer();
+    files.forEach(function(f) { dt.items.add(f); });
+    input.files = dt.files;
+    dz.classList.toggle('has-file', files.length > 0);
+    renderList();
   }
-  dz.addEventListener('click', function(e) { if (e.target.tagName !== 'INPUT') input.click(); });
-  input.addEventListener('change', function() { if (input.files[0]) showChip(input.files[0]); });
+  function renderList() {
+    list.innerHTML = '';
+    files.forEach(function(f, idx) {
+      var chip = document.createElement('div');
+      chip.className = 'file-chip show';
+      chip.innerHTML = '<div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name"></span></div>'
+        + '<span class="fc-size"></span>'
+        + '<button type="button" class="fc-remove">""" + ICONS["x"] + """</button>';
+      chip.querySelector('.fc-name').textContent = f.name;
+      chip.querySelector('.fc-size').textContent = fmtSize(f.size);
+      chip.querySelector('.fc-remove').addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        files.splice(idx, 1);
+        sync();
+      });
+      list.appendChild(chip);
+    });
+  }
+  function addFiles(fileListLike) {
+    Array.prototype.forEach.call(fileListLike, function(f) {
+      // hindari duplikat nama+ukuran yang sama persis
+      if (!files.some(function(existing) { return existing.name === f.name && existing.size === f.size; })) {
+        files.push(f);
+      }
+    });
+    sync();
+  }
+  dz.addEventListener('click', function(e) { if (e.target.tagName !== 'INPUT' && !e.target.closest('.file-chip')) input.click(); });
+  input.addEventListener('change', function() { if (input.files.length) addFiles(input.files); });
   dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
   dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
   dz.addEventListener('drop', function(e) {
     e.preventDefault(); dz.classList.remove('dragover');
-    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; showChip(input.files[0]); }
-  });
-  document.querySelector('.fc-remove[data-target="' + removeTarget + '"]').addEventListener('click', function(ev) {
-    ev.stopPropagation(); input.value = ''; chip.classList.remove('show'); dz.classList.remove('has-file');
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
 }
-setupDropzone('adz1','aproposal','achip1','aname1','asize1','a1');
-setupDropzone('adz2','alaporan','achip2','aname2','asize2','a2');
+setupMultiDropzone('adz1','aproposal','alist1');
+setupMultiDropzone('adz2','alaporan','alist2');
 document.getElementById('analisisForm').addEventListener('submit', function() {
   document.getElementById('aspinner').classList.add('show');
 });
@@ -2096,10 +2128,47 @@ document.getElementById('analisisForm').addEventListener('submit', function() {
 </body></html>"""
 
 
-def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_laporan):
+def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_laporan,
+                                entry_id=None, saved_notice=None):
     import markdown as _md
+    import html as _html
     html_body = _md.markdown(hasil_markdown, extensions=["tables"])
     laporan_txt = (" &middot; Laporan pembanding: <b>" + nama_file_laporan + "</b>") if nama_file_laporan else " &middot; <i>(tanpa Laporan pembanding -- hanya cek kelengkapan)</i>"
+
+    notice_html = f'<div class="error-banner" style="margin-bottom:16px;background:#eafaf0;border-color:#b7e9c9;color:#1a6b3c;">\u2705 {saved_notice}</div>' if saved_notice else ""
+
+    md_escaped = _html.escape(hasil_markdown or "")
+    prop_escaped = _html.escape(nama_file_proposal or "")
+    lap_escaped = _html.escape(nama_file_laporan or "")
+
+    if entry_id:
+        # Hasil sedang dilihat dari Riwayat Tersimpan -- sudah tersimpan,
+        # jadi cukup tampilkan tombol Unduh & Hapus.
+        actions_html = ("""
+<div class="hasil-actions">
+  <a href="/analisis-riwayat/""" + entry_id + """/unduh" class="hasil-btn hasil-btn-primary">""" + ICONS["download"] + """ Unduh Dokumen (.docx)</a>
+  <form method="POST" action="/analisis-riwayat/""" + entry_id + """/hapus" onsubmit="return confirm('Hapus hasil analisis ini dari Riwayat Tersimpan?');" style="display:inline;">
+    <button type="submit" class="hasil-btn hasil-btn-danger">""" + ICONS["x"] + """ Hapus dari Riwayat</button>
+  </form>
+</div>""")
+    else:
+        # Hasil baru saja dianalisis -- tawarkan Simpan & Unduh.
+        actions_html = ("""
+<div class="hasil-actions">
+  <form method="POST" action="/analisis-proposal/simpan" style="display:inline;">
+    <textarea name="hasil_markdown" style="display:none;">""" + md_escaped + """</textarea>
+    <input type="hidden" name="nama_proposal" value=\"""" + prop_escaped + """\">
+    <input type="hidden" name="nama_laporan" value=\"""" + lap_escaped + """\">
+    <button type="submit" class="hasil-btn hasil-btn-primary">""" + ICONS["check-circle"] + """ Simpan Hasil Analisis</button>
+  </form>
+  <form method="POST" action="/analisis-proposal/unduh" style="display:inline;">
+    <textarea name="hasil_markdown" style="display:none;">""" + md_escaped + """</textarea>
+    <input type="hidden" name="nama_proposal" value=\"""" + prop_escaped + """\">
+    <input type="hidden" name="nama_laporan" value=\"""" + lap_escaped + """\">
+    <button type="submit" class="hasil-btn hasil-btn-outline">""" + ICONS["download"] + """ Unduh Dokumen (.docx)</button>
+  </form>
+</div>""")
+
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -2112,6 +2181,17 @@ def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_lap
 .analisis-report tr:nth-child(even) td { background:#f8fafc; }
 .analisis-report ul, .analisis-report ol { padding-left:22px; line-height:1.7; }
 .analisis-report p { line-height:1.7; }
+.hasil-actions { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0 6px; }
+.hasil-btn { display:inline-flex; align-items:center; gap:8px; font-size:13.5px; font-weight:800;
+  padding:12px 20px; border-radius:12px; cursor:pointer; border:none; text-decoration:none; }
+.hasil-btn svg { width:18px; height:18px; flex:none; }
+.hasil-btn-primary { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  box-shadow:0 6px 18px rgba(30,99,199,.28); }
+.hasil-btn-primary:hover { filter:brightness(1.05); }
+.hasil-btn-outline { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5; }
+.hasil-btn-outline:hover { background:#f3f8ff; }
+.hasil-btn-danger { background:#fff; color:#b3261e; border:1.5px solid #f3c6c2; }
+.hasil-btn-danger:hover { background:#fdf1f0; }
 </style></head>
 <body>
 """ + HEADER_HTML + """
@@ -2122,10 +2202,14 @@ def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_lap
 </section>
 
 <div class="review-wrap">
+  """ + notice_html + """
+  """ + actions_html + """
   <div class="review-card analisis-report">
     """ + html_body + """
   </div>
-  <p style="margin-top:16px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Analisis dokumen lain</a></p>
+  """ + actions_html + """
+  <p style="margin-top:6px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Analisis dokumen lain</a>
+  &middot; <a href="/analisis-riwayat" style="color:var(--muted);font-size:13px;">Lihat Riwayat Tersimpan</a></p>
 </div>
 </body></html>"""
 
@@ -3479,39 +3563,53 @@ def analisis_proposal_form():
     return render_template_string(render_analisis_proposal_page())
 
 
+ALLOWED_ANALISIS_EXT = (".pdf", ".docx", ".xlsx", ".xlsm")
+MAX_ANALISIS_FILES = 10  # batas jumlah berkas per slot, supaya wajar & tidak membebani API
+
+
 @app.route("/analisis-proposal", methods=["POST"])
 def analisis_proposal_submit():
-    proposal_file = request.files.get("proposal")
-    laporan_file = request.files.get("laporan")
+    proposal_files = [f for f in request.files.getlist("proposal") if f and f.filename]
+    laporan_files = [f for f in request.files.getlist("laporan") if f and f.filename]
 
-    if not proposal_file or not proposal_file.filename:
+    if not proposal_files:
         return render_template_string(render_analisis_proposal_page(
-            error="Mohon unggah dokumen Proposal Teknis PKKPRL yang ingin diperiksa."
+            error="Mohon unggah dokumen Proposal Teknis PKKPRL yang ingin diperiksa (bisa lebih dari satu berkas)."
+        ))
+    if len(proposal_files) > MAX_ANALISIS_FILES or len(laporan_files) > MAX_ANALISIS_FILES:
+        return render_template_string(render_analisis_proposal_page(
+            error=f"Maksimum {MAX_ANALISIS_FILES} berkas per kolom unggahan."
         ))
 
     tmp_dir = os.path.join(UPLOAD_DIR, f"analisis_{uuid.uuid4().hex[:12]}")
     os.makedirs(tmp_dir, exist_ok=True)
     try:
-        prop_ext = os.path.splitext(proposal_file.filename)[1].lower()
-        if prop_ext not in (".pdf", ".docx"):
-            return render_template_string(render_analisis_proposal_page(
-                error="Format Proposal tidak didukung. Mohon unggah file PDF atau .docx."
-            ))
-        proposal_path = os.path.join(tmp_dir, "proposal" + prop_ext)
-        proposal_file.save(proposal_path)
-
-        laporan_path = None
-        if laporan_file and laporan_file.filename:
-            lap_ext = os.path.splitext(laporan_file.filename)[1].lower()
-            if lap_ext not in (".pdf", ".docx"):
+        # validasi format semua berkas dulu sebelum menyimpan apa pun
+        for f in proposal_files + laporan_files:
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in ALLOWED_ANALISIS_EXT:
                 return render_template_string(render_analisis_proposal_page(
-                    error="Format Laporan tidak didukung. Mohon unggah file PDF atau .docx."
+                    error=f"Format berkas '{f.filename}' tidak didukung. Mohon unggah file PDF, .docx, atau .xlsx."
                 ))
-            laporan_path = os.path.join(tmp_dir, "laporan" + lap_ext)
-            laporan_file.save(laporan_path)
 
-        teks_proposal = extract_full_text_any(proposal_path)
-        teks_laporan = extract_full_text_any(laporan_path) if laporan_path else ""
+        proposal_paths = []
+        for i, f in enumerate(proposal_files):
+            ext = os.path.splitext(f.filename)[1].lower()
+            safe_name = f"proposal_{i}_{secure_filename(f.filename) or ('berkas' + ext)}"
+            path = os.path.join(tmp_dir, safe_name)
+            f.save(path)
+            proposal_paths.append(path)
+
+        laporan_paths = []
+        for i, f in enumerate(laporan_files):
+            ext = os.path.splitext(f.filename)[1].lower()
+            safe_name = f"laporan_{i}_{secure_filename(f.filename) or ('berkas' + ext)}"
+            path = os.path.join(tmp_dir, safe_name)
+            f.save(path)
+            laporan_paths.append(path)
+
+        teks_proposal = extract_full_text_multi(proposal_paths)
+        teks_laporan = extract_full_text_multi(laporan_paths) if laporan_paths else ""
 
         if not teks_proposal.strip():
             return render_template_string(render_analisis_proposal_page(
@@ -3522,8 +3620,11 @@ def analisis_proposal_submit():
         if isinstance(hasil, dict) and hasil.get("error"):
             return render_template_string(render_analisis_proposal_page(error=hasil["error"]))
 
+        nama_proposal = ", ".join(f.filename for f in proposal_files)
+        nama_laporan = ", ".join(f.filename for f in laporan_files) if laporan_files else ""
+
         return render_template_string(render_analisis_hasil_page(
-            hasil, proposal_file.filename, laporan_file.filename if laporan_path else ""
+            hasil, nama_proposal, nama_laporan
         ))
     except Exception as e:
         traceback.print_exc()
@@ -3532,6 +3633,150 @@ def analisis_proposal_submit():
         ))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _analisis_docx_download_name(nama_proposal):
+    base = (nama_proposal or "Proposal").split(",")[0].strip()
+    base = os.path.splitext(base)[0]
+    base = re.sub(r"[^A-Za-z0-9_\-]+", "_", base).strip("_") or "Proposal"
+    return f"Hasil_Analisis_{base}.docx"
+
+
+@app.route("/analisis-proposal/unduh", methods=["POST"])
+def analisis_proposal_unduh():
+    """Unduh hasil analisis (yang baru saja ditampilkan di halaman preview)
+    langsung sebagai dokumen Word, tanpa perlu disimpan dulu di server."""
+    hasil_markdown = request.form.get("hasil_markdown", "")
+    nama_proposal = request.form.get("nama_proposal", "")
+    nama_laporan = request.form.get("nama_laporan", "")
+    if not hasil_markdown.strip():
+        return render_template_string(render_analisis_proposal_page(
+            error="Tidak ada hasil analisis untuk diunduh. Silakan lakukan analisis dokumen terlebih dahulu."
+        ))
+
+    subjudul = f"Proposal: {nama_proposal}" + (f" &middot; Laporan pembanding: {nama_laporan}" if nama_laporan else "")
+    try:
+        docx_bytes = markdown_report_to_docx_bytes(hasil_markdown, subjudul=subjudul)
+    except Exception as e:
+        traceback.print_exc()
+        return render_template_string(render_analisis_proposal_page(
+            error=f"Gagal membuat dokumen Word dari hasil analisis. (Detail teknis: {_err_detail(e)})"
+        ))
+
+    return send_file(
+        io.BytesIO(docx_bytes),
+        as_attachment=True,
+        download_name=_analisis_docx_download_name(nama_proposal),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/analisis-proposal/simpan", methods=["POST"])
+def analisis_proposal_simpan():
+    """Simpan hasil analisis yang baru saja ditampilkan ke Riwayat Tersimpan
+    milik petugas yang sedang login, supaya bisa dibuka/diunduh lagi nanti."""
+    hasil_markdown = request.form.get("hasil_markdown", "")
+    nama_proposal = request.form.get("nama_proposal", "")
+    nama_laporan = request.form.get("nama_laporan", "")
+    if not hasil_markdown.strip():
+        return render_template_string(render_analisis_proposal_page(
+            error="Tidak ada hasil analisis untuk disimpan. Silakan lakukan analisis dokumen terlebih dahulu."
+        ))
+
+    user = session.get("user") or {}
+    entry_id = analisis_store.simpan_hasil_analisis(
+        ANALISIS_STORE_DIR, hasil_markdown, nama_proposal, nama_laporan,
+        disimpan_oleh=user.get("kode", ""),
+    )
+    return render_template_string(render_analisis_hasil_page(
+        hasil_markdown, nama_proposal, nama_laporan,
+        entry_id=entry_id, saved_notice="Hasil analisis berhasil disimpan ke Riwayat Tersimpan.",
+    ))
+
+
+@app.route("/analisis-riwayat", methods=["GET"])
+def analisis_riwayat_list():
+    user = session.get("user") or {}
+    items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR, disimpan_oleh=user.get("kode", ""))
+    if items:
+        rows = "".join(
+            f"<tr><td>{it['waktu']}</td><td>{it['nama_proposal']}</td>"
+            f"<td>{it['nama_laporan'] or '<i>(tanpa laporan pembanding)</i>'}</td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}\" class=\"riwayat-link\">Lihat</a></td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}/unduh\" class=\"riwayat-link\">Unduh</a></td></tr>"
+            for it in items
+        )
+        table_html = ("""<table class="history-table"><thead><tr>
+          <th>Waktu Disimpan</th><th>Proposal</th><th>Laporan Pembanding</th><th></th><th></th>
+        </tr></thead><tbody>""" + rows + """</tbody></table>""")
+    else:
+        table_html = '<p style="color:var(--muted);font-size:13.5px;">Belum ada hasil analisis yang disimpan.</p>'
+
+    body = ("""<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + """ Riwayat Analisis Tersimpan</h3>
+    """ + table_html + """
+    <p style="margin-top:10px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Analisis Proposal</a></p>
+  </div>
+</div>""")
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Analisis Tersimpan &mdash; e-GeRAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.riwayat-link { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  padding:6px 12px; border-radius:8px; text-decoration:none; display:inline-block; }
+.riwayat-link:hover { background:#dcebfa; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Analisis Tersimpan</h1>
+  <p>Daftar hasil Analisis &amp; Koreksi Proposal yang pernah Anda simpan.</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
+@app.route("/analisis-riwayat/<entry_id>", methods=["GET"])
+def analisis_riwayat_lihat(entry_id):
+    loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return render_template_string(render_analisis_proposal_page(
+            error="Hasil analisis tersimpan ini tidak ditemukan (mungkin sudah dihapus)."
+        )), 404
+    meta, hasil_markdown = loaded
+    return render_template_string(render_analisis_hasil_page(
+        hasil_markdown, meta.get("nama_proposal", ""), meta.get("nama_laporan", ""),
+        entry_id=entry_id,
+    ))
+
+
+@app.route("/analisis-riwayat/<entry_id>/unduh", methods=["GET"])
+def analisis_riwayat_unduh(entry_id):
+    loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return render_template_string(render_analisis_proposal_page(
+            error="Hasil analisis tersimpan ini tidak ditemukan (mungkin sudah dihapus)."
+        )), 404
+    meta, hasil_markdown = loaded
+    subjudul = f"Proposal: {meta.get('nama_proposal','')}" + (
+        f" &middot; Laporan pembanding: {meta.get('nama_laporan')}" if meta.get("nama_laporan") else "")
+    docx_bytes = markdown_report_to_docx_bytes(hasil_markdown, subjudul=subjudul)
+    return send_file(
+        io.BytesIO(docx_bytes),
+        as_attachment=True,
+        download_name=_analisis_docx_download_name(meta.get("nama_proposal", "")),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/analisis-riwayat/<entry_id>/hapus", methods=["POST"])
+def analisis_riwayat_hapus(entry_id):
+    analisis_store.delete_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    return redirect(url_for("analisis_riwayat_list"))
 
 
 @app.route("/review", methods=["POST"])

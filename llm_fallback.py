@@ -15,7 +15,8 @@ import json
 import re
 
 MODEL = "claude-sonnet-4-6"
-MAX_DOC_CHARS = 20000  # batas aman per dokumen supaya tidak kelebihan token
+MAX_DOC_CHARS = 20000  # batas aman per dokumen tunggal, dipakai untuk laporan pembanding
+MAX_PROPOSAL_CHARS = 50000  # proposal sekarang bisa berupa gabungan beberapa berkas sekaligus
 
 
 def api_key_available():
@@ -31,10 +32,10 @@ def analisis_konsistensi_proposal(teks_proposal, teks_laporan):
     if not api_key_available():
         return {"error": "ANTHROPIC_API_KEY belum diset di server -- fitur analisis ini butuh akses Claude API."}
 
-    proposal_trunc = teks_proposal[:MAX_DOC_CHARS]
+    proposal_trunc = teks_proposal[:MAX_PROPOSAL_CHARS]
     laporan_trunc = teks_laporan[:MAX_DOC_CHARS] if teks_laporan else ""
 
-    prompt = f"""Anda adalah auditor teknis dokumen permohonan PKKPRL (Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut) di Indonesia. Anda akan diberikan dua dokumen mentah (hasil ekstraksi teks apa adanya, mungkin ada noise format):
+    prompt = f"""Anda adalah auditor teknis dokumen permohonan PKKPRL (Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut) di Indonesia. Anda akan diberikan dua dokumen mentah (hasil ekstraksi teks apa adanya, mungkin ada noise format). Setiap dokumen bisa terdiri dari GABUNGAN BEBERAPA BERKAS (PDF/Word/Excel) yang merupakan satu kesatuan -- tiap berkas dipisahkan dengan penanda "===== BERKAS: nama_file =====". Perlakukan semua berkas dalam satu dokumen sebagai satu kesatuan informasi, tapi bila menemukan ketidaksesuaian atau data penting, sebutkan juga di berkas mana temuan itu berada (pakai nama berkas dari penanda tersebut) supaya mudah dirujuk.
 
 === DOKUMEN 1: PROPOSAL TEKNIS (yang akan diperiksa) ===
 {proposal_trunc}
