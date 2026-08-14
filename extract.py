@@ -926,16 +926,27 @@ def _describe_embedded_images(image_items, label_fn, nama_file, status_list=None
     """Jalankan _describe_image_with_claude untuk sekumpulan gambar tertanam
     & susun jadi satu blok teks siap disisipkan ke hasil ekstraksi dokumen.
     label_fn(item) -> label lokasi gambar (mis. "Gambar 2" atau "Halaman 3").
-    Mengembalikan string blok teks (bisa kosong kalau tidak ada gambar
-    relevan/API tidak tersedia)."""
+    Gambar diproses PARALEL supaya tidak membuat request HTTP timeout untuk
+    dokumen dengan banyak gambar tertanam. Mengembalikan string blok teks
+    (bisa kosong kalau tidak ada gambar relevan/API tidak tersedia)."""
     if not image_items:
         return ""
-    blocks = []
-    dijelaskan = 0
-    for item in image_items:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _describe_one(item):
         img_bytes, ext = item[0], item[1]
         label = label_fn(item)
         deskripsi = _describe_image_with_claude(img_bytes, ext)
+        return label, deskripsi
+
+    labeled_results = [None] * len(image_items)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for idx, (label, deskripsi) in enumerate(ex.map(_describe_one, image_items)):
+            labeled_results[idx] = (label, deskripsi)
+
+    blocks = []
+    dijelaskan = 0
+    for label, deskripsi in labeled_results:
         if deskripsi is None:
             continue
         if "gambar dekoratif" in deskripsi.lower():
@@ -954,6 +965,8 @@ def _ocr_scanned_pdf_with_claude(file_path, max_pages=MAX_OCR_PAGES):
     render tiap halaman jadi gambar, lalu minta Claude Vision membaca
     (transkrip) teksnya apa adanya. Dipakai otomatis oleh
     extract_full_text_any() kalau ekstraksi teks biasa hasilnya kosong/minim.
+    Halaman diproses PARALEL (bukan satu-satu berurutan) supaya tidak
+    membuat request HTTP timeout untuk dokumen scan yang banyak halamannya.
     Mengembalikan tuple (teks_hasil_ocr, pesan_status_atau_None)."""
     from llm_fallback import api_key_available
     if not api_key_available():
@@ -962,15 +975,14 @@ def _ocr_scanned_pdf_with_claude(file_path, max_pages=MAX_OCR_PAGES):
 
     import base64
     from anthropic import Anthropic
+    from concurrent.futures import ThreadPoolExecutor
 
     doc = fitz.open(file_path)
     n_pages = len(doc)
     pages_to_read = min(n_pages, max_pages)
     client = Anthropic()
-    parts = []
-    gagal = 0
 
-    for i in range(pages_to_read):
+    def _ocr_one_page(i):
         page = doc[i]
         # DPI ~150 cukup untuk teks dokumen resmi tanpa bikin ukuran gambar
         # membengkak; skala 150/72 dari resolusi asli PDF (72 dpi).
@@ -999,12 +1011,21 @@ def _ocr_scanned_pdf_with_claude(file_path, max_pages=MAX_OCR_PAGES):
                 }],
             )
             page_text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            parts.append(f"[Halaman {i+1}]\n{page_text}")
+            return i, f"[Halaman {i+1}]\n{page_text}", True
         except Exception:
             traceback.print_exc()
-            gagal += 1
-            parts.append(f"[Halaman {i+1}] (gagal dibaca OCR)")
+            return i, f"[Halaman {i+1}] (gagal dibaca OCR)", False
 
+    results = [None] * pages_to_read
+    gagal = 0
+    # Maks 4 request paralel ke Claude API sekaligus -- cukup untuk memangkas
+    # waktu total signifikan tanpa membebani rate limit API.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for i, page_text, ok in ex.map(_ocr_one_page, range(pages_to_read)):
+            results[i] = page_text
+            if not ok:
+                gagal += 1
+    parts = results
     doc.close()
 
     pesan = f"Dokumen terdeteksi hasil scan -- {pages_to_read} halaman dibaca otomatis via OCR."

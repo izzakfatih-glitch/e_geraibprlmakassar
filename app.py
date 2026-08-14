@@ -2089,7 +2089,7 @@ def render_analisis_proposal_page(error=None):
 
       <div class="gen-btn">
         <button type="submit" """ + ("disabled title=\"ANTHROPIC_API_KEY belum diset di server\"" if not api_available else "") + """>""" + ICONS["bolt"] + """ Analisis Dokumen</button>
-        <div class="gen-note">Proses bisa memakan waktu sampai 1 menit tergantung panjang dokumen.</div>
+        <div class="gen-note">Proses bisa memakan waktu sampai beberapa menit untuk dokumen panjang, hasil scan, atau yang berisi banyak gambar.</div>
         <div class="spinner" id="aspinner">\u23F3 Menganalisis dokumen, mohon tunggu...</div>
         <div style="text-align:center;margin-top:14px;">
           <a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13.5px;display:inline-flex;align-items:center;gap:6px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a>
