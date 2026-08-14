@@ -10,7 +10,6 @@ dinormalisasi (semua whitespace/newline diubah menjadi satu spasi).
 import os
 import re
 import hashlib
-import traceback
 import fitz  # PyMuPDF
 
 
@@ -806,253 +805,13 @@ def extract_laporan_with_fallback(pdf_path, use_llm=True, log=print):
     return data, images
 
 
-MIN_CHARS_PER_PAGE_BEFORE_OCR = 25  # rata-rata karakter per halaman di bawah ini dianggap "kosong/hasil scan"
-MAX_OCR_PAGES = 20  # batas aman jumlah halaman yang di-OCR per berkas (biaya & waktu)
-MAX_EMBEDDED_IMAGES_PER_FILE = 8  # batas gambar tertanam yang dijelaskan per berkas
-MIN_DOCX_IMAGE_BYTES = 8000  # gambar docx di bawah ini dianggap logo/ikon dekoratif, dilewati
-MIN_PDF_IMAGE_DIM = 150  # gambar PDF dengan lebar/tinggi < ini (px) dianggap ikon dekoratif, dilewati
-DESCRIBABLE_IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
-
-
-def _describe_image_with_claude(img_bytes, ext):
-    """Minta Claude Vision menjelaskan SATU gambar (foto lokasi, peta,
-    diagram, sertifikat, dll) yang ditemukan tertanam di dalam dokumen.
-    Mengembalikan string deskripsi, atau None kalau dilewati/gagal (mis. API
-    key tidak ada, format tidak didukung, atau error lain -- selalu gagal
-    secara diam-diam/non-fatal, konsisten dengan pola fallback AI lain di
-    aplikasi ini)."""
-    from llm_fallback import api_key_available
-    if not api_key_available():
-        return None
-    ext_low = (ext or "").lower().lstrip(".")
-    if ext_low not in DESCRIBABLE_IMAGE_EXTS:
-        return None
-    if len(img_bytes) > 5 * 1024 * 1024:  # batas aman request Claude API
-        return None
-
-    import base64
-    from anthropic import Anthropic
-    media_type = f"image/{'jpeg' if ext_low in ('jpg', 'jpeg') else ext_low}"
-    try:
-        client = Anthropic()
-        b64 = base64.b64encode(img_bytes).decode("utf-8")
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=350,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                    {"type": "text", "text": (
-                        "Ini gambar yang ditemukan tertanam di dalam dokumen proposal PKKPRL "
-                        "(Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut). Jelaskan SINGKAT "
-                        "& OBJEKTIF (2-4 kalimat, bahasa Indonesia) apa yang ditunjukkan gambar ini "
-                        "-- misalnya foto lokasi/tapak kegiatan, peta/layout area, diagram desain "
-                        "konstruksi, sertifikat/lampiran resmi, atau tabel data -- sertakan detail "
-                        "relevan yang terlihat (koordinat, skala, keterangan/label teks pada gambar "
-                        "kalau ada). Jangan beri opini/penilaian, hanya deskripsi objektif apa "
-                        "adanya. Kalau gambar ini cuma logo/ikon/elemen dekoratif tanpa informasi "
-                        "substantif, balas persis: (gambar dekoratif, tidak relevan untuk dianalisis)"
-                    )},
-                ],
-            }],
-        )
-        return "".join(b.text for b in resp.content if b.type == "text").strip()
-    except Exception:
-        traceback.print_exc()
-        return None
-
-
-def _extract_docx_images(file_path, max_images=MAX_EMBEDDED_IMAGES_PER_FILE):
-    """Ambil semua gambar tertanam (bukan hasil convert halaman, tapi
-    gambar/foto yang memang disisipkan ke dalam dokumen) dari sebuah file
-    .docx. Mengembalikan list of (img_bytes, ext)."""
-    from docx import Document
-    doc = Document(file_path)
-    images = []
-    seen_hashes = set()
-    for rel in doc.part.rels.values():
-        if "image" not in rel.reltype:
-            continue
-        try:
-            img_bytes = rel.target_part.blob
-        except Exception:
-            continue
-        if len(img_bytes) < MIN_DOCX_IMAGE_BYTES:
-            continue  # kemungkinan besar logo/ikon dekoratif kecil
-        h = hashlib.md5(img_bytes).hexdigest()
-        if h in seen_hashes:
-            continue
-        seen_hashes.add(h)
-        ext = os.path.splitext(rel.target_part.partname)[1].lstrip(".").lower() or "png"
-        images.append((img_bytes, ext))
-        if len(images) >= max_images:
-            break
-    return images
-
-
-def _extract_pdf_images(file_path, max_images=MAX_EMBEDDED_IMAGES_PER_FILE):
-    """Ambil gambar tertanam (foto/diagram/peta yang disisipkan di halaman
-    PDF berisi teks digital -- BUKAN untuk PDF hasil scan penuh, yang sudah
-    ditangani terpisah lewat _ocr_scanned_pdf_with_claude). Mengembalikan
-    list of (img_bytes, ext, nomor_halaman)."""
-    doc = fitz.open(file_path)
-    images = []
-    seen_xrefs = set()
-    for page_num in range(len(doc)):
-        for img in doc[page_num].get_images(full=True):
-            xref = img[0]
-            width, height = img[2], img[3]
-            if width < MIN_PDF_IMAGE_DIM or height < MIN_PDF_IMAGE_DIM:
-                continue  # kemungkinan besar logo/ikon dekoratif kecil
-            if xref in seen_xrefs:
-                continue
-            seen_xrefs.add(xref)
-            try:
-                base = doc.extract_image(xref)
-                img_bytes = base["image"]
-                ext = base.get("ext", "png")
-            except Exception:
-                continue
-            images.append((img_bytes, ext, page_num + 1))
-            if len(images) >= max_images:
-                doc.close()
-                return images
-    doc.close()
-    return images
-
-
-def _describe_embedded_images(image_items, label_fn, nama_file, status_list=None):
-    """Jalankan _describe_image_with_claude untuk sekumpulan gambar tertanam
-    & susun jadi satu blok teks siap disisipkan ke hasil ekstraksi dokumen.
-    label_fn(item) -> label lokasi gambar (mis. "Gambar 2" atau "Halaman 3").
-    Gambar diproses PARALEL supaya tidak membuat request HTTP timeout untuk
-    dokumen dengan banyak gambar tertanam. Mengembalikan string blok teks
-    (bisa kosong kalau tidak ada gambar relevan/API tidak tersedia)."""
-    if not image_items:
-        return ""
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _describe_one(item):
-        img_bytes, ext = item[0], item[1]
-        label = label_fn(item)
-        deskripsi = _describe_image_with_claude(img_bytes, ext)
-        return label, deskripsi
-
-    labeled_results = [None] * len(image_items)
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        for idx, (label, deskripsi) in enumerate(ex.map(_describe_one, image_items)):
-            labeled_results[idx] = (label, deskripsi)
-
-    blocks = []
-    dijelaskan = 0
-    for label, deskripsi in labeled_results:
-        if deskripsi is None:
-            continue
-        if "gambar dekoratif" in deskripsi.lower():
-            continue
-        blocks.append(f"[{label}]\n{deskripsi}")
-        dijelaskan += 1
-    if not blocks:
-        return ""
-    if status_list is not None:
-        status_list.append(f"{nama_file}: {dijelaskan} gambar tertanam berhasil dijelaskan otomatis via AI.")
-    return "\n\n===== DESKRIPSI GAMBAR DALAM DOKUMEN (dibuat otomatis oleh AI) =====\n" + "\n\n".join(blocks)
-
-
-def _ocr_scanned_pdf_with_claude(file_path, max_pages=MAX_OCR_PAGES):
-    """Fallback OCR untuk PDF hasil scan (tanpa lapisan teks digital):
-    render tiap halaman jadi gambar, lalu minta Claude Vision membaca
-    (transkrip) teksnya apa adanya. Dipakai otomatis oleh
-    extract_full_text_any() kalau ekstraksi teks biasa hasilnya kosong/minim.
-    Halaman diproses PARALEL (bukan satu-satu berurutan) supaya tidak
-    membuat request HTTP timeout untuk dokumen scan yang banyak halamannya.
-    Mengembalikan tuple (teks_hasil_ocr, pesan_status_atau_None)."""
-    from llm_fallback import api_key_available
-    if not api_key_available():
-        return "", ("ANTHROPIC_API_KEY belum diset di server -- dokumen ini terdeteksi sebagai hasil "
-                     "scan (tidak ada teks digital), tapi pembacaan otomatis (OCR) butuh akses Claude API.")
-
-    import base64
-    from anthropic import Anthropic
-    from concurrent.futures import ThreadPoolExecutor
-
-    doc = fitz.open(file_path)
-    n_pages = len(doc)
-    pages_to_read = min(n_pages, max_pages)
-    client = Anthropic()
-
-    def _ocr_one_page(i):
-        page = doc[i]
-        # DPI ~150 cukup untuk teks dokumen resmi tanpa bikin ukuran gambar
-        # membengkak; skala 150/72 dari resolusi asli PDF (72 dpi).
-        pix = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
-        img_bytes = pix.tobytes("png")
-        if len(img_bytes) > 5 * 1024 * 1024:  # batas aman request Claude API
-            pix = page.get_pixmap(matrix=fitz.Matrix(90 / 72, 90 / 72))
-            img_bytes = pix.tobytes("png")
-        b64 = base64.b64encode(img_bytes).decode("utf-8")
-        try:
-            resp = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4000,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                        {"type": "text", "text": (
-                            "Transkrip SEMUA teks yang terlihat pada gambar halaman dokumen ini apa "
-                            "adanya (bahasa Indonesia), termasuk isi tabel (tuliskan baris tabel "
-                            "dipisah ' | ' antar kolom). Jangan meringkas, jangan menambahkan "
-                            "komentar/penjelasan apa pun -- balas HANYA dengan teks hasil transkrip. "
-                            "Kalau halaman kosong/tidak ada teks terbaca, balas string kosong."
-                        )},
-                    ],
-                }],
-            )
-            page_text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            return i, f"[Halaman {i+1}]\n{page_text}", True
-        except Exception:
-            traceback.print_exc()
-            return i, f"[Halaman {i+1}] (gagal dibaca OCR)", False
-
-    results = [None] * pages_to_read
-    gagal = 0
-    # Maks 4 request paralel ke Claude API sekaligus -- cukup untuk memangkas
-    # waktu total signifikan tanpa membebani rate limit API.
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        for i, page_text, ok in ex.map(_ocr_one_page, range(pages_to_read)):
-            results[i] = page_text
-            if not ok:
-                gagal += 1
-    parts = results
-    doc.close()
-
-    pesan = f"Dokumen terdeteksi hasil scan -- {pages_to_read} halaman dibaca otomatis via OCR."
-    if n_pages > max_pages:
-        pesan += f" Catatan: hanya {max_pages} dari {n_pages} halaman pertama yang diproses (batas OCR per berkas)."
-    if gagal:
-        pesan += f" {gagal} halaman gagal dibaca."
-    return "\n\n".join(parts).strip(), pesan
-
-
-def extract_full_text_any(file_path, ocr_status_list=None):
+def extract_full_text_any(file_path):
     """Ekstrak SELURUH teks polos (tanpa parsing field/regex apa pun) dari
     sebuah dokumen PDF, DOCX, atau XLSX -- dipakai untuk fitur Analisis
     Konsistensi Proposal, yang mengirim teks utuh dokumen ke Claude API untuk
     dibaca & dibandingkan langsung (bukan mengandalkan regex kaku, karena
-    dokumen yang sudah jadi/ditulis manual bisa berformat sangat bervariasi).
-
-    Untuk PDF hasil scan (tanpa lapisan teks digital), otomatis fallback ke
-    OCR lewat Claude Vision. Untuk DOCX/PDF berteks digital normal, gambar
-    yang TERTANAM di dalam dokumen (foto lokasi, peta, diagram, dst -- bukan
-    file gambar terpisah yang diupload user) juga otomatis diekstrak &
-    dijelaskan isinya lewat Claude Vision, supaya ikut dipertimbangkan dalam
-    analisis konsistensi. Kalau ocr_status_list (list) diberikan, pesan
-    status pemrosesan AI (OCR / deskripsi gambar) akan di-append ke situ
-    supaya pemanggil bisa menampilkannya ke pengguna."""
+    dokumen yang sudah jadi/ditulis manual bisa berformat sangat bervariasi)."""
     ext = os.path.splitext(file_path)[1].lower()
-    nama_file = os.path.basename(file_path)
     if ext == ".docx":
         from docx import Document
         doc = Document(file_path)
@@ -1061,18 +820,7 @@ def extract_full_text_any(file_path, ocr_status_list=None):
             for row in table.rows:
                 for cell in row.cells:
                     parts.append(cell.text)
-        text = "\n".join(parts)
-
-        try:
-            images = _extract_docx_images(file_path)
-            img_block = _describe_embedded_images(
-                images, lambda item: f"Gambar dalam dokumen ({item[1]})",
-                nama_file, status_list=ocr_status_list,
-            )
-            text += img_block
-        except Exception:
-            traceback.print_exc()
-        return text
+        return "\n".join(parts)
     elif ext in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(file_path, data_only=True, read_only=True)
@@ -1087,47 +835,19 @@ def extract_full_text_any(file_path, ocr_status_list=None):
         return "\n".join(parts)
     else:
         doc = fitz.open(file_path)
-        n_pages = max(len(doc), 1)
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
-
-        # Heuristik deteksi PDF hasil scan: teks digital yang berhasil
-        # diekstrak jauh lebih sedikit dari yang wajar untuk dokumen berisi
-        # tulisan (halaman hasil scan/foto murni biasanya menghasilkan teks
-        # kosong atau nyaris kosong dari ekstraksi biasa).
-        if len(text.strip()) < n_pages * MIN_CHARS_PER_PAGE_BEFORE_OCR:
-            ocr_text, pesan = _ocr_scanned_pdf_with_claude(file_path)
-            if ocr_status_list is not None and pesan:
-                ocr_status_list.append(f"{nama_file}: {pesan}")
-            if ocr_text.strip():
-                return ocr_text
-            return text
-
-        # PDF berteks digital normal (bukan hasil scan penuh) -- ekstrak &
-        # jelaskan gambar yang tertanam di halaman-halamannya (foto lokasi,
-        # peta, diagram, dst).
-        try:
-            images = _extract_pdf_images(file_path)
-            img_block = _describe_embedded_images(
-                images, lambda item: f"Gambar dalam dokumen (Halaman {item[2]})",
-                nama_file, status_list=ocr_status_list,
-            )
-            text += img_block
-        except Exception:
-            traceback.print_exc()
         return text
 
 
-def extract_full_text_multi(file_paths, ocr_status_list=None):
+def extract_full_text_multi(file_paths):
     """Ekstrak & gabungkan teks dari BEBERAPA file (PDF/DOCX/XLSX) yang
     merupakan bagian dari satu dokumen/proposal yang sama. Tiap file diberi
-    penanda nama sumbernya supaya temuan analisis bisa dirujuk ke file asal.
-    PDF hasil scan otomatis di-OCR (lihat extract_full_text_any); kalau
-    ocr_status_list (list) diberikan, pesan status OCR tiap berkas akan
-    ditambahkan ke situ."""
+    penanda nama sumbernya supaya temuan analisis bisa dirujuk ke file asal."""
     parts = []
     for fp in file_paths:
         nama = os.path.basename(fp)
-        teks = extract_full_text_any(fp, ocr_status_list=ocr_status_list)
+        # buang prefix acak "proposal_0_" / "laporan_0_" dst kalau ada, sisakan nama asli
+        teks = extract_full_text_any(fp)
         parts.append(f"\n\n===== BERKAS: {nama} =====\n{teks}")
     return "".join(parts).strip()

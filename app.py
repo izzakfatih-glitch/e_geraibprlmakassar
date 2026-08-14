@@ -411,14 +411,6 @@ def _is_admin_value(v):
     return (v or "").strip().lower() in ("ya", "yes", "true", "1", "admin", "y")
 
 
-# Alias -- dipakai untuk kolom "Analisis" di Google Sheet (nilai "Ya"/"TRUE"/
-# "1" berarti petugas tsb boleh mengakses fitur Analisis & Koreksi Proposal).
-# Nama fungsinya sengaja dipisah dari _is_admin_value supaya jelas maksudnya
-# di titik pemanggilan, walau logikanya sama persis.
-def _is_yes_value(v):
-    return _is_admin_value(v)
-
-
 def parse_koordinat_file(file_storage):
     """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, Word
     (.docx), atau gambar (PNG/JPG) yang diupload -- 2 kolom pertama tiap
@@ -563,31 +555,13 @@ def fetch_staff_list(force=False):
         reader = csv.DictReader(_io.StringIO(raw))
         staff = {}
         for row in reader:
-            # Cocokkan nama kolom secara case-insensitive & abaikan spasi
-            # ekstra di header (mis. "Analisis " atau "ANALISIS" tetap
-            # kepakai), supaya tidak gagal diam-diam kalau header di Google
-            # Sheet ditulis beda kapitalisasi/spasi dari yang diharapkan.
-            row_ci = {(k or "").strip().lower(): v for k, v in row.items()}
-
-            def col(*names, default=""):
-                for name in names:
-                    v = row_ci.get(name.strip().lower())
-                    if v is not None and str(v).strip() != "":
-                        return v
-                return default
-
-            nama = str(col("Nama")).strip()
-            kode_nama = str(col("Kode Nama")).strip()
-            kode_petugas = str(col("Kode petugas")).strip()
-            admin_raw = col("Admin", "Peran", "Role")
+            nama = (row.get("Nama") or "").strip()
+            kode_nama = (row.get("Kode Nama") or "").strip()
+            kode_petugas = (row.get("Kode petugas") or "").strip()
+            admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
             is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
-            analisis_raw = col("Analisis", "Akses Analisis", "Analisis Proposal")
-            can_analisis = _is_yes_value(analisis_raw)
             if nama and kode_nama and kode_petugas:
-                staff[kode_nama] = {
-                    "nama": nama, "password": kode_petugas, "is_admin": is_admin,
-                    "can_analisis": can_analisis,
-                }
+                staff[kode_nama] = {"nama": nama, "password": kode_petugas, "is_admin": is_admin}
         if staff:
             _staff_cache["data"] = staff
             _staff_cache["fetched_at"] = now
@@ -2014,12 +1988,8 @@ def render_admin_riwayat_staff_page(kode):
 
 
 def render_analisis_proposal_page(error=None):
-    api_available = llm_api_key_available()
-    # Kalau API key belum diset: jangan tampilkan error submit yang sama
-    # persis dengan peringatan permanen di bawah -- cukup satu saja.
-    show_error = error and not (not api_available and "ANTHROPIC_API_KEY" in (error or ""))
-    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if show_error else ""
-    api_note = "" if api_available else (
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    api_note = "" if llm_api_key_available() else (
         '<div class="error-banner" style="margin-bottom:16px;background:#fff4e5;border-color:#ffd9a0;">'
         '\u26A0 ANTHROPIC_API_KEY belum diset di server -- fitur ini butuh akses Claude API untuk berjalan. '
         'Hubungi admin untuk mengaktifkannya.</div>'
@@ -2042,6 +2012,7 @@ def render_analisis_proposal_page(error=None):
   <p>Unggah Proposal Teknis PKKPRL yang sudah jadi untuk diperiksa otomatis -- sistem akan membandingkan data yang
   disebutkan di dalamnya dengan Laporan Kondisi Eksisting/Hidro-Oseanografi sebagai sumber data pembanding, lalu
   memberi rekomendasi perbaikan.</p>
+  <p style="margin-top:6px;"><a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a></p>
 </section>
 
 <div class="main-wrap">
@@ -2056,9 +2027,7 @@ def render_analisis_proposal_page(error=None):
         <div class="step-title">Proposal Teknis PKKPRL yang Sudah Jadi (PDF/Word/Excel)</div>
         <div class="step-desc">Dokumen yang ingin diperiksa/dikoreksi. Wajib diunggah -- boleh lebih dari satu
         berkas kalau proposalnya terdiri dari beberapa file (mis. dokumen utama + lampiran koordinat/data),
-        semua akan digabung & dianalisis sekaligus dalam satu kali klik. PDF hasil scan juga didukung
-        (dibaca otomatis via OCR), dan gambar/foto/peta yang tertanam di dalam dokumen ikut dijelaskan
-        & dianalisis otomatis -- mungkin butuh waktu sedikit lebih lama.</div>
+        semua akan digabung & dianalisis sekaligus dalam satu kali klik.</div>
         <div class="dropzone analisis-dropzone" id="adz1">
           """ + ICONS["cloud"] + """
           <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
@@ -2088,12 +2057,9 @@ def render_analisis_proposal_page(error=None):
       </div>
 
       <div class="gen-btn">
-        <button type="submit" """ + ("disabled title=\"ANTHROPIC_API_KEY belum diset di server\"" if not api_available else "") + """>""" + ICONS["bolt"] + """ Analisis Dokumen</button>
-        <div class="gen-note">Proses bisa memakan waktu sampai beberapa menit untuk dokumen panjang, hasil scan, atau yang berisi banyak gambar.</div>
+        <button type="submit">""" + ICONS["bolt"] + """ Analisis Dokumen</button>
+        <div class="gen-note">Proses bisa memakan waktu sampai 1 menit tergantung panjang dokumen.</div>
         <div class="spinner" id="aspinner">\u23F3 Menganalisis dokumen, mohon tunggu...</div>
-        <div style="text-align:center;margin-top:14px;">
-          <a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13.5px;display:inline-flex;align-items:center;gap:6px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a>
-        </div>
       </div>
     </div>
   </form>
@@ -2163,19 +2129,13 @@ document.getElementById('analisisForm').addEventListener('submit', function() {
 
 
 def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_laporan,
-                                entry_id=None, saved_notice=None, ocr_status=None):
+                                entry_id=None, saved_notice=None):
     import markdown as _md
     import html as _html
     html_body = _md.markdown(hasil_markdown, extensions=["tables"])
     laporan_txt = (" &middot; Laporan pembanding: <b>" + nama_file_laporan + "</b>") if nama_file_laporan else " &middot; <i>(tanpa Laporan pembanding -- hanya cek kelengkapan)</i>"
 
     notice_html = f'<div class="error-banner" style="margin-bottom:16px;background:#eafaf0;border-color:#b7e9c9;color:#1a6b3c;">\u2705 {saved_notice}</div>' if saved_notice else ""
-    ocr_notice_html = ""
-    if ocr_status:
-        items = "".join(f"<li>{s}</li>" for s in ocr_status)
-        ocr_notice_html = ('<div class="error-banner" style="margin-bottom:16px;background:#eaf1fc;border-color:#cfe0f5;color:#1F4E79;">'
-                            f'{ICONS["chart-bar"]} Sebagian konten diproses otomatis lewat AI (OCR dokumen scan / deskripsi gambar tertanam):'
-                            f'<ul style="margin:6px 0 0;padding-left:20px;">{items}</ul></div>')
 
     md_escaped = _html.escape(hasil_markdown or "")
     prop_escaped = _html.escape(nama_file_proposal or "")
@@ -2243,7 +2203,6 @@ def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_lap
 
 <div class="review-wrap">
   """ + notice_html + """
-  """ + ocr_notice_html + """
   """ + actions_html + """
   <div class="review-card analisis-report">
     """ + html_body + """
@@ -3396,9 +3355,6 @@ PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/healt
 PUBLIC_PREFIXES = ("/static/",)
 
 
-ANALISIS_PREFIXES = ("/analisis-proposal", "/analisis-riwayat")
-
-
 @app.before_request
 def require_login_pegawai():
     """Seluruh aplikasi WAJIB login dulu (Kode Nama + Kode Petugas) sebelum
@@ -3408,12 +3364,6 @@ def require_login_pegawai():
         return None
     if not session.get("user"):
         return render_login_pegawai_page()
-    # Fitur Analisis & Koreksi Proposal dibatasi hanya untuk admin atau
-    # petugas yang ditandai "Ya" di kolom "Analisis" pada Google Sheet.
-    if request.path.startswith(ANALISIS_PREFIXES):
-        denied = _require_analisis_access()
-        if denied:
-            return denied
     return None
 
 
@@ -3489,7 +3439,6 @@ def login_pegawai_submit():
         session["user"] = {
             "name": entry["nama"], "email": "", "picture": "", "kode": kode_nama,
             "is_admin": entry.get("is_admin", False) or kode_nama in ADMIN_KODE_HARDCODED,
-            "can_analisis": entry.get("can_analisis", False),
         }
         session.permanent = True
         return redirect(url_for("index"))
@@ -3572,71 +3521,6 @@ def _require_admin():
 <p>Halaman ini hanya bisa diakses oleh akun admin.</p>
 </div></div></body></html>"""), 403
     return None
-
-
-def _require_analisis_access():
-    """Helper guard untuk fitur Analisis & Koreksi Proposal -- hanya boleh
-    diakses oleh admin ATAU petugas yang kolom "Analisis" di Google Sheet-nya
-    diisi "Ya" (lihat fetch_staff_list -- flag can_analisis). Return response
-    penolakan kalau tidak berwenang, atau None kalau boleh lanjut."""
-    user = session.get("user")
-    if not user or not user.get("kode"):
-        return render_template_string(render_login_pegawai_page())
-    if not (user.get("is_admin") or user.get("can_analisis")):
-        return render_template_string("""<!DOCTYPE html>
-<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
-<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
-<div class="review-wrap"><div class="review-card history-login-gate">
-<h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Akses Ditolak</h3>
-<p>Fitur Analisis &amp; Koreksi Proposal hanya bisa diakses oleh petugas yang ditunjuk.
-Hubungi admin kalau Anda seharusnya punya akses ke fitur ini.</p>
-</div></div></body></html>"""), 403
-    return None
-
-
-@app.route("/admin/staff-debug")
-def admin_staff_debug():
-    """Halaman diagnostik khusus admin: menampilkan apa adanya hasil
-    pembacaan Google Sheet pegawai (tanpa password), supaya gampang cek
-    kenapa suatu petugas dapat/tidak dapat akses admin atau Analisis
-    Proposal -- tanpa perlu logout-login coba-coba berulang."""
-    denied = _require_admin()
-    if denied:
-        return denied
-    staff = fetch_staff_list(force=True)
-    rows = "".join(
-        f"<tr><td>{kode}</td><td>{d['nama']}</td>"
-        f"<td>{'&#10003; Ya' if d['is_admin'] else '&mdash;'}</td>"
-        f"<td>{'&#10003; Ya' if d['can_analisis'] else '&mdash;'}</td></tr>"
-        for kode, d in sorted(staff.items())
-    )
-    table_html = ("""<table class="history-table"><thead><tr>
-      <th>Kode Nama</th><th>Nama</th><th>Admin</th><th>Bisa Akses Analisis Proposal</th>
-    </tr></thead><tbody>""" + rows + """</tbody></table>""") if staff else (
-        '<p style="color:var(--muted);font-size:13.5px;">Gagal membaca data pegawai dari Google Sheet, '
-        'atau sheet-nya kosong. Cek kembali URL sheet & apakah sudah di-publish sebagai CSV.</p>'
-    )
-    return """<!DOCTYPE html>
-<html lang="id"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Diagnostik Data Pegawai &mdash; e-GeRAI KKPRL</title>
-<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
-<body>
-""" + HEADER_HTML + """
-
-<section class="review-hero">
-  <h1>""" + ICONS["chart-bar"] + """ Diagnostik Data Pegawai</h1>
-  <p>Data ini dibaca LANGSUNG dari Google Sheet (bukan dari cache) supaya mencerminkan kondisi
-  terbaru. Kalau kolom "Bisa Akses Analisis Proposal" untuk seseorang tidak sesuai harapan,
-  berarti kolom "Analisis" di Google Sheet untuk baris tersebut belum terisi "Ya" dengan benar,
-  atau nama header kolomnya berbeda dari yang diharapkan sistem.</p>
-</section>
-
-<div class="review-wrap">
-  <div class="review-card">""" + table_html + """</div>
-  <p style="margin-top:10px;"><a href="/" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Beranda</a></p>
-</div>
-</body></html>"""
 
 
 @app.route("/admin/riwayat")
@@ -3724,14 +3608,12 @@ def analisis_proposal_submit():
             f.save(path)
             laporan_paths.append(path)
 
-        ocr_status = []
-        teks_proposal = extract_full_text_multi(proposal_paths, ocr_status_list=ocr_status)
-        teks_laporan = extract_full_text_multi(laporan_paths, ocr_status_list=ocr_status) if laporan_paths else ""
+        teks_proposal = extract_full_text_multi(proposal_paths)
+        teks_laporan = extract_full_text_multi(laporan_paths) if laporan_paths else ""
 
         if not teks_proposal.strip():
             return render_template_string(render_analisis_proposal_page(
-                error="Tidak ada teks yang berhasil dibaca dari dokumen Proposal, walau sudah dicoba OCR "
-                      "(kemungkinan hasil scan kualitas rendah/buram, atau bukan dokumen berisi tulisan)."
+                error="Tidak ada teks yang berhasil dibaca dari dokumen Proposal. Pastikan filenya valid dan bukan hasil scan gambar."
             ))
 
         hasil = analisis_konsistensi_proposal(teks_proposal, teks_laporan)
@@ -3742,7 +3624,7 @@ def analisis_proposal_submit():
         nama_laporan = ", ".join(f.filename for f in laporan_files) if laporan_files else ""
 
         return render_template_string(render_analisis_hasil_page(
-            hasil, nama_proposal, nama_laporan, ocr_status=ocr_status,
+            hasil, nama_proposal, nama_laporan
         ))
     except Exception as e:
         traceback.print_exc()
