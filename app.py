@@ -873,6 +873,8 @@ HEADER_HTML = """
     <a href="/asisten" class="nav-link">""" + ICONS["life-buoy"] + """ Bantuan</a>
     {% if session.user and (session.user.is_analis or session.user.is_admin) %}
     <a href="/analisis-proposal" class="nav-link">""" + ICONS["chart-bar"] + """ Analisis Proposal</a>
+    {% endif %}
+    {% if session.user and session.user.is_admin %}
     <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
     {% endif %}
   </nav>
@@ -1898,8 +1900,8 @@ def render_riwayat_saya_page():
         table_html = '<div class="history-empty">Belum ada riwayat isian form yang tersimpan. Riwayat akan muncul di sini setiap kali Anda mengisi form manual, dan otomatis terhapus sendiri setelah ' + str(DRAFT_MAX_AGE_DAYS) + ' hari.</div>'
 
     admin_link = ""
-    if user.get("is_admin") or user.get("is_analis"):
-        admin_link = '<p style="margin-top:10px;"><a href="/admin/riwayat" class="ex-fill" style="text-decoration:none;display:inline-block;">' + ICONS["chart-bar"] + " Lihat Riwayat Semua Petugas</a></p>"
+    if user.get("is_admin"):
+        admin_link = '<p style="margin-top:10px;"><a href="/admin/riwayat" class="ex-fill" style="text-decoration:none;display:inline-block;">' + ICONS["chart-bar"] + " Lihat Riwayat Semua Petugas (Admin)</a></p>"
 
     body = """
 <div class="review-wrap">
@@ -2030,7 +2032,7 @@ def render_analisis_proposal_page(error=None):
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Analisis &amp; Koreksi Proposal &mdash; e-GerAI KKPRL</title>
-<style>""" + LANDING_CSS + """
+<style>""" + LANDING_CSS + REVIEW_CSS + """
 .analisis-dropzone { border:2px dashed #cfe0f5; border-radius:12px; padding:28px; text-align:center; cursor:pointer;
   transition:.15s; background:#fbfdff; }
 .analisis-dropzone:hover { border-color:var(--blue); background:#f3f8ff; }
@@ -2250,7 +2252,6 @@ def render_history_page():
     user = session.get("user")
     logged_in = bool(user)
     is_admin = bool(user and user.get("is_admin"))
-    is_analis = bool(user and (user.get("is_analis") or user.get("is_admin")))
 
     if not logged_in:
         body = """
@@ -2261,12 +2262,12 @@ def render_history_page():
     <a href="/login-pegawai" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
   </div>
 </div>"""
-    elif not is_analis:
+    elif not is_admin:
         body = """
 <div class="review-wrap">
   <div class="review-card history-login-gate">
     <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
-    <p>Halaman ini hanya bisa diakses oleh petugas yang ditunjuk untuk Analisis atau akun admin. Hubungi admin BPRL kalau Anda perlu melihat riwayat ini.</p>
+    <p>Halaman ini hanya bisa diakses oleh akun admin. Hubungi admin BPRL kalau Anda perlu melihat riwayat ini.</p>
   </div>
 </div>"""
     else:
@@ -3579,7 +3580,7 @@ def _require_analis():
 
 @app.route("/admin/riwayat")
 def admin_riwayat_list():
-    denied = _require_analis()
+    denied = _require_admin()
     if denied:
         return denied
     return render_template_string(render_admin_riwayat_list_page())
@@ -3587,7 +3588,7 @@ def admin_riwayat_list():
 
 @app.route("/admin/riwayat/<kode>")
 def admin_riwayat_staff(kode):
-    denied = _require_analis()
+    denied = _require_admin()
     if denied:
         return denied
     return render_template_string(render_admin_riwayat_staff_page(kode))
@@ -3595,7 +3596,7 @@ def admin_riwayat_staff(kode):
 
 @app.route("/admin/riwayat/<kode>/lanjutkan/<job_id>")
 def admin_riwayat_lanjutkan(kode, job_id):
-    denied = _require_analis()
+    denied = _require_admin()
     if denied:
         return denied
     draft = load_draft(kode, job_id)
