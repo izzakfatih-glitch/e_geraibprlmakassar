@@ -963,7 +963,7 @@ def render_asisten_page():
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Asisten e-GeRAI &mdash; Tanya KKPRL | BPRL Makassar</title>
+<title>Asisten e-GerAI &mdash; Tanya KKPRL | BPRL Makassar</title>
 <meta name="description" content="Asisten tanya-jawab otomatis seputar KKPRL (Kesesuaian Kegiatan Pemanfaatan Ruang Laut) oleh BPRL Makassar.">
 <style>""" + LANDING_CSS + ASISTEN_CSS + """
 .asisten-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%); padding:26px 32px 30px; }
@@ -980,10 +980,10 @@ def render_asisten_page():
 <section class="asisten-hero">
   <div class="asisten-hero-inner">
     <div>
-      <h1>Asisten e-GeRAI &mdash; Tanya KKPRL</h1>
+      <h1>Asisten e-GerAI &mdash; Tanya KKPRL</h1>
       <p>Tanyakan apa pun seputar persyaratan, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan KKPRL. Dijawab singkat dan jelas oleh asisten BPRL Makassar.</p>
     </div>
-    <img src="/static/logo-egerai-v2.png" alt="e-GeRAI BPRL Makassar" style="height:56px; width:auto; object-fit:contain;">
+    <img src="/static/logo-egerai-v2.png" alt="e-GerAI BPRL Makassar" style="height:56px; width:auto; object-fit:contain;">
   </div>
 </section>
 
@@ -993,10 +993,10 @@ def render_asisten_page():
   <div class="chat-shell">
     <div class="chat-card">
       <div class="chat-head">
-        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GeRAI"></div>
+        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GerAI"></div>
         <div class="chat-head-text">
           <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
-          <h2>Halo e-GeRAI BPRL Makassar</h2>
+          <h2>Halo e-GerAI BPRL Makassar</h2>
           <div class="chat-sub">Jawaban singkat &amp; jelas seputar Kesesuaian Kegiatan Pemanfaatan Ruang Laut.</div>
           <div class="chat-status"><span class="chat-dot"></span> Siap menjawab</div>
         </div>
@@ -1014,7 +1014,7 @@ def render_asisten_page():
 
       <div class="chat-thread" id="chatThread">
         <div class="chat-msg bot">
-          <div class="chat-msg-label">e-GeRAI BPRL Makassar</div>
+          <div class="chat-msg-label">e-GerAI BPRL Makassar</div>
           Selamat datang. Silakan tanyakan hal seputar <b>KKPRL</b> &mdash; persyaratan, prosedur OSS, reklamasi, biaya, atau tracking permohonan. Jawaban akan diberikan singkat dan jelas.
         </div>
       </div>
@@ -1048,7 +1048,7 @@ def render_asisten_page():
     if(role === 'bot'){
       var label = document.createElement('div');
       label.className = 'chat-msg-label';
-      label.textContent = 'e-GeRAI BPRL Makassar';
+      label.textContent = 'e-GerAI BPRL Makassar';
       div.appendChild(label);
       var body = document.createElement('div');
       body.innerHTML = formatText(text);
@@ -1131,9 +1131,9 @@ def render_asisten_page():
 UPLOAD_HTML = """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>e-GeRAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL</title>
+<title>e-GerAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL</title>
 <meta name="description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
-<meta property="og:title" content="e-GeRAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL">
+<meta property="og:title" content="e-GerAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL">
 <meta property="og:description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
 <meta property="og:type" content="website">
 <style>""" + LANDING_CSS + """</style></head>
@@ -1228,10 +1228,10 @@ UPLOAD_HTML = """<!DOCTYPE html>
 <div class="asisten-promo-wrap">
   <a href="/asisten" class="asisten-promo-card">
     <div class="asisten-promo-badge">
-      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GeRAI">
+      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GerAI">
     </div>
     <div class="asisten-promo-text">
-      <div class="asisten-promo-eyebrow">Asisten e-GeRAI &middot; Tanya Jawab Otomatis</div>
+      <div class="asisten-promo-eyebrow">Asisten e-GerAI &middot; Tanya Jawab Otomatis</div>
       <div class="asisten-promo-title">Punya pertanyaan seputar KKPRL? Tanya langsung ke asisten kami</div>
       <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
     </div>
@@ -1239,7 +1239,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
       <img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi">
     </div>
     <div class="asisten-promo-cta">
-      <span>Tanya Sekarang</span>
+      <span>Tanya Navi Sekarang</span>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
     </div>
   </a>
@@ -1850,7 +1850,7 @@ def render_login_pegawai_page(error=None):
   <div class="login-modal-card">
     """ + error_html + """
     <h3>""" + ICONS["user"] + """ Login Pegawai BPRL Makassar</h3>
-    <p class="login-modal-sub">Masuk terlebih dahulu untuk menggunakan aplikasi e-GeRAI KKPRL.</p>
+    <p class="login-modal-sub">Masuk terlebih dahulu untuk menggunakan aplikasi e-GerAI KKPRL.</p>
     <form method="POST" action="/login-pegawai">
       <div class="field-row">
         <label>Kode Nama</label>
@@ -1908,7 +1908,7 @@ def render_riwayat_saya_page():
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Riwayat Isian Saya &mdash; e-GeRAI KKPRL</title>
+<title>Riwayat Isian Saya &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -1952,7 +1952,7 @@ def render_admin_riwayat_list_page():
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Riwayat Semua Petugas &mdash; e-GeRAI KKPRL</title>
+<title>Riwayat Semua Petugas &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -2001,7 +2001,7 @@ def render_admin_riwayat_staff_page(kode):
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Riwayat Isian &mdash; """ + nama + """ &mdash; e-GeRAI KKPRL</title>
+<title>Riwayat Isian &mdash; """ + nama + """ &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
 <body>
 """ + HEADER_HTML + """
@@ -2024,7 +2024,7 @@ def render_analisis_proposal_page(error=None):
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Analisis &amp; Koreksi Proposal &mdash; e-GeRAI KKPRL</title>
+<title>Analisis &amp; Koreksi Proposal &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + """
 .analisis-dropzone { border:2px dashed #cfe0f5; border-radius:12px; padding:28px; text-align:center; cursor:pointer;
   transition:.15s; background:#fbfdff; }
@@ -2199,7 +2199,7 @@ def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_lap
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hasil Analisis Proposal &mdash; e-GeRAI KKPRL</title>
+<title>Hasil Analisis Proposal &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + REVIEW_CSS + """
 .analisis-report h2 { color:var(--navy); font-size:19px; margin:26px 0 10px; border-bottom:2px solid #e5edf5; padding-bottom:6px; }
 .analisis-report table { width:100%; border-collapse:collapse; margin:12px 0; font-size:14px; }
@@ -3786,7 +3786,7 @@ def analisis_riwayat_list():
     return """<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Riwayat Analisis Tersimpan &mdash; e-GeRAI KKPRL</title>
+<title>Riwayat Analisis Tersimpan &mdash; e-GerAI KKPRL</title>
 <style>""" + LANDING_CSS + REVIEW_CSS + """
 .riwayat-link { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
   padding:6px 12px; border-radius:8px; text-decoration:none; display:inline-block; }
