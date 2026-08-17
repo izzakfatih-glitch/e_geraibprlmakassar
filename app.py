@@ -209,6 +209,10 @@ def _draft_images_dir(safe_kode, job_id):
     return os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}_images")
 
 
+def _draft_laporan_path(safe_kode, job_id, ext):
+    return os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}_laporan{ext}")
+
+
 def _err_detail(e):
     """String detail error singkat untuk ditampilkan ke pengguna (tool
     internal berlogin, aman ditampilkan) -- supaya kalau ada error, bisa
@@ -216,12 +220,21 @@ def _err_detail(e):
     return f"{type(e).__name__}: {str(e)[:300]}"
 
 
-def save_draft(kode_nama, job_id, prop_data, prop_images=None):
+def save_draft(kode_nama, job_id, prop_data, prop_images=None,
+                laporan_bytes=None, laporan_ext=None, laporan_filename=None):
     """Simpan seluruh isian form (prop_data) SEKALIGUS gambar yang sudah
     diunggah (prop_images) supaya tidak hilang kalau pengguna menutup
     halaman / melanjutkan isian di lain waktu. Gambar disimpan sebagai file
     terpisah di folder <kode>__<job_id>_images/ (bukan di-embed ke JSON)
-    supaya file draft tetap ringan dan cepat dibaca."""
+    supaya file draft tetap ringan dan cepat dibaca.
+
+    File Laporan Kondisi Eksisting/Hidro-Oseanografi (PDF/Word) juga ikut
+    disimpan dengan cara yang sama -- kalau laporan_bytes diisi (ada file
+    BARU diunggah pada submit ini), file itu disimpan & metadatanya dicatat.
+    Kalau TIDAK ada file baru (laporan_bytes kosong), info Laporan yang
+    SUDAH tersimpan sebelumnya untuk job_id ini dipertahankan apa adanya --
+    supaya tidak hilang cuma karena pengguna tidak unggah ulang saat
+    melanjutkan isian di kesempatan berikutnya."""
     try:
         safe_kode = _safe_kode(kode_nama)
 
@@ -236,6 +249,17 @@ def save_draft(kode_nama, job_id, prop_data, prop_images=None):
                     imgf.write(im["bytes"])
                 images_meta.append({"tag": im.get("tag", "lainnya"), "filename": fname})
 
+        laporan_meta = None
+        if laporan_bytes and laporan_ext:
+            laporan_path = _draft_laporan_path(safe_kode, job_id, laporan_ext)
+            with open(laporan_path, "wb") as lf:
+                lf.write(laporan_bytes)
+            laporan_meta = {"filename": laporan_filename or ("laporan" + laporan_ext), "ext": laporan_ext}
+        else:
+            existing = load_draft(kode_nama, job_id)
+            if existing:
+                laporan_meta = existing.get("laporan_meta")
+
         entry = {
             "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
             "job_id": job_id,
@@ -244,6 +268,7 @@ def save_draft(kode_nama, job_id, prop_data, prop_images=None):
             "nama_perusahaan": prop_data.get("Nama Perusahaan/Instansi", ""),
             "prop_data": prop_data,
             "prop_images_meta": images_meta,
+            "laporan_meta": laporan_meta,
         }
         path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -275,6 +300,29 @@ def load_draft_images(kode_nama, job_id):
         except Exception:
             continue
     return images
+
+
+def load_draft_laporan(kode_nama, job_id):
+    """Baca kembali file Laporan Kondisi Eksisting/Hidro-Oseanografi yang
+    tersimpan untuk satu draft (hasil save_draft sebelumnya). Mengembalikan
+    tuple (bytes, ext) siap dipakai langsung sebagai pengganti file upload,
+    atau None kalau draft ini belum pernah punya Laporan tersimpan."""
+    draft = load_draft(kode_nama, job_id)
+    if not draft:
+        return None
+    meta = draft.get("laporan_meta")
+    if not meta:
+        return None
+    safe_kode = _safe_kode(kode_nama)
+    ext = meta.get("ext") or ".pdf"
+    path = _draft_laporan_path(safe_kode, job_id, ext)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return f.read(), ext
+    except Exception:
+        return None
 
 
 def merge_draft_images(kode_nama, job_id, prop_images):
@@ -2328,7 +2376,7 @@ def render_history_page():
 
 
 def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_images_meta=None, saved_msg=None,
-                             draft_owner_kode=None, draft_owner_nama=None):
+                             draft_owner_kode=None, draft_owner_nama=None, saved_laporan_meta=None):
     prop_groups = []
     for group_title, fields in FIELD_GROUPS:
         prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
@@ -2456,6 +2504,16 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             "</div>"
         )
 
+    if saved_laporan_meta:
+        laporan_fname = saved_laporan_meta.get("filename", "Laporan")
+        error_html += (
+            '<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">'
+            f"\U0001F4CE File Laporan Kondisi Eksisting/Hidro-Oseanografi tersimpan dari isian sebelumnya "
+            f"(<b>{laporan_fname}</b>) &mdash; tetap akan dipakai walau tidak diunggah ulang. "
+            "Unggah file baru di kolom Laporan kalau ingin menggantinya."
+            "</div>"
+        )
+
     # Peta tag gambar -> daftar preview (URL thumbnail) untuk gambar yang
     # sudah tersimpan lewat tombol "Simpan" sebelumnya, dikelompokkan per
     # NAMA FIELD form (bukan per tag) supaya gampang disisipkan ke tiap
@@ -2499,6 +2557,7 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
       <a href="https://fadly2002-gerai-pelayanan-bprl.hf.space/" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
       unduh hasilnya (PDF atau Word), lalu unggah di bawah ini. Belum sempat siap? Boleh dikosongkan dulu &mdash; pakai tombol <b>"Unduh Draft"</b> di bawah untuk mengunduh draft Proposal saja terlebih dulu, lengkapi Laporannya nanti.</div>
+      """ + (f'<div class="ff-hint" style="margin-bottom:10px;background:#eaf6ec;border:1px solid #b7e4c7;border-radius:8px;padding:8px 12px;color:#1d5a35;">\U0001F4CE File tersimpan: <b>{saved_laporan_meta.get("filename","Laporan")}</b> &mdash; tetap dipakai kalau tidak diunggah ulang.</div>' if saved_laporan_meta else "") + """
       <div class="dropzone" id="dzManual">
         """ + ICONS["cloud"] + """
         <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
@@ -3805,6 +3864,7 @@ def riwayat_saya_lanjutkan(job_id):
         prefill_data=draft.get("prop_data", {}),
         job_id=job_id,
         saved_images_meta=draft.get("prop_images_meta", []),
+        saved_laporan_meta=draft.get("laporan_meta"),
     ))
 
 
@@ -3875,6 +3935,7 @@ def admin_riwayat_lanjutkan(kode, job_id):
         prefill_data=draft.get("prop_data", {}),
         job_id=job_id,
         saved_images_meta=draft.get("prop_images_meta", []),
+        saved_laporan_meta=draft.get("laporan_meta"),
         draft_owner_kode=kode,
         draft_owner_nama=owner_nama,
     ))
@@ -4415,13 +4476,24 @@ def proposal_manual_simpan():
     if not user or not user.get("kode"):
         return render_template_string(render_login_pegawai_page())
 
+    laporan_file = request.files.get("laporan")
+    laporan_ext = None
+    laporan_bytes = None
+    laporan_filename = None
+    if laporan_file and laporan_file.filename:
+        if laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+            laporan_bytes = laporan_file.read()
+            laporan_filename = laporan_file.filename
+
     try:
         prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
         owner_kode = _effective_draft_owner_kode(user, request.form)
         existing_job_id = request.form.get("existing_job_id", "").strip()
         job_id = existing_job_id or uuid.uuid4().hex[:12]
         prop_images = merge_draft_images(owner_kode, job_id, prop_images)
-        save_draft(owner_kode, job_id, prop_data, prop_images)
+        save_draft(owner_kode, job_id, prop_data, prop_images,
+                   laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
     except Exception as e:
         traceback.print_exc()
         return render_template_string(render_manual_form_page(
@@ -4430,17 +4502,19 @@ def proposal_manual_simpan():
 
     n_img = len(prop_images)
     pesan = f"Draft tersimpan ({n_img} gambar ikut tersimpan)." if n_img else "Draft tersimpan."
-    # Baca ulang metadata gambar dari draft yang baru saja disimpan supaya
-    # thumbnail-nya langsung tampil di halaman ini juga (bukan cuma
-    # setelah reload lewat "Lanjutkan").
+    # Baca ulang metadata gambar & laporan dari draft yang baru saja disimpan
+    # supaya thumbnail/indikatornya langsung tampil di halaman ini juga
+    # (bukan cuma setelah reload lewat "Lanjutkan").
     saved_draft = load_draft(owner_kode, job_id)
     saved_images_meta = (saved_draft or {}).get("prop_images_meta", [])
+    saved_laporan_meta = (saved_draft or {}).get("laporan_meta")
     owner_nama = (fetch_staff_list().get(owner_kode) or {}).get("nama") if owner_kode != user.get("kode") else None
     return render_template_string(render_manual_form_page(
         prefill_data=prop_data,
         job_id=job_id,
         saved_msg=pesan,
         saved_images_meta=saved_images_meta,
+        saved_laporan_meta=saved_laporan_meta,
         draft_owner_kode=owner_kode,
         draft_owner_nama=owner_nama,
     ))
@@ -4450,10 +4524,14 @@ def proposal_manual_simpan():
 def proposal_manual_submit():
     laporan_file = request.files.get("laporan")
     laporan_ext = None
+    uploaded_laporan_bytes = None
+    uploaded_laporan_filename = None
     if laporan_file and laporan_file.filename:
         if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
             return render_template_string(render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx).")), 400
         laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+        uploaded_laporan_bytes = laporan_file.read()
+        uploaded_laporan_filename = laporan_file.filename
 
     job_store.cleanup_old_jobs(JOBS_DIR)
 
@@ -4461,9 +4539,6 @@ def proposal_manual_submit():
     tmp_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(tmp_dir, exist_ok=True)
     laporan_path = None
-    if laporan_ext:
-        laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
-        laporan_file.save(laporan_path)
 
     try:
         prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
@@ -4473,14 +4548,30 @@ def proposal_manual_submit():
         if owner_kode:
             prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images)
 
-        if laporan_path:
+        # File Laporan yang dipakai untuk generate dokumen sekarang: file
+        # baru kalau diunggah, atau file Laporan tersimpan sebelumnya untuk
+        # draft yang sama kalau tidak ada upload baru -- supaya tidak perlu
+        # unggah ulang tiap kali melanjutkan isian (konsisten dengan
+        # Lampiran Gambar yang sudah lebih dulu berperilaku begini).
+        effective_laporan_bytes, effective_laporan_ext = uploaded_laporan_bytes, laporan_ext
+        if not effective_laporan_bytes and owner_kode:
+            reused = load_draft_laporan(owner_kode, draft_job_id)
+            if reused:
+                effective_laporan_bytes, effective_laporan_ext = reused
+
+        if effective_laporan_bytes:
+            laporan_path = os.path.join(tmp_dir, "laporan" + effective_laporan_ext)
+            with open(laporan_path, "wb") as lf:
+                lf.write(effective_laporan_bytes)
             lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
         else:
             lap_data, lap_images = dict(EMPTY_LAP_DATA), []
 
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
         if owner_kode:
-            save_draft(owner_kode, draft_job_id, prop_data, prop_images)
+            save_draft(owner_kode, draft_job_id, prop_data, prop_images,
+                       laporan_bytes=uploaded_laporan_bytes, laporan_ext=laporan_ext,
+                       laporan_filename=uploaded_laporan_filename)
 
         preview_docx_path = os.path.join(tmp_dir, "preview.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
@@ -4509,12 +4600,22 @@ def proposal_manual_draft():
         prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
         lap_data, lap_images = dict(EMPTY_LAP_DATA), []
 
+        laporan_file = request.files.get("laporan")
+        laporan_ext = None
+        laporan_bytes = None
+        laporan_filename = None
+        if laporan_file and laporan_file.filename and laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+            laporan_bytes = laporan_file.read()
+            laporan_filename = laporan_file.filename
+
         current_user = session.get("user")
         draft_job_id = request.form.get("existing_job_id", "").strip() or uuid.uuid4().hex[:12]
         owner_kode = _effective_draft_owner_kode(current_user, request.form)
         if owner_kode:
             prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images)
-            save_draft(owner_kode, draft_job_id, prop_data, prop_images)
+            save_draft(owner_kode, draft_job_id, prop_data, prop_images,
+                       laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
 
         tmp_path = os.path.join(OUTPUT_DIR, f"Draft_{uuid.uuid4().hex[:12]}.docx")
         build_document(prop_data, prop_images, lap_data, lap_images, tmp_path)
