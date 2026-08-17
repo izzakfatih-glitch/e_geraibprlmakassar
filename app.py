@@ -406,9 +406,21 @@ STAFF_CACHE_TTL = 300  # detik (5 menit)
 # tidak perlu redeploy.
 ADMIN_KODE_HARDCODED = {"01"}
 
+# Kode Nama yang SELALU dianggap petugas Analisis (boleh membuka menu
+# "Analisis Proposal") apa pun isi Google Sheet-nya -- jaring pengaman sama
+# seperti ADMIN_KODE_HARDCODED di atas. Analisis Proposal berisi hasil
+# koreksi/penilaian dokumen, jadi HANYA petugas yang ditunjuk (kolom
+# "Analis"/"Petugas Analisis" bernilai Ya/TRUE/1 di Google Sheet, atau kode
+# nama yang didaftarkan di sini, atau akun admin) yang boleh mengaksesnya.
+ANALIS_KODE_HARDCODED = set()
+
 
 def _is_admin_value(v):
     return (v or "").strip().lower() in ("ya", "yes", "true", "1", "admin", "y")
+
+
+def _is_analis_value(v):
+    return (v or "").strip().lower() in ("ya", "yes", "true", "1", "analis", "y")
 
 
 def parse_koordinat_file(file_storage):
@@ -560,8 +572,14 @@ def fetch_staff_list(force=False):
             kode_petugas = (row.get("Kode petugas") or "").strip()
             admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
             is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
+            analis_raw = (row.get("Analis") or row.get("analis") or row.get("Petugas Analisis")
+                          or row.get("Analisis") or row.get("Peran Analisis") or "")
+            is_analis = _is_analis_value(analis_raw) or kode_nama in ANALIS_KODE_HARDCODED or is_admin
             if nama and kode_nama and kode_petugas:
-                staff[kode_nama] = {"nama": nama, "password": kode_petugas, "is_admin": is_admin}
+                staff[kode_nama] = {
+                    "nama": nama, "password": kode_petugas,
+                    "is_admin": is_admin, "is_analis": is_analis,
+                }
         if staff:
             _staff_cache["data"] = staff
             _staff_cache["fetched_at"] = now
@@ -850,7 +868,9 @@ HEADER_HTML = """
     <a href="#" class="nav-link" onclick="return false;">Informasi """ + ICONS["chevron-down"] + """</a>
     <a href="#" class="nav-link" onclick="return false;">""" + ICONS["book"] + """ Panduan</a>
     <a href="/asisten" class="nav-link">""" + ICONS["life-buoy"] + """ Bantuan</a>
+    {% if session.user and (session.user.is_analis or session.user.is_admin) %}
     <a href="/analisis-proposal" class="nav-link">""" + ICONS["chart-bar"] + """ Analisis Proposal</a>
+    {% endif %}
     <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
   </nav>
 
@@ -970,7 +990,7 @@ def render_asisten_page():
   <div class="chat-shell">
     <div class="chat-card">
       <div class="chat-head">
-        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GeRAI"></div>
+        <div class="chat-logo-badge"><img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi - Logo e-GeRAI"></div>
         <div class="chat-head-text">
           <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
           <h2>Halo e-GeRAI BPRL Makassar</h2>
@@ -1135,8 +1155,9 @@ UPLOAD_HTML = """<!DOCTYPE html>
         </div>
         <div class="step-title">Draft Proposal PKKPRL (PDF/Word)</div>
         <div class="step-desc">Unggah file PDF atau Word proposal yang akan digabungkan. Belum punya file-nya?
-        <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>. Sudah
-        punya proposal jadi dan mau dicek/dikoreksi datanya? <a href="/analisis-proposal" style="color:var(--blue); font-weight:700;">Analisis di sini</a>.</div>
+        <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.
+        {% if session.user and (session.user.is_analis or session.user.is_admin) %}Sudah
+        punya proposal jadi dan mau dicek/dikoreksi datanya? <a href="/analisis-proposal" style="color:var(--blue); font-weight:700;">Analisis di sini</a>.{% endif %}</div>
         <div class="dropzone" id="dz1">
           """ + ICONS["cloud"] + """
           <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
@@ -1204,7 +1225,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
 <div class="asisten-promo-wrap">
   <a href="/asisten" class="asisten-promo-card">
     <div class="asisten-promo-badge">
-      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GeRAI">
+      <img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi - Asisten e-GeRAI">
     </div>
     <div class="asisten-promo-text">
       <div class="asisten-promo-eyebrow">Asisten e-GeRAI &middot; Tanya Jawab Otomatis</div>
@@ -3439,6 +3460,7 @@ def login_pegawai_submit():
         session["user"] = {
             "name": entry["nama"], "email": "", "picture": "", "kode": kode_nama,
             "is_admin": entry.get("is_admin", False) or kode_nama in ADMIN_KODE_HARDCODED,
+            "is_analis": entry.get("is_analis", False) or kode_nama in ANALIS_KODE_HARDCODED,
         }
         session.permanent = True
         return redirect(url_for("index"))
@@ -3523,6 +3545,26 @@ def _require_admin():
     return None
 
 
+def _require_analis():
+    """Helper guard untuk rute Analisis Proposal -- hanya petugas yang
+    ditunjuk untuk Analisis (kolom 'Analis' di Google Sheet bernilai Ya/
+    TRUE/1, kode nama di ANALIS_KODE_HARDCODED, atau akun admin) yang boleh
+    mengakses. Return response penolakan kalau tidak berhak, atau None
+    kalau boleh lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    if not (user.get("is_analis") or user.get("is_admin")):
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["lock"] + """ Akses Ditolak</h3>
+<p>Halaman Analisis &amp; Koreksi Proposal hanya bisa diakses oleh petugas yang ditunjuk untuk melakukan Analisis. Hubungi admin jika Anda seharusnya memiliki akses ini.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
 @app.route("/admin/riwayat")
 def admin_riwayat_list():
     denied = _require_admin()
@@ -3560,6 +3602,9 @@ def admin_riwayat_lanjutkan(kode, job_id):
 
 @app.route("/analisis-proposal", methods=["GET"])
 def analisis_proposal_form():
+    denied = _require_analis()
+    if denied:
+        return denied
     return render_template_string(render_analisis_proposal_page())
 
 
@@ -3569,6 +3614,9 @@ MAX_ANALISIS_FILES = 10  # batas jumlah berkas per slot, supaya wajar & tidak me
 
 @app.route("/analisis-proposal", methods=["POST"])
 def analisis_proposal_submit():
+    denied = _require_analis()
+    if denied:
+        return denied
     proposal_files = [f for f in request.files.getlist("proposal") if f and f.filename]
     laporan_files = [f for f in request.files.getlist("laporan") if f and f.filename]
 
@@ -3646,6 +3694,9 @@ def _analisis_docx_download_name(nama_proposal):
 def analisis_proposal_unduh():
     """Unduh hasil analisis (yang baru saja ditampilkan di halaman preview)
     langsung sebagai dokumen Word, tanpa perlu disimpan dulu di server."""
+    denied = _require_analis()
+    if denied:
+        return denied
     hasil_markdown = request.form.get("hasil_markdown", "")
     nama_proposal = request.form.get("nama_proposal", "")
     nama_laporan = request.form.get("nama_laporan", "")
@@ -3675,6 +3726,9 @@ def analisis_proposal_unduh():
 def analisis_proposal_simpan():
     """Simpan hasil analisis yang baru saja ditampilkan ke Riwayat Tersimpan
     milik petugas yang sedang login, supaya bisa dibuka/diunduh lagi nanti."""
+    denied = _require_analis()
+    if denied:
+        return denied
     hasil_markdown = request.form.get("hasil_markdown", "")
     nama_proposal = request.form.get("nama_proposal", "")
     nama_laporan = request.form.get("nama_laporan", "")
@@ -3696,6 +3750,9 @@ def analisis_proposal_simpan():
 
 @app.route("/analisis-riwayat", methods=["GET"])
 def analisis_riwayat_list():
+    denied = _require_analis()
+    if denied:
+        return denied
     user = session.get("user") or {}
     items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR, disimpan_oleh=user.get("kode", ""))
     if items:
@@ -3742,6 +3799,9 @@ def analisis_riwayat_list():
 
 @app.route("/analisis-riwayat/<entry_id>", methods=["GET"])
 def analisis_riwayat_lihat(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
     loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
     if not loaded:
         return render_template_string(render_analisis_proposal_page(
@@ -3756,6 +3816,9 @@ def analisis_riwayat_lihat(entry_id):
 
 @app.route("/analisis-riwayat/<entry_id>/unduh", methods=["GET"])
 def analisis_riwayat_unduh(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
     loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
     if not loaded:
         return render_template_string(render_analisis_proposal_page(
@@ -3775,6 +3838,9 @@ def analisis_riwayat_unduh(entry_id):
 
 @app.route("/analisis-riwayat/<entry_id>/hapus", methods=["POST"])
 def analisis_riwayat_hapus(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
     analisis_store.delete_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
     return redirect(url_for("analisis_riwayat_list"))
 
