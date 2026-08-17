@@ -2691,7 +2691,8 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
           <div class="checkbox-row"><input type="checkbox" name="reklamasi" id="cb1b"><label for="cb1b">Kegiatan Reklamasi</label></div>
           <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk Kegiatan Berusaha</label></div>
           <div class="checkbox-row"><input type="checkbox" name="non_berusaha" id="cb2b"><label for="cb2b">Kegiatan Non Berusaha</label></div>
-          <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3"><label for="cb3">Termasuk kegiatan non-strategis nasional</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="strategis" id="cb3"><label for="cb3">Termasuk kegiatan strategis nasional</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3b"><label for="cb3b">Termasuk kegiatan non-strategis nasional</label></div>
         </div>
       </details>
 

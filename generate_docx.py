@@ -777,7 +777,12 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"{perairan}, merupakan {berusaha_txt}.")
 
     b.h2("C. Kegiatan Strategis Nasional atau Nonstrategis Nasional")
-    strategis_txt = "kegiatan non-strategis nasional/dasar" if prop.get("non_strategis") else "kegiatan strategis nasional"
+    if prop.get("strategis"):
+        strategis_txt = "kegiatan strategis nasional"
+    elif prop.get("non_strategis"):
+        strategis_txt = "kegiatan non-strategis nasional/dasar"
+    else:
+        strategis_txt = NA
     b.p(f"Rencana kegiatan pemanfaatan ruang laut ini tergolong sebagai {strategis_txt}. Penetapan status ini "
         f"digunakan sebagai acuan untuk memenuhi persyaratan teknis permohonan PKKPRL.")
 
