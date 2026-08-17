@@ -164,7 +164,78 @@ Pemegang KKPRL wajib memenuhi seluruh kewajiban yang tertera pada Lampiran Dokum
 [16. TRACKING PERMOHONAN]
 Fitur tracking tersedia di e-SEA (https://e-sea.kkp.go.id/): masukkan nomor permohonan KKPRL sesuai OSS → klik "Cari Permohonan" → pilih menu "Tracking" → status permohonan akan terlihat. e-SEA juga punya fitur Panduan dan Laporan Tahunan.
 
-Catatan sumber: materi disusun berdasarkan bahan sosialisasi KKPRL oleh Balai Penataan Ruang Laut (BPRL) Makassar, Direktorat Jenderal Penataan Ruang Laut, KKP, mengacu pada UU No.6/2023, PP No.21/2021, PP No.28/2025, Permen KP No.28/2021, dan PP No.85/2021. Jika ada perbedaan dengan peraturan terbaru, arahkan pemohon untuk mengecek ulang ke OSS/e-SEA/hotline resmi KKP."""
+[17. REGULASI TAMBAHAN TERKAIT PENGENDALIAN & LAPORAN TAHUNAN KKPRL]
+- Kepdirjen PRL No 77 Tahun 2023 tentang Pedoman Teknis Penyelenggaraan Pengendalian Pemanfaatan Ruang Laut (dasar utama ketentuan Laporan Tahunan KKPRL).
+- Kepmen KP No 10 Tahun 2023 tentang Pengelolaan Data Lokasi Kesesuaian Kegiatan Pemanfaatan Ruang Laut.
+- Kepmen KP No 14 Tahun 2021 tentang Alur Pipa dan/atau Kabel Bawah Laut.
+- Kepmen KP No 77 Tahun 2024 tentang Perubahan atas Kepmen KP No 42 Tahun 2022 tentang Mekanisme Penyelenggaraan Pendirian dan/atau Penempatan Bangunan dan Instalasi di Laut.
+- Permen KP No 31 Tahun 2021 tentang Pengenaan Sanksi Administratif di Bidang Kelautan dan Perikanan (dasar sanksi administratif pemegang KKPRL).
+
+[18. LAPORAN TAHUNAN KKPRL — KEWAJIBAN & BATAS WAKTU]
+Laporan tahunan KKPRL adalah kewajiban pemegang KKPRL untuk menyampaikan laporan tertulis setiap 1 (satu) tahun kepada Menteri (dasar: Kepdirjen PRL No 77/2023). Laporan paling sedikit memuat:
+1. Kemajuan dalam memperoleh persetujuan lingkungan, Perizinan Berusaha, dan/atau perizinan nonberusaha;
+2. Realisasi luas perairan dan pemanfaatannya dalam hal Perizinan Berusaha dan/atau perizinan nonberusaha telah diterbitkan;
+3. Pemenuhan kewajiban KKPRL (lihat 16 Kewajiban di poin 20).
+Batas waktu: paling lambat 1 (satu) hari kalender SEBELUM tanggal dan bulan diterbitkannya KKPRL pada setiap tahunnya, dan berlaku sampai kegiatan berusaha/nonberusaha selesai dilakukan. Laporan wajib disampaikan langsung oleh pemegang KKPRL, TIDAK BOLEH disampaikan oleh pihak lain.
+Contoh: kalau KKPRL terbit tanggal 20 Juni 2025, maka batas waktu penyampaian laporan tahunan adalah setiap tanggal 19 Juni pada tahun 2026 dan tahun-tahun berikutnya.
+
+[19. CARA LAPOR TAHUNAN KKPRL DI e-SEA]
+1. Kunjungi https://e-sea.kkp.go.id → pilih bagian "Pengendalian" → tekan tombol Login.
+2. Kalau belum punya akun, tekan "Buat Akun", isi NPWP, Nama, Kategori Pengguna, Email, Password → klik "Register" → akun dikirim ke email yang didaftarkan.
+3. Setelah login, pilih menu "Laporan Tahunan" di sidebar → tekan tombol "Tambah".
+4. Isi 4 tab formulir secara berurutan: (a) Identitas — termasuk wajib unggah file "Surat Pengantar Laporan Tahunan" supaya bisa lanjut ke tab berikutnya; (b) Kemajuan Perizinan — status Persetujuan Lingkungan (AMDAL untuk kegiatan dampak besar, atau UKL-UPL untuk kegiatan dampak kecil-menengah) dan Perizinan Berusaha, upload Izin KKPRL Terbit; (c) Realisasi Pemanfaatan Ruang Laut — luas (untuk area) atau panjang (untuk pipa/kabel) yang sudah direalisasikan, plus unggah koordinat (file Excel) dan dokumentasi kegiatan bangunan/instalasi di lokasi (pakai GeoTag); (d) Pemenuhan Kewajiban — 16 kewajiban KKPRL, tiap kewajiban pilih status "Sudah"/"Belum", kalau "Sudah" isi Bentuk Kegiatan, Lokasi, Waktu Pelaksanaan, dan unggah bukti dukung (PDF, bisa pakai file Template standar yang disediakan sistem).
+5. Kalau masih perlu diedit, pilih "Simpan Draf". Kalau sudah final, tekan "Submit" agar diproses tim Teknis KKP.
+6. Pantau progres lewat tombol "Tracking" — kalau ada badge merah, berarti ada catatan dari tim Verifikator yang perlu ditindaklanjuti dan disubmit ulang.
+7. Setelah diterima, status berubah "Laporan telah diterima" (tanda terima bisa diunduh), lalu masuk tahap penilaian oleh Tim Penilai KKP (bisa pakai fitur chat "Diskusi" selama proses ini). Setelah selesai, status jadi "Selesai" dan pengguna bisa unduh dokumen Hasil Penilaian, Sertifikat Penghargaan, dan Dokumen Laporan Lengkap.
+
+[20. PEMENUHAN 16 KEWAJIBAN KKPRL]
+Bagian Pemenuhan Kewajiban pada Laporan Tahunan KKPRL berisi 16 kewajiban berikut (contoh pemenuhan tiap poin boleh disesuaikan dengan kondisi nyata di lapangan):
+1. Memperhatikan keberlanjutan kehidupan dan penghidupan masyarakat.
+2. Memberikan akses untuk nelayan kecil yang secara rutin melintas.
+3. Menghormati kepentingan pihak lain (tidak menimbulkan konflik dengan pemanfaatan ruang laut sekitar).
+4. Melakukan kegiatan secara ramah lingkungan.
+5. Menjaga kelestarian ekosistem laut dan melakukan rehabilitasi sumber daya yang mengalami kerusakan.
+6. Menjaga kehidupan dan alur migrasi biota laut.
+7. Memberikan akses/tempat berlindung kepada siapapun dalam kondisi darurat.
+8. Melibatkan dan memberdayakan masyarakat sekitar lokasi kegiatan/usaha.
+9. Membongkar bangunan dan instalasi di laut apabila masa berlaku telah habis dan kegiatan/usaha tidak dilanjutkan lagi.
+10. Tidak menimbulkan konflik sosial.
+11. Tidak menimbulkan gangguan bagi pelaksanaan kepentingan keselamatan, pertahanan keamanan, dan memperhatikan kepentingan nasional.
+12. Menyampaikan laporan perolehan Perizinan Berusaha.
+13. Menyampaikan laporan secara tertulis setiap 1 (satu) tahun kepada Menteri (= laporan tahunan KKPRL itu sendiri).
+14. Bermitra dengan pengelola Kawasan Konservasi di Laut dalam rangka program kemitraan dan bina lingkungan, kalau lokasi kegiatan berada dalam Kawasan Konservasi di Laut.
+15. Melaporkan pendirian dan/atau penempatan Bangunan dan Instalasi di Laut kepada instansi yang menyelenggarakan urusan pemerintahan di bidang hidrografi dan oseanografi.
+16. Menyediakan prasarana dan sarana pencegahan pencemaran dan pencegahan kerusakan sumber daya ikan serta lingkungannya.
+Setiap kewajiban yang berstatus "Sudah" dilakukan wajib dilengkapi bukti dukung (dokumentasi/PDF) sesuai template resmi yang disediakan sistem e-SEA.
+
+[21. SANKSI ADMINISTRATIF PEMEGANG KKPRL]
+Dasar: Permen KP No 31 Tahun 2021 tentang Pengenaan Sanksi Administratif di Bidang Kelautan dan Perikanan, Pasal 4 — pelanggaran ketentuan pemanfaatan ruang laut meliputi antara lain: penggunaan dokumen PKKPRL/KKRL yang tidak sah; TIDAK melaporkan pendirian/penempatan bangunan dan instalasi di laut kepada Menteri; TIDAK menyampaikan laporan tertulis pelaksanaan kegiatan secara berkala setiap 1 tahun kepada Menteri (= tidak lapor tahunan); pelaksanaan dokumen PKKPRL/KKRL yang tidak sesuai RTR/RZ KAW/RZ KSNT; mengganggu ruang penghidupan dan akses nelayan kecil/tradisional/pembudidaya ikan kecil; pemanfaatan ruang tanpa dokumen PKKPRL/KKRL; tidak mematuhi ketentuan dalam dokumen PKKPRL/KKRL; dan/atau menghalangi akses kawasan milik umum.
+Besaran denda administratif (Lampiran Angka XVI PP No 85 Tahun 2021), beberapa contoh:
+- Pelanggaran Perizinan Berusaha Pemanfaatan di Laut: 5% x total nilai investasi, per pelanggaran.
+- Penggunaan dokumen PKKPRL/KKRL yang tidak sah: Rp18.680.000,00 per Ha.
+- TIDAK melaporkan pendirian/penempatan bangunan & instalasi di laut: Rp5.000.000,00 per hari keterlambatan.
+- TIDAK menyampaikan laporan tahunan tertulis (terlambat lapor tahunan KKPRL): Rp5.000.000,00 per hari keterlambatan.
+- Pelaksanaan PKKPRL tidak sesuai RTR/RZKAW/RZKSNT: Rp18.680.000,00 per Ha.
+- Pelaksanaan PKKPRL mengganggu ruang penghidupan/akses nelayan kecil/tradisional/pembudidaya kecil: 100% x tarif izin persetujuan kesesuaian, per pelanggaran.
+- Kegiatan yang mengakibatkan pencemaran dan/atau kerusakan sumber daya ikan & lingkungannya: dihitung per luasan pencemaran/kerusakan dikalikan Faktor E.
+Kalau pengguna bertanya soal denda telat lapor tahunan KKPRL, jawab tegas: Rp5.000.000,00 per hari keterlambatan, terhitung sejak batas waktu penyampaian terlampaui.
+
+[22. PENILAIAN LAPORAN TAHUNAN KKPRL]
+Tim Penilai: ASN yang bertugas di direktorat teknis perencanaan ruang laut dan/atau unit pelaksana teknis lingkup direktorat jenderal bidang kelautan dan ruang laut; bisa melibatkan sekretaris ditjen, direktorat lain lingkup Ditjen PRL, dan/atau pakar/perguruan tinggi sesuai keahlian.
+Hasil penilaian laporan tahunan disusun sebagai bahan pertimbangan pengendalian pemanfaatan ruang laut, meliputi: (1) penilaian pelaksanaan KKPRL; (2) perwujudan RTR dan/atau rencana zonasi; (3) pemberian insentif dan pengenaan disinsentif; (4) indikasi pelanggaran; dan/atau (5) penyelesaian sengketa.
+Indikator penilaian dan skor maksimal (total 100):
+- Identitas Pemegang KKPRL: 4 poin
+- Identitas Penanggung Jawab: 4 poin
+- Kemajuan Perizinan yang Diperoleh: 14 poin
+- Realisasi Pemanfaatan Ruang Laut: 14 poin
+- Pemenuhan Kewajiban (16 kewajiban): 64 poin
+Alur proses: Pemegang KKPRL submit laporan via e-SEA → Verifikasi Dokumen Izin Usaha (kalau tidak lengkap, dikirim catatan via email/WA untuk dilengkapi; kalau lengkap, lanjut tanda terima) → Super Admin Pusat/PIC UPT input surat tugas penilai → Verifikator UPT → Tim Penilai (internal pegawai Direktorat PPRL/UPT) menilai berdasarkan Identitas, Realisasi, Kemajuan Perizinan, dan 16 Kewajiban → hasil penilaian dituangkan dalam Berita Acara Kesepakatan (penilai & subjek hukum menyepakati masa berlaku izin KKPRL) → Laporan Hasil Penilaian (utuh) masuk ke Dashboard Subjek Hukum dan Dashboard Internal Direktorat.
+
+[23. KONTAK & LAYANAN PENGADUAN]
+- Hotline Pengendalian Pemanfaatan Ruang Laut (Ditjen PRL, KKP): 0811-1012-0010, email pengendalian.prl@gmail.com, media sosial @ditpengendalianprl.
+- Layanan Pengaduan Online Rakyat (SP4N-LAPOR!): https://www.lapor.go.id.
+
+Catatan sumber: materi disusun berdasarkan bahan sosialisasi KKPRL oleh Balai Penataan Ruang Laut (BPRL) Makassar, Direktorat Jenderal Penataan Ruang Laut, KKP, mengacu pada UU No.6/2023, PP No.21/2021, PP No.28/2025, Permen KP No.28/2021, Permen KP No.31/2021, PP No.85/2021, dan Kepdirjen PRL No.77/2023 (materi "Asistensi Laporan Tahunan e-SEA Pengendalian" & "Panduan Pengguna Sistem Laporan Tahunan KKPRL 2026"). Jika ada perbedaan dengan peraturan terbaru, arahkan pemohon untuk mengecek ulang ke OSS/e-SEA/hotline resmi KKP."""
 
 
 def api_key_available():

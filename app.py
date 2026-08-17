@@ -1053,7 +1053,7 @@ def render_asisten_page():
           <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
           <h2>Halo e-GerAI BPRL Makassar</h2>
           <div class="chat-sub">Jawaban singkat &amp; jelas seputar Kesesuaian Kegiatan Pemanfaatan Ruang Laut.</div>
-          <div class="chat-status"><span class="chat-dot"></span> Siap menjawab</div>
+          <div class="chat-status"><span class="chat-dot"></span> Asisten Navi Siap Menjawab</div>
         </div>
       </div>
 
@@ -1442,6 +1442,8 @@ REVIEW_CSS = """
   border-radius:7px; background:#fff; }
 .jt-table input:focus, .jt-table select:focus { outline:none; border-color:var(--blue); }
 .jt-row-num { text-align:center; font-weight:700; color:var(--muted); font-size:12px; }
+#jadwalTable .jt-minggu-col { display:none; }
+#jadwalTable.jt-minggu-visible .jt-minggu-col { display:table-cell; }
 
 .img-paste-zone { border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:14px;
   cursor:pointer; transition:.15s; outline:none; }
@@ -1926,7 +1928,8 @@ def render_login_pegawai_page(error=None):
     <form method="POST" action="/login-pegawai">
       <div class="field-row">
         <label>Kode Nama</label>
-        <input type="text" name="kode_nama" placeholder="Contoh: 09" required autofocus inputmode="numeric">
+        <input type="text" name="kode_nama" placeholder="Contoh: BPRL01" required autofocus autocapitalize="none" autocomplete="username">
+        <div style="margin-top:4px;font-size:11px;color:var(--muted);">Bisa kombinasi huruf dan angka, tidak terbatas 2 karakter.</div>
       </div>
       <div class="field-row">
         <label>Kode Petugas (Password)</label>
@@ -2635,10 +2638,10 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
                   <th>Nama Kegiatan</th>
                   <th style="width:90px;">Tahun Mulai</th>
                   <th style="width:120px;">Bulan Mulai</th>
-                  <th style="width:90px;">Minggu Mulai</th>
+                  <th class="jt-minggu-col" style="width:90px;">Minggu Mulai</th>
                   <th style="width:90px;">Tahun Selesai</th>
                   <th style="width:120px;">Bulan Selesai</th>
-                  <th style="width:90px;">Minggu Selesai</th>
+                  <th class="jt-minggu-col" style="width:90px;">Minggu Selesai</th>
                   <th style="width:36px;"></th>
                 </tr></thead>
                 <tbody id="jadwalTableBody"></tbody>
@@ -2646,6 +2649,7 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             </div>
             <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
               <button type="button" class="tbl-btn" id="jadwalAddRow">+ Tambah Kegiatan</button>
+              <button type="button" class="tbl-btn" id="jadwalToggleMinggu">+ Detail Minggu</button>
               <button type="button" class="tbl-btn" id="jadwalUseExample">Pakai contoh ini</button>
             </div>
             <input type="hidden" name="jadwal_table_json" id="jadwal_table_json">
@@ -3428,8 +3432,9 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
         td.appendChild(inp);
         return td;
       }
-      function selectCell(key, opts) {
+      function selectCell(key, opts, extraClass) {
         var td = document.createElement('td');
+        if (extraClass) td.className = extraClass;
         var sel = document.createElement('select');
         sel.innerHTML = opts(row[key]);
         sel.addEventListener('change', function() { row[key] = sel.value; });
@@ -3439,10 +3444,10 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
 
       tr.appendChild(yearInput('tahun_mulai', String(thisYear)));
       tr.appendChild(selectCell('bulan_mulai', bulanOptions));
-      tr.appendChild(selectCell('minggu_mulai', mingguOptions));
+      tr.appendChild(selectCell('minggu_mulai', mingguOptions, 'jt-minggu-col'));
       tr.appendChild(yearInput('tahun_selesai', String(thisYear)));
       tr.appendChild(selectCell('bulan_selesai', bulanOptions));
-      tr.appendChild(selectCell('minggu_selesai', mingguOptions));
+      tr.appendChild(selectCell('minggu_selesai', mingguOptions, 'jt-minggu-col'));
 
       var tdDel = document.createElement('td');
       var btnDel = document.createElement('button');
@@ -3470,10 +3475,21 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
         bulan_selesai: r.bulan_selesai || '', minggu_selesai: r.minggu_selesai || '',
       };
     });
+    var adaMinggu = rows.some(function(r) { return r.minggu_mulai || r.minggu_selesai; });
+    if (adaMinggu && typeof setMingguVisible === 'function') setMingguVisible(true);
     renderBody();
   };
 
   document.getElementById('jadwalAddRow').addEventListener('click', function() { addRow(); });
+  var jadwalTableEl = document.getElementById('jadwalTable');
+  var toggleMingguBtn = document.getElementById('jadwalToggleMinggu');
+  function setMingguVisible(visible) {
+    jadwalTableEl.classList.toggle('jt-minggu-visible', visible);
+    toggleMingguBtn.textContent = visible ? '\u2212 Sembunyikan Detail Minggu' : '+ Detail Minggu';
+  }
+  toggleMingguBtn.addEventListener('click', function() {
+    setMingguVisible(!jadwalTableEl.classList.contains('jt-minggu-visible'));
+  });
   document.getElementById('jadwalUseExample').addEventListener('click', function() {
     rows = [
       { nama: 'Pengurusan PKKPRL', tahun_mulai: String(thisYear), bulan_mulai: '1', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '3', minggu_selesai: '' },

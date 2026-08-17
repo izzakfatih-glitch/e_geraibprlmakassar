@@ -619,7 +619,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     # ================= COVER =================
     title = b.doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = title.add_run("PROPOSAL TEKNIS")
+    r = title.add_run("DRAFT PROPOSAL TEKNIS")
     set_font(r, size=20, bold=True, color=NAVY)
 
     sub = b.doc.add_paragraph()
