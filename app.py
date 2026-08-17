@@ -1378,6 +1378,23 @@ REVIEW_CSS = """
   border:1px solid #cfe0f5; border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
 .field-example .ex-fill:hover { background:#dcebfa; }
 
+.tbl-btn { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  border:1px solid #cfe0f5; border-radius:8px; padding:7px 13px; cursor:pointer; white-space:nowrap; }
+.tbl-btn:hover { background:#dcebfa; }
+.tbl-btn.tbl-btn-danger { color:#b3261e; background:#fdecea; border-color:#f6c8c4; padding:5px 9px; }
+.tbl-btn.tbl-btn-danger:hover { background:#fbd9d5; }
+.jt-table-wrap { overflow-x:auto; border:1px solid #e3ecf5; border-radius:10px; }
+.jt-table { width:100%; border-collapse:collapse; min-width:560px; font-size:12.5px; }
+.jt-table th { background:#f3f8ff; color:var(--navy); font-weight:800; text-align:left;
+  padding:8px 8px; border-bottom:2px solid #e3ecf5; white-space:nowrap; }
+.jt-table td { padding:5px 6px; border-bottom:1px solid #eef3f9; vertical-align:middle; }
+.jt-table tbody tr:last-child td { border-bottom:none; }
+.jt-table input[type=text], .jt-table input[type=number], .jt-table select {
+  width:100%; box-sizing:border-box; padding:6px 7px; font-size:12.5px; border:1px solid #d7e2ee;
+  border-radius:7px; background:#fff; }
+.jt-table input:focus, .jt-table select:focus { outline:none; border-color:var(--blue); }
+.jt-row-num { text-align:center; font-weight:700; color:var(--muted); font-size:12px; }
+
 .img-paste-zone { border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:14px;
   cursor:pointer; transition:.15s; outline:none; }
 .img-paste-zone:hover, .img-paste-zone:focus, .img-paste-zone.dragover { border-color:var(--blue); background:#eef5fd; }
@@ -2551,10 +2568,28 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
 
           <div class="field-row">
             <label>Deskripsi Jadwal Kegiatan</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Tuliskan rincian kegiatan dan waktu pelaksanaannya, format: [Nama Kegiatan] : [Bulan/Tahun Pelaksanaan]</div>
-            <textarea name="jadwal_kegiatan" id="jadwal_kegiatan" rows="4" placeholder="Isi jadwal kegiatan"></textarea>
-            <div class="field-example">Contoh: <span class="ex-text">Pengurusan PKKPRL : Bulan 1 - Bulan 3. Pemasangan Keramba Jaring Apung : Bulan 3 - Bulan 5. Operasional Keramba Jaring Apung : Bulan 5 - Bulan 12.</span>
-            <button type="button" class="ex-fill" data-target="jadwal_kegiatan">Pakai contoh ini</button></div>
+            <div class="ff-hint" style="margin-bottom:8px;">Isi tiap kegiatan sebagai satu baris di tabel: nama kegiatan, tahun &amp; bulan mulai, tahun &amp; bulan selesai. Bisa lebih dari 1 tahun -- tabel Gantt di dokumen akan otomatis menyesuaikan. Kolom "Minggu ke-" opsional kalau perlu lebih detail dari sekadar bulan.</div>
+            <div class="jt-table-wrap">
+              <table class="jt-table" id="jadwalTable">
+                <thead><tr>
+                  <th style="width:30px;">No</th>
+                  <th>Nama Kegiatan</th>
+                  <th style="width:90px;">Tahun Mulai</th>
+                  <th style="width:120px;">Bulan Mulai</th>
+                  <th style="width:90px;">Minggu Mulai</th>
+                  <th style="width:90px;">Tahun Selesai</th>
+                  <th style="width:120px;">Bulan Selesai</th>
+                  <th style="width:90px;">Minggu Selesai</th>
+                  <th style="width:36px;"></th>
+                </tr></thead>
+                <tbody id="jadwalTableBody"></tbody>
+              </table>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" class="tbl-btn" id="jadwalAddRow">+ Tambah Kegiatan</button>
+              <button type="button" class="tbl-btn" id="jadwalUseExample">Pakai contoh ini</button>
+            </div>
+            <input type="hidden" name="jadwal_table_json" id="jadwal_table_json">
           </div>
 
           <div class="field-row">
@@ -2738,11 +2773,29 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx,.png,.jpg,.jpeg">
           </div>
           <div class="field-row">
-            <label>Atau Ketik/Tempel Manual &mdash; format: Longitude [spasi] Latitude (nomor titik otomatis)</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Sesuai format resmi. Kalau file di atas diisi, ini akan digabung otomatis dengan hasil dari file.</div>
-            <textarea name="koordinat_manual" id="koordinat_manual" rows="4" placeholder="122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114"></textarea>
-            <div class="field-example">Contoh: <span class="ex-text">122.650194        -3.934945&#10;122.649197        -3.935361&#10;122.649261        -3.935530&#10;122.650258        -3.935114</span>
-            <button type="button" class="ex-fill" data-target="koordinat_manual">Pakai contoh ini</button></div>
+            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris/kolom sesuai kebutuhan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis. Klik "+ Tambah Kolom" untuk menambah kolom selain Longitude/Latitude/Keterangan (mis. Kedalaman, Jenis Titik, dsb) -- kolom tambahan otomatis ikut tampil di dokumen.</div>
+            <div class="jt-table-wrap">
+              <table class="jt-table" id="koordTable">
+                <thead><tr id="koordTableHeadRow">
+                  <th style="width:30px;">No</th>
+                  <th>Longitude (X)</th>
+                  <th>Latitude (Y)</th>
+                  <th>Keterangan</th>
+                  <th style="width:36px;"></th>
+                </tr></thead>
+                <tbody id="koordTableBody"></tbody>
+              </table>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="tbl-btn" id="koordAddRow">+ Tambah Baris</button>
+              <span style="display:inline-flex;gap:6px;align-items:center;">
+                <input type="text" id="koordNewColName" placeholder="Nama kolom baru" style="width:160px;padding:6px 8px;font-size:12.5px;border:1px solid #cfd9e6;border-radius:8px;">
+                <button type="button" class="tbl-btn" id="koordAddCol">+ Tambah Kolom</button>
+              </span>
+              <button type="button" class="tbl-btn" id="koordUseExample">Pakai contoh ini</button>
+            </div>
+            <input type="hidden" name="koordinat_table_json" id="koordinat_table_json">
           </div>
         </div>
       </details>
@@ -3176,6 +3229,246 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
     for (var i = 0; i < input.files.length; i++) { addFile(input.files[i]); }
   });
 });
+
+// ====================== Tabel Titik Koordinat Batas Area ======================
+(function() {
+  var extraCols = ['Keterangan'];          // kolom tambahan selain No/Longitude/Latitude
+  var rows = [];                           // tiap row: [longitude, latitude, ...extra]
+
+  var theadRow = document.getElementById('koordTableHeadRow');
+  var tbody = document.getElementById('koordTableBody');
+  var hidden = document.getElementById('koordinat_table_json');
+
+  function renderHead() {
+    var html = '<th style="width:30px;">No</th><th>Longitude (X)</th><th>Latitude (Y)</th>';
+    extraCols.forEach(function(c) { html += '<th>' + c.replace(/</g, '&lt;') + '</th>'; });
+    html += '<th style="width:36px;"></th>';
+    theadRow.innerHTML = html;
+  }
+
+  function renderBody() {
+    tbody.innerHTML = '';
+    rows.forEach(function(row, idx) {
+      var tr = document.createElement('tr');
+      var tdNo = document.createElement('td');
+      tdNo.className = 'jt-row-num';
+      tdNo.textContent = idx + 1;
+      tr.appendChild(tdNo);
+
+      for (var c = 0; c < 2 + extraCols.length; c++) {
+        var td = document.createElement('td');
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = row[c] || '';
+        inp.placeholder = c === 0 ? '122.650194' : (c === 1 ? '-3.934945' : '');
+        (function(rIdx, cIdx) {
+          inp.addEventListener('input', function() { rows[rIdx][cIdx] = inp.value; });
+          inp.addEventListener('paste', function(e) {
+            var text = (e.clipboardData || window.clipboardData).getData('text');
+            if (!text || (text.indexOf('\\t') === -1 && text.indexOf('\\n') === -1)) return;
+            e.preventDefault();
+            var grid = text.trim().split('\\n').map(function(line) { return line.split('\\t').length > 1 ? line.split('\\t') : line.trim().split(/\\s+/); });
+            grid.forEach(function(gridRow, gi) {
+              var targetIdx = rIdx + gi;
+              while (rows.length <= targetIdx) rows.push(['', '', ...extraCols.map(function() { return ''; })]);
+              for (var gc = 0; gc < gridRow.length && (cIdx + gc) < (2 + extraCols.length); gc++) {
+                rows[targetIdx][cIdx + gc] = gridRow[gc].trim();
+              }
+            });
+            renderBody();
+          });
+        })(idx, c);
+        td.appendChild(inp);
+        tr.appendChild(td);
+      }
+
+      var tdDel = document.createElement('td');
+      var btnDel = document.createElement('button');
+      btnDel.type = 'button';
+      btnDel.className = 'tbl-btn tbl-btn-danger';
+      btnDel.textContent = '\\u2715';
+      btnDel.addEventListener('click', function() { rows.splice(idx, 1); renderBody(); });
+      tdDel.appendChild(btnDel);
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function addRow(values) {
+    var row = values || [];
+    while (row.length < 2 + extraCols.length) row.push('');
+    rows.push(row);
+    renderBody();
+  }
+
+  function addColumn(name) {
+    name = (name || '').trim();
+    if (!name) return;
+    extraCols.push(name);
+    rows.forEach(function(row) { row.push(''); });
+    renderHead();
+    renderBody();
+  }
+
+  window.koordTableSetData = function(header, dataRows) {
+    // header: ["Nomor Titik","Longitude (X)","Latitude (Y)", ...extra]; dataRows: [[no,lon,lat,...extra],...]
+    extraCols = (header || []).slice(3);
+    rows = (dataRows || []).map(function(r) { return r.slice(1); });
+    renderHead();
+    renderBody();
+  };
+
+  document.getElementById('koordAddRow').addEventListener('click', function() { addRow(); });
+  document.getElementById('koordAddCol').addEventListener('click', function() {
+    var input = document.getElementById('koordNewColName');
+    addColumn(input.value);
+    input.value = '';
+  });
+  document.getElementById('koordUseExample').addEventListener('click', function() {
+    extraCols = ['Keterangan'];
+    rows = [
+      ['122.650194', '-3.934945', 'Titik 1'],
+      ['122.649197', '-3.935361', 'Titik 2'],
+      ['122.649261', '-3.935530', 'Titik 3'],
+      ['122.650258', '-3.935114', 'Titik 4'],
+    ];
+    renderHead();
+    renderBody();
+  });
+
+  window.koordTableSync = function() {
+    var cleanRows = rows.filter(function(r) { return r.some(function(v) { return (v || '').toString().trim(); }); });
+    hidden.value = JSON.stringify({ columns: extraCols, rows: cleanRows });
+  };
+
+  renderHead();
+  addRow(); addRow(); addRow(); addRow();
+})();
+
+// ====================== Tabel Deskripsi Jadwal Kegiatan ======================
+(function() {
+  var BULAN = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+  var rows = [];   // {nama, tahun_mulai, bulan_mulai, minggu_mulai, tahun_selesai, bulan_selesai, minggu_selesai}
+  var tbody = document.getElementById('jadwalTableBody');
+  var hidden = document.getElementById('jadwal_table_json');
+  var thisYear = new Date().getFullYear();
+
+  function bulanOptions(selected) {
+    var html = '<option value="">-</option>';
+    BULAN.forEach(function(b, i) {
+      var v = i + 1;
+      html += '<option value="' + v + '"' + (String(v) === String(selected) ? ' selected' : '') + '>' + b + '</option>';
+    });
+    return html;
+  }
+  function mingguOptions(selected) {
+    var html = '<option value="">-</option>';
+    for (var i = 1; i <= 4; i++) {
+      html += '<option value="' + i + '"' + (String(i) === String(selected) ? ' selected' : '') + '>Minggu ' + i + '</option>';
+    }
+    return html;
+  }
+
+  function renderBody() {
+    tbody.innerHTML = '';
+    rows.forEach(function(row, idx) {
+      var tr = document.createElement('tr');
+
+      var tdNo = document.createElement('td');
+      tdNo.className = 'jt-row-num';
+      tdNo.textContent = idx + 1;
+      tr.appendChild(tdNo);
+
+      var tdNama = document.createElement('td');
+      var inpNama = document.createElement('input');
+      inpNama.type = 'text';
+      inpNama.value = row.nama || '';
+      inpNama.placeholder = 'Nama kegiatan';
+      inpNama.addEventListener('input', function() { row.nama = inpNama.value; });
+      tdNama.appendChild(inpNama);
+      tr.appendChild(tdNama);
+
+      function yearInput(key, placeholder) {
+        var td = document.createElement('td');
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.inputMode = 'numeric';
+        inp.value = row[key] || '';
+        inp.placeholder = placeholder;
+        inp.maxLength = 4;
+        inp.addEventListener('input', function() { inp.value = inp.value.replace(/\\D/g, '').slice(0, 4); row[key] = inp.value; });
+        td.appendChild(inp);
+        return td;
+      }
+      function selectCell(key, opts) {
+        var td = document.createElement('td');
+        var sel = document.createElement('select');
+        sel.innerHTML = opts(row[key]);
+        sel.addEventListener('change', function() { row[key] = sel.value; });
+        td.appendChild(sel);
+        return td;
+      }
+
+      tr.appendChild(yearInput('tahun_mulai', String(thisYear)));
+      tr.appendChild(selectCell('bulan_mulai', bulanOptions));
+      tr.appendChild(selectCell('minggu_mulai', mingguOptions));
+      tr.appendChild(yearInput('tahun_selesai', String(thisYear)));
+      tr.appendChild(selectCell('bulan_selesai', bulanOptions));
+      tr.appendChild(selectCell('minggu_selesai', mingguOptions));
+
+      var tdDel = document.createElement('td');
+      var btnDel = document.createElement('button');
+      btnDel.type = 'button';
+      btnDel.className = 'tbl-btn tbl-btn-danger';
+      btnDel.textContent = '\\u2715';
+      btnDel.addEventListener('click', function() { rows.splice(idx, 1); renderBody(); });
+      tdDel.appendChild(btnDel);
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function addRow(vals) {
+    rows.push(vals || { nama: '', tahun_mulai: '', bulan_mulai: '', minggu_mulai: '', tahun_selesai: '', bulan_selesai: '', minggu_selesai: '' });
+    renderBody();
+  }
+
+  window.jadwalTableSetData = function(dataRows) {
+    rows = (dataRows || []).map(function(r) {
+      return {
+        nama: r.nama || '', tahun_mulai: r.tahun_mulai || '', bulan_mulai: r.bulan_mulai || '',
+        minggu_mulai: r.minggu_mulai || '', tahun_selesai: r.tahun_selesai || '',
+        bulan_selesai: r.bulan_selesai || '', minggu_selesai: r.minggu_selesai || '',
+      };
+    });
+    renderBody();
+  };
+
+  document.getElementById('jadwalAddRow').addEventListener('click', function() { addRow(); });
+  document.getElementById('jadwalUseExample').addEventListener('click', function() {
+    rows = [
+      { nama: 'Pengurusan PKKPRL', tahun_mulai: String(thisYear), bulan_mulai: '1', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '3', minggu_selesai: '' },
+      { nama: 'Pemasangan Keramba Jaring Apung', tahun_mulai: String(thisYear), bulan_mulai: '3', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '5', minggu_selesai: '' },
+      { nama: 'Operasional Keramba Jaring Apung', tahun_mulai: String(thisYear), bulan_mulai: '5', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '12', minggu_selesai: '' },
+    ];
+    renderBody();
+  });
+
+  window.jadwalTableSync = function() {
+    var clean = rows.filter(function(r) { return r.nama.trim() && r.tahun_mulai && r.bulan_mulai && r.tahun_selesai && r.bulan_selesai; });
+    hidden.value = JSON.stringify(clean);
+  };
+
+  addRow();
+})();
+
+// Sinkronkan tabel Koordinat & Jadwal Kegiatan ke hidden input JSON sebelum form dikirim
+document.getElementById('manualForm').addEventListener('submit', function() {
+  if (window.koordTableSync) window.koordTableSync();
+  if (window.jadwalTableSync) window.jadwalTableSync();
+});
 </script>
 """ + (f"""
 <script>
@@ -3286,8 +3579,14 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
     if (key.startsWith('_')) return;
     var val = data[key];
     if (key === 'koordinat' && Array.isArray(val)) {{
-      var ta = document.getElementById('koordinat_manual');
-      if (ta) ta.value = val.map(function(row) {{ return row[1] + '\\t' + row[2]; }}).join('\\n');
+      if (window.koordTableSetData) {{
+        window.koordTableSetData(data.koordinat_header || ['Nomor Titik', 'Longitude (X)', 'Latitude (Y)'], val);
+      }}
+      return;
+    }}
+    if (key === 'koordinat_header') {{ return; }}
+    if (key === 'jadwal_table' && Array.isArray(val) && val.length) {{
+      if (window.jadwalTableSetData) {{ window.jadwalTableSetData(val); }}
       return;
     }}
     if (typeof val === 'boolean') {{
@@ -3936,6 +4235,46 @@ def build_prop_data_from_manual_form(form, files):
     prop_data["instalasi_bangunan"] = form.get("instalasi_bangunan", "")
     prop_data["instalasi_posisi"] = join_dan(form.getlist("instalasi_posisi[]"))
     prop_data["jadwal_kegiatan"] = form.get("jadwal_kegiatan", "")
+
+    BULAN_NAMA = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                  "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    jadwal_table_raw = form.get("jadwal_table_json", "").strip()
+    jadwal_table = []
+    if jadwal_table_raw:
+        try:
+            parsed = json.loads(jadwal_table_raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            for row in parsed:
+                if not isinstance(row, dict):
+                    continue
+                nama = str(row.get("nama", "")).strip()
+                th1, bl1 = str(row.get("tahun_mulai", "")).strip(), str(row.get("bulan_mulai", "")).strip()
+                th2, bl2 = str(row.get("tahun_selesai", "")).strip(), str(row.get("bulan_selesai", "")).strip()
+                mg1 = str(row.get("minggu_mulai", "")).strip()
+                mg2 = str(row.get("minggu_selesai", "")).strip()
+                if not (nama and th1 and bl1 and th2 and bl2):
+                    continue
+                jadwal_table.append({
+                    "nama": nama, "tahun_mulai": th1, "bulan_mulai": bl1, "minggu_mulai": mg1,
+                    "tahun_selesai": th2, "bulan_selesai": bl2, "minggu_selesai": mg2,
+                })
+    prop_data["jadwal_table"] = jadwal_table
+    if jadwal_table and not prop_data["jadwal_kegiatan"]:
+        # ringkasan teks otomatis dari tabel, untuk kompatibilitas alur lama yang masih baca teks polos
+        ringkasan = []
+        for r in jadwal_table:
+            try:
+                bl1n, bl2n = BULAN_NAMA[int(r["bulan_mulai"])], BULAN_NAMA[int(r["bulan_selesai"])]
+            except (ValueError, IndexError):
+                bl1n, bl2n = r["bulan_mulai"], r["bulan_selesai"]
+            mg1_txt = f" (Minggu {r['minggu_mulai']})" if r["minggu_mulai"] else ""
+            mg2_txt = f" (Minggu {r['minggu_selesai']})" if r["minggu_selesai"] else ""
+            ringkasan.append(
+                f"{r['nama']} : {bl1n}{mg1_txt} {r['tahun_mulai']} - {bl2n}{mg2_txt} {r['tahun_selesai']}."
+            )
+        prop_data["jadwal_kegiatan"] = " ".join(ringkasan)
     DUKUNG_ITEMS = [
         ("dukung_nib", "NIB"),
         ("dukung_sertifikat", "Sertifikat Kepemilikan Lahan Darat"),
@@ -4002,24 +4341,51 @@ def build_prop_data_from_manual_form(form, files):
     prop_data["aksesibilitas_lokasi"] = form.get("aksesibilitas_lokasi", "")
 
     koordinat = []
+    koordinat_header = ["Nomor Titik", "Longitude (X)", "Latitude (Y)"]
     koordinat_file_pesan = None
     koordinat_file = files.get("upload_koordinat")
     if koordinat_file and koordinat_file.filename:
         hasil_file, koordinat_file_pesan = parse_koordinat_file(koordinat_file)
         koordinat.extend(hasil_file)
-    for line in form.get("koordinat_manual", "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if "|" in line:
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) == 3 and any(parts):
-                koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
-        else:
-            parts = line.split()
-            if len(parts) == 2:
-                koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
+
+    koordinat_table_raw = form.get("koordinat_table_json", "").strip()
+    if koordinat_table_raw:
+        try:
+            koordinat_table = json.loads(koordinat_table_raw)
+        except Exception:
+            koordinat_table = None
+        if isinstance(koordinat_table, dict):
+            extra_cols = [c for c in (koordinat_table.get("columns") or []) if str(c).strip()]
+            koordinat_header = ["Nomor Titik", "Longitude (X)", "Latitude (Y)"] + extra_cols
+            # samakan panjang baris yang sudah ada dari file upload dengan kolom tambahan (isi kosong)
+            koordinat = [row + [""] * len(extra_cols) for row in koordinat]
+            for row in (koordinat_table.get("rows") or []):
+                if not isinstance(row, list):
+                    continue
+                row = [str(c).strip() for c in row]
+                x = row[0] if len(row) > 0 else ""
+                y = row[1] if len(row) > 1 else ""
+                extras = row[2:2 + len(extra_cols)]
+                extras += [""] * (len(extra_cols) - len(extras))
+                if not (x or y or any(extras)):
+                    continue
+                koordinat.append([str(len(koordinat) + 1), x, y] + extras)
+    else:
+        # fallback lama: textarea "Longitude Latitude" per baris (kompatibel dengan draft lama)
+        for line in form.get("koordinat_manual", "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "|" in line:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 3 and any(parts):
+                    koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
+            else:
+                parts = line.split()
+                if len(parts) == 2:
+                    koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
     prop_data["koordinat"] = koordinat
+    prop_data["koordinat_header"] = koordinat_header
     if koordinat_file_pesan:
         prop_data["_koordinat_file_pesan"] = koordinat_file_pesan
 

@@ -397,6 +397,56 @@ def get_image_bytes(images, tag, nth=0):
     return None
 
 
+def activities_from_jadwal_table(jadwal_table):
+    """Ubah data tabel jadwal terstruktur (list of dict berisi nama, tahun_mulai,
+    bulan_mulai, tahun_selesai, bulan_selesai -- masing2 dari input tabel form)
+    menjadi (activities, anchor_bulan_tahun, rincian) yang siap dipakai
+    build_gantt_table. 'anchor' otomatis diambil dari tanggal paling awal di
+    antara semua kegiatan, jadi mendukung rentang lebih dari 1 tahun tanpa
+    perlu field tanggal referensi terpisah. 'rincian' adalah list dict siap-pakai
+    untuk tabel rincian per-kegiatan (dengan info minggu kalau diisi)."""
+    if not jadwal_table:
+        return [], None, []
+
+    def abs_month(tahun, bulan):
+        return int(tahun) * 12 + int(bulan)
+
+    valid = []
+    for row in jadwal_table:
+        try:
+            am1 = abs_month(row["tahun_mulai"], row["bulan_mulai"])
+            am2 = abs_month(row["tahun_selesai"], row["bulan_selesai"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if am2 < am1:
+            am1, am2 = am2, am1
+        valid.append((row, am1, am2))
+    if not valid:
+        return [], None, []
+
+    anchor_abs = min(v[1] for v in valid)
+    anchor_year, anchor_month = divmod(anchor_abs - 1, 12)
+    anchor_month += 1
+
+    activities = []
+    rincian = []
+    for row, am1, am2 in valid:
+        mulai_rel = am1 - anchor_abs + 1
+        selesai_rel = am2 - anchor_abs + 1
+        nama = row.get("nama", "").strip() or "-"
+        activities.append((nama, mulai_rel, selesai_rel))
+
+        bl1_nama = BULAN_ID_SINGKAT[(int(row["bulan_mulai"]) - 1) % 12]
+        bl2_nama = BULAN_ID_SINGKAT[(int(row["bulan_selesai"]) - 1) % 12]
+        mg1 = row.get("minggu_mulai") or ""
+        mg2 = row.get("minggu_selesai") or ""
+        mulai_txt = f"{bl1_nama}" + (f" Mgu-{mg1}" if mg1 else "") + f" {row['tahun_mulai']}"
+        selesai_txt = f"{bl2_nama}" + (f" Mgu-{mg2}" if mg2 else "") + f" {row['tahun_selesai']}"
+        rincian.append([nama, mulai_txt, selesai_txt])
+
+    return activities, (anchor_month, anchor_year), rincian
+
+
 def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b = Builder()
 
@@ -522,17 +572,25 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         img_no += 1
 
     b.h3("3. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya")
-    activities = parse_jadwal_kegiatan(prop.get("jadwal_kegiatan", ""))
+    jadwal_table = prop.get("jadwal_table") or []
+    activities, anchor_bt, rincian = activities_from_jadwal_table(jadwal_table)
+    if not activities:
+        # kompatibel dengan draft lama yang masih pakai teks bebas "Nama : Bulan X - Bulan Y."
+        activities = parse_jadwal_kegiatan(prop.get("jadwal_kegiatan", ""))
+        anchor_bt = parse_tanggal_indonesia(prop.get("Tanggal Penyusunan", "")) or (
+            __import__("datetime").datetime.now().month, __import__("datetime").datetime.now().year
+        )
+        rincian = []
     bangunan_txt2 = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
     posisi_txt2 = f" yang berada di {instalasi_posisi.lower()}" if instalasi_posisi else ""
     if activities:
         b.p(f"Adapun kegiatan utama yang akan dilakukan ialah pembangunan dan pengembangan lokasi {jenis_kegiatan} "
             f"akan dilakukan sebagaimana ditampilkan pada Tabel 1. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
-        start_bt = parse_tanggal_indonesia(prop.get("Tanggal Penyusunan", "")) or (
-            __import__("datetime").datetime.now().month, __import__("datetime").datetime.now().year
-        )
-        build_gantt_table(b, activities, start_bt)
-        b.caption("Tabel 1. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya.")
+        if rincian:
+            b.data_table(["Nama Kegiatan", "Mulai", "Selesai"], rincian)
+            b.caption("Tabel 1. Rincian Waktu Pelaksanaan Kegiatan Utama dan Pendukungnya.")
+        build_gantt_table(b, activities, anchor_bt)
+        b.caption(("Tabel 2. " if rincian else "Tabel 1. ") + "Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya (Gantt Chart).")
     else:
         jadwal = prop.get("jadwal_kegiatan", "")
         if jadwal:
@@ -566,9 +624,10 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     b.h2("D. Peta Lokasi")
     koord = prop.get("koordinat") or []
+    koord_header = prop.get("koordinat_header") or ["Nomor Titik", "Longitude", "Latitude"]
     if koord:
         b.p("Peta lokasi/plotting batas-batas area yang dimohonkan PKKPRL ditunjukkan oleh titik koordinat berikut:")
-        b.data_table(["Nomor Titik", "Longitude", "Latitude"], koord)
+        b.data_table(koord_header, koord)
         b.caption("Tabel 1. Titik Koordinat Batas Area Permohonan PKKPRL.")
     else:
         b.p(NA)
