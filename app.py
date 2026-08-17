@@ -873,8 +873,8 @@ HEADER_HTML = """
     <a href="/asisten" class="nav-link">""" + ICONS["life-buoy"] + """ Bantuan</a>
     {% if session.user and (session.user.is_analis or session.user.is_admin) %}
     <a href="/analisis-proposal" class="nav-link">""" + ICONS["chart-bar"] + """ Analisis Proposal</a>
-    {% endif %}
     <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
+    {% endif %}
   </nav>
 
   {% if session.user %}
@@ -905,7 +905,7 @@ ASISTEN_CSS = """
 }
 .chat-head {
   background:linear-gradient(135deg,var(--deep) 0%, var(--sea) 45%, var(--tide) 100%);
-  color:#fff; padding:18px 20px 16px; position:relative; overflow:hidden;
+  color:#fff; padding:18px 96px 16px 20px; position:relative; overflow:hidden;
   display:flex; align-items:flex-start; gap:13px;
 }
 .chat-head::after { content:""; position:absolute; right:-40px; bottom:-60px; width:180px; height:180px;
@@ -914,10 +914,10 @@ ASISTEN_CSS = """
   display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(0,0,0,.18);
   position:relative; z-index:1; padding:5px; }
 .chat-logo-badge img { width:100%; height:100%; object-fit:contain; }
-.chat-head-navi { position:absolute; top:14px; right:16px; width:52px; height:52px; z-index:2;
+.chat-head-navi { position:absolute; top:10px; right:14px; width:78px; height:78px; z-index:2;
   filter:drop-shadow(0 6px 14px rgba(0,0,0,.3)); }
 .chat-head-navi img { width:100%; height:100%; object-fit:contain; display:block; }
-@media (max-width: 480px) { .chat-head-navi { width:40px; height:40px; top:12px; right:12px; } }
+@media (max-width: 480px) { .chat-head-navi { width:60px; height:60px; top:10px; right:10px; } .chat-head { padding-right:76px; } }
 .chat-head-text { position:relative; z-index:1; flex:1; min-width:0; }
 .chat-eyebrow { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; opacity:.78; font-weight:700; }
 .chat-head h2 { margin:3px 0 3px; font-size:18px; font-weight:800; letter-spacing:-.01em; }
@@ -1898,8 +1898,8 @@ def render_riwayat_saya_page():
         table_html = '<div class="history-empty">Belum ada riwayat isian form yang tersimpan. Riwayat akan muncul di sini setiap kali Anda mengisi form manual, dan otomatis terhapus sendiri setelah ' + str(DRAFT_MAX_AGE_DAYS) + ' hari.</div>'
 
     admin_link = ""
-    if user.get("is_admin"):
-        admin_link = '<p style="margin-top:10px;"><a href="/admin/riwayat" class="ex-fill" style="text-decoration:none;display:inline-block;">' + ICONS["chart-bar"] + " Lihat Riwayat Semua Petugas (Admin)</a></p>"
+    if user.get("is_admin") or user.get("is_analis"):
+        admin_link = '<p style="margin-top:10px;"><a href="/admin/riwayat" class="ex-fill" style="text-decoration:none;display:inline-block;">' + ICONS["chart-bar"] + " Lihat Riwayat Semua Petugas</a></p>"
 
     body = """
 <div class="review-wrap">
@@ -2044,7 +2044,6 @@ def render_analisis_proposal_page(error=None):
   <p>Unggah Proposal Teknis PKKPRL yang sudah jadi untuk diperiksa otomatis -- sistem akan membandingkan data yang
   disebutkan di dalamnya dengan Laporan Kondisi Eksisting/Hidro-Oseanografi sebagai sumber data pembanding, lalu
   memberi rekomendasi perbaikan.</p>
-  <p style="margin-top:6px;"><a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a></p>
 </section>
 
 <div class="main-wrap">
@@ -2095,6 +2094,7 @@ def render_analisis_proposal_page(error=None):
       </div>
     </div>
   </form>
+  <p style="margin-top:16px;text-align:center;"><a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13.5px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a></p>
 </div>
 
 <script>
@@ -2250,6 +2250,7 @@ def render_history_page():
     user = session.get("user")
     logged_in = bool(user)
     is_admin = bool(user and user.get("is_admin"))
+    is_analis = bool(user and (user.get("is_analis") or user.get("is_admin")))
 
     if not logged_in:
         body = """
@@ -2260,12 +2261,12 @@ def render_history_page():
     <a href="/login-pegawai" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
   </div>
 </div>"""
-    elif not is_admin:
+    elif not is_analis:
         body = """
 <div class="review-wrap">
   <div class="review-card history-login-gate">
     <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
-    <p>Halaman ini hanya bisa diakses oleh akun admin. Hubungi admin BPRL kalau Anda perlu melihat riwayat ini.</p>
+    <p>Halaman ini hanya bisa diakses oleh petugas yang ditunjuk untuk Analisis atau akun admin. Hubungi admin BPRL kalau Anda perlu melihat riwayat ini.</p>
   </div>
 </div>"""
     else:
@@ -3578,7 +3579,7 @@ def _require_analis():
 
 @app.route("/admin/riwayat")
 def admin_riwayat_list():
-    denied = _require_admin()
+    denied = _require_analis()
     if denied:
         return denied
     return render_template_string(render_admin_riwayat_list_page())
@@ -3586,7 +3587,7 @@ def admin_riwayat_list():
 
 @app.route("/admin/riwayat/<kode>")
 def admin_riwayat_staff(kode):
-    denied = _require_admin()
+    denied = _require_analis()
     if denied:
         return denied
     return render_template_string(render_admin_riwayat_staff_page(kode))
@@ -3594,7 +3595,7 @@ def admin_riwayat_staff(kode):
 
 @app.route("/admin/riwayat/<kode>/lanjutkan/<job_id>")
 def admin_riwayat_lanjutkan(kode, job_id):
-    denied = _require_admin()
+    denied = _require_analis()
     if denied:
         return denied
     draft = load_draft(kode, job_id)
