@@ -155,7 +155,7 @@ berisi `ANTHROPIC_API_KEY` yang otomatis terbaca saat menjalankan
 ## 6. Fitur Baru: Asisten Tanya-Jawab KKPRL (`/asisten`)
 
 Selain fitur generate dokumen, aplikasi ini kini punya halaman **Asisten
-e-GeRAI — Tanya KKPRL** yang bisa diakses lewat menu **Bantuan** di
+e-GerAI — Tanya KKPRL** yang bisa diakses lewat menu **Bantuan** di
 navbar, atau langsung ke `/asisten`.
 
 - Halaman ini **publik** (tidak perlu login staf) — dirancang untuk
