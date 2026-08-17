@@ -55,6 +55,20 @@ def klasifikasi_karang(persen_str):
     return ""
 
 
+def _ada_data_numerik(v):
+    """True kalau v adalah nilai numerik nyata (bukan placeholder NA, bukan
+    kosong, dan bukan nol) -- dipakai untuk cek apakah data luas/persentase
+    ekosistem dari Laporan Hidro-Oseanografi benar-benar terdeteksi, supaya
+    narasi tidak salah mengklaim "hasil survei menunjukkan dijumpainya..."
+    padahal datanya sendiri tidak ada/nol."""
+    if not v or v == NA:
+        return False
+    try:
+        return float(str(v).replace(",", ".").replace("%", "").replace("Ha", "").strip()) != 0
+    except (TypeError, ValueError):
+        return False
+
+
 def shade_cell(cell, color_hex):
     tcPr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement("w:shd")
@@ -867,7 +881,10 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.image(mgv_img, width_cm=11)
     else:
         b.image_missing("foto_mangrove")
-    b.caption(f"Gambar {img_no}. Kondisi Tutupan Vegetasi Mangrove di Sekitar Lokasi Kegiatan.")
+    if mangrove_ada == "Tidak terdapat ekosistem mangrove":
+        b.caption(f"Gambar {img_no}. Kondisi Ekosistem Pesisir di Sekitar Lokasi Kegiatan.")
+    else:
+        b.caption(f"Gambar {img_no}. Kondisi Tutupan Vegetasi Mangrove di Sekitar Lokasi Kegiatan.")
     img_no += 1
 
     b.h3("2. Lamun")
@@ -908,25 +925,30 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     terbuka_ha = g(lap, "eko_terbuka_ha")
     terbuka_pct = g(lap, "eko_terbuka_pct")
     total_ha = g(lap, "eko_total_ha")
-    b.p(f"Hasil survei in-situ pada perairan di sekitar lokasi menunjukkan dijumpainya koloni terumbu karang "
-        f"pada beberapa titik substrat berbatu. Berdasarkan analisis spasial basis data ekosistem, dari total "
-        f"area kajian seluas {total_ha} Ha, tutupan terumbu karang tercatat seluas {karang_ha} Ha ({karang_pct}%), "
-        f"diikuti substrat dasar non-terumbu seluas {lainnya_ha} Ha ({lainnya_pct}%), dan area laut terbuka "
-        f"tanpa ekosistem seluas {terbuka_ha} Ha ({terbuka_pct}%).")
-    kondisi_karang_lap = klasifikasi_karang(karang_pct)
-    if kondisi_karang_lap:
-        b.p(f"Berdasarkan kriteria baku kerusakan terumbu karang, persentase tutupan sebesar {karang_pct}% "
-            f"tersebut tergolong pada kategori kondisi \u201c{kondisi_karang_lap}\u201d.")
-    b.data_table(
-        ["Jenis Tutupan", "Luas (Ha)", "Persentase (%)"],
-        [
-            ["Terumbu Karang", karang_ha, karang_pct],
-            ["Lainnya (substrat dasar non-terumbu)", lainnya_ha, lainnya_pct],
-            ["Area Laut Terbuka (tanpa ekosistem)", terbuka_ha, terbuka_pct],
-            ["Total Area Kajian", total_ha, "100,0"],
-        ],
-    )
-    b.caption("Tabel 2. Rincian Tutupan Ekosistem pada Area Kajian Spasial di Sekitar Titik Pusat Rencana Kegiatan.")
+    karang_terdeteksi = _ada_data_numerik(karang_ha) or _ada_data_numerik(karang_pct)
+    if karang_terdeteksi:
+        b.p(f"Hasil survei in-situ pada perairan di sekitar lokasi menunjukkan dijumpainya koloni terumbu karang "
+            f"pada beberapa titik substrat berbatu. Berdasarkan analisis spasial basis data ekosistem, dari total "
+            f"area kajian seluas {total_ha} Ha, tutupan terumbu karang tercatat seluas {karang_ha} Ha ({karang_pct}%), "
+            f"diikuti substrat dasar non-terumbu seluas {lainnya_ha} Ha ({lainnya_pct}%), dan area laut terbuka "
+            f"tanpa ekosistem seluas {terbuka_ha} Ha ({terbuka_pct}%).")
+        kondisi_karang_lap = klasifikasi_karang(karang_pct)
+        if kondisi_karang_lap:
+            b.p(f"Berdasarkan kriteria baku kerusakan terumbu karang, persentase tutupan sebesar {karang_pct}% "
+                f"tersebut tergolong pada kategori kondisi \u201c{kondisi_karang_lap}\u201d.")
+        b.data_table(
+            ["Jenis Tutupan", "Luas (Ha)", "Persentase (%)"],
+            [
+                ["Terumbu Karang", karang_ha, karang_pct],
+                ["Lainnya (substrat dasar non-terumbu)", lainnya_ha, lainnya_pct],
+                ["Area Laut Terbuka (tanpa ekosistem)", terbuka_ha, terbuka_pct],
+                ["Total Area Kajian", total_ha, "100,0"],
+            ],
+        )
+        b.caption("Tabel 2. Rincian Tutupan Ekosistem pada Area Kajian Spasial di Sekitar Titik Pusat Rencana Kegiatan.")
+    else:
+        b.p("Berdasarkan data sekunder perairan di sekitar lokasi kegiatan, tidak teridentifikasi keberadaan "
+            "ekosistem terumbu karang pada area yang dimohonkan.")
 
     karang_ada_manual = prop.get("karang_ada", "")
     if karang_ada_manual == "Terdapat ekosistem terumbu karang":
