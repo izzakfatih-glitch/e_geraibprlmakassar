@@ -2497,7 +2497,7 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
     <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
-      <a href="https://huggingface.co/spaces/Fadly2002/Gerai-Pelayanan-BPRL" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
+      <a href="https://fadly2002-gerai-pelayanan-bprl.hf.space/" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
       unduh hasilnya (PDF atau Word), lalu unggah di bawah ini. Belum sempat siap? Boleh dikosongkan dulu &mdash; pakai tombol <b>"Unduh Draft"</b> di bawah untuk mengunduh draft Proposal saja terlebih dulu, lengkapi Laporannya nanti.</div>
       <div class="dropzone" id="dzManual">
         """ + ICONS["cloud"] + """
@@ -2773,8 +2773,8 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx,.png,.jpg,.jpeg">
           </div>
           <div class="field-row">
-            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris/kolom sesuai kebutuhan</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis. Klik "+ Tambah Kolom" untuk menambah kolom selain Longitude/Latitude/Keterangan (mis. Kedalaman, Jenis Titik, dsb) -- kolom tambahan otomatis ikut tampil di dokumen.</div>
+            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris sesuai kebutuhan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis.</div>
             <div class="jt-table-wrap">
               <table class="jt-table" id="koordTable">
                 <thead><tr id="koordTableHeadRow">
@@ -2789,10 +2789,6 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
             </div>
             <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               <button type="button" class="tbl-btn" id="koordAddRow">+ Tambah Baris</button>
-              <span style="display:inline-flex;gap:6px;align-items:center;">
-                <input type="text" id="koordNewColName" placeholder="Nama kolom baru" style="width:160px;padding:6px 8px;font-size:12.5px;border:1px solid #cfd9e6;border-radius:8px;">
-                <button type="button" class="tbl-btn" id="koordAddCol">+ Tambah Kolom</button>
-              </span>
               <button type="button" class="tbl-btn" id="koordUseExample">Pakai contoh ini</button>
             </div>
             <input type="hidden" name="koordinat_table_json" id="koordinat_table_json">
@@ -3232,19 +3228,10 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
 
 // ====================== Tabel Titik Koordinat Batas Area ======================
 (function() {
-  var extraCols = ['Keterangan'];          // kolom tambahan selain No/Longitude/Latitude
-  var rows = [];                           // tiap row: [longitude, latitude, ...extra]
+  var rows = [];   // tiap row: [longitude, latitude, keterangan]
 
-  var theadRow = document.getElementById('koordTableHeadRow');
   var tbody = document.getElementById('koordTableBody');
   var hidden = document.getElementById('koordinat_table_json');
-
-  function renderHead() {
-    var html = '<th style="width:30px;">No</th><th>Longitude (X)</th><th>Latitude (Y)</th>';
-    extraCols.forEach(function(c) { html += '<th>' + c.replace(/</g, '&lt;') + '</th>'; });
-    html += '<th style="width:36px;"></th>';
-    theadRow.innerHTML = html;
-  }
 
   function renderBody() {
     tbody.innerHTML = '';
@@ -3255,12 +3242,12 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
       tdNo.textContent = idx + 1;
       tr.appendChild(tdNo);
 
-      for (var c = 0; c < 2 + extraCols.length; c++) {
+      for (var c = 0; c < 3; c++) {
         var td = document.createElement('td');
         var inp = document.createElement('input');
         inp.type = 'text';
         inp.value = row[c] || '';
-        inp.placeholder = c === 0 ? '122.650194' : (c === 1 ? '-3.934945' : '');
+        inp.placeholder = c === 0 ? '122.650194' : (c === 1 ? '-3.934945' : 'mis. Dermaga, Intake, Outlet, KJA');
         (function(rIdx, cIdx) {
           inp.addEventListener('input', function() { rows[rIdx][cIdx] = inp.value; });
           inp.addEventListener('paste', function(e) {
@@ -3270,8 +3257,8 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
             var grid = text.trim().split('\\n').map(function(line) { return line.split('\\t').length > 1 ? line.split('\\t') : line.trim().split(/\\s+/); });
             grid.forEach(function(gridRow, gi) {
               var targetIdx = rIdx + gi;
-              while (rows.length <= targetIdx) rows.push(['', '', ...extraCols.map(function() { return ''; })]);
-              for (var gc = 0; gc < gridRow.length && (cIdx + gc) < (2 + extraCols.length); gc++) {
+              while (rows.length <= targetIdx) rows.push(['', '', '']);
+              for (var gc = 0; gc < gridRow.length && (cIdx + gc) < 3; gc++) {
                 rows[targetIdx][cIdx + gc] = gridRow[gc].trim();
               }
             });
@@ -3286,7 +3273,7 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
       var btnDel = document.createElement('button');
       btnDel.type = 'button';
       btnDel.className = 'tbl-btn tbl-btn-danger';
-      btnDel.textContent = '\\u2715';
+      btnDel.textContent = '\u2715';
       btnDel.addEventListener('click', function() { rows.splice(idx, 1); renderBody(); });
       tdDel.appendChild(btnDel);
       tr.appendChild(tdDel);
@@ -3296,53 +3283,34 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   }
 
   function addRow(values) {
-    var row = values || [];
-    while (row.length < 2 + extraCols.length) row.push('');
+    var row = values || ['', '', ''];
+    while (row.length < 3) row.push('');
     rows.push(row);
     renderBody();
   }
 
-  function addColumn(name) {
-    name = (name || '').trim();
-    if (!name) return;
-    extraCols.push(name);
-    rows.forEach(function(row) { row.push(''); });
-    renderHead();
-    renderBody();
-  }
-
   window.koordTableSetData = function(header, dataRows) {
-    // header: ["Nomor Titik","Longitude (X)","Latitude (Y)", ...extra]; dataRows: [[no,lon,lat,...extra],...]
-    extraCols = (header || []).slice(3);
-    rows = (dataRows || []).map(function(r) { return r.slice(1); });
-    renderHead();
+    // header: ["Nomor Titik","Longitude (X)","Latitude (Y)","Keterangan", ...]; dataRows: [[no,lon,lat,ket,...],...]
+    rows = (dataRows || []).map(function(r) { return [r[1] || '', r[2] || '', r[3] || '']; });
     renderBody();
   };
 
   document.getElementById('koordAddRow').addEventListener('click', function() { addRow(); });
-  document.getElementById('koordAddCol').addEventListener('click', function() {
-    var input = document.getElementById('koordNewColName');
-    addColumn(input.value);
-    input.value = '';
-  });
   document.getElementById('koordUseExample').addEventListener('click', function() {
-    extraCols = ['Keterangan'];
     rows = [
-      ['122.650194', '-3.934945', 'Titik 1'],
-      ['122.649197', '-3.935361', 'Titik 2'],
-      ['122.649261', '-3.935530', 'Titik 3'],
-      ['122.650258', '-3.935114', 'Titik 4'],
+      ['122.650194', '-3.934945', 'Dermaga'],
+      ['122.649197', '-3.935361', 'Intake'],
+      ['122.649261', '-3.935530', 'Outlet'],
+      ['122.650258', '-3.935114', 'Rumpon'],
     ];
-    renderHead();
     renderBody();
   });
 
   window.koordTableSync = function() {
     var cleanRows = rows.filter(function(r) { return r.some(function(v) { return (v || '').toString().trim(); }); });
-    hidden.value = JSON.stringify({ columns: extraCols, rows: cleanRows });
+    hidden.value = JSON.stringify({ columns: ['Keterangan'], rows: cleanRows });
   };
 
-  renderHead();
   addRow(); addRow(); addRow(); addRow();
 })();
 

@@ -181,11 +181,19 @@ CAPTION_PATTERNS_PROPOSAL = [
 ]
 
 CAPTION_PATTERNS_LAPORAN = [
-    (r"mawar\s*gelombang|\bgelombang\b", "mawar_gelombang"),
-    (r"mawar\s*arus|\barus\b", "mawar_arus"),
-    (r"pasang\s*surut|\bpasut\b", "siklus_pasut"),
-    (r"batimetri", "profil_batimetri"),
-    (r"ekosistem", "peta_ekosistem"),
+    # Pola spesifik (2+ kata / frasa khas) dicek DULU supaya caption yang
+    # kebetulan menyebut lebih dari satu istilah domain (mis. "...Ekosistem
+    # Pesisir yang berpotensi terdampak Gelombang...") tetap tertandai sesuai
+    # topik UTAMA captionnya, bukan kata pertama yang match.
+    (r"mawar\s*gelombang", "mawar_gelombang"),
+    (r"mawar\s*arus", "mawar_arus"),
+    (r"(fluktuasi\s*)?pasang\s*surut|siklus\s*pasut", "siklus_pasut"),
+    (r"(kontur\s*)?batimetri", "profil_batimetri"),
+    (r"(peta\s*)?sebaran\s*(spasial\s*)?ekosistem|peta\s*ekosistem", "peta_ekosistem"),
+    # Fallback kata tunggal generik -- dicek PALING TERAKHIR.
+    (r"\bgelombang\b", "mawar_gelombang"),
+    (r"\barus\b", "mawar_arus"),
+    (r"\bpasut\b", "siklus_pasut"),
 ]
 
 
@@ -608,15 +616,50 @@ def extract_laporan(pdf_path):
 
     # ---------------- IMAGES (deteksi berdasar heading per-halaman, dengan
     # fallback ke urutan tetap untuk tag yang belum kepakai) ----------------
+    # PENTING: heading dicatat berikut POSISI-nya (halaman + koordinat y),
+    # bukan cuma "heading terakhir yang terlihat di teks satu halaman penuh".
+    # Kalau tidak begitu, halaman yang memuat lebih dari satu heading (mis.
+    # akhir section "Ekosistem" menyambung ke awal section "Gelombang" di
+    # halaman yang sama) bisa membuat SEMUA gambar di halaman itu -- termasuk
+    # peta ekosistem yang posisinya masih di atas heading "Gelombang" --
+    # ikut tertandai sebagai gambar gelombang. Dengan posisi y, tiap gambar
+    # dicocokkan ke heading TERDEKAT YANG BENAR-BENAR MENDAHULUINYA secara
+    # vertikal di halaman yang sama, bukan heading manapun yang kebetulan
+    # ada di halaman itu.
+    heading_positions = []  # list of (page_num, y0, tag), terurut sesuai urutan baca
+    for pnum in range(len(doc)):
+        page = doc[pnum]
+        try:
+            blocks = page.get_text("blocks")
+        except Exception:
+            blocks = []
+        for b in blocks:
+            y0, text = b[1], (b[4] or "").strip()
+            if not text:
+                continue
+            text_norm = norm(text)
+            for pattern, tag in LAPORAN_HEADINGS:
+                if re.search(pattern, text_norm, re.IGNORECASE):
+                    heading_positions.append((pnum, y0, tag))
+                    break
+
+    def tag_before(pnum, y0):
+        """Tag dari heading terakhir yang posisinya sebelum (pnum, y0) dalam
+        urutan baca dokumen (halaman lebih kecil, atau halaman sama dengan y
+        lebih kecil)."""
+        best = None
+        for hp_pnum, hp_y0, hp_tag in heading_positions:
+            if hp_pnum < pnum or (hp_pnum == pnum and hp_y0 <= y0):
+                best = hp_tag
+            elif hp_pnum > pnum:
+                break
+        return best
+
     seen_hash = set()
     images = []
     used_tags = set()
-    current_tag = None
     for pnum in range(len(doc)):
         page = doc[pnum]
-        page_text_norm = norm(page.get_text())
-        current_tag = _detect_laporan_tag(page_text_norm, current_tag)
-
         imglist = page.get_images(full=True)
         for i, img in enumerate(imglist):
             xref = img[0]
@@ -636,10 +679,15 @@ def extract_laporan(pdf_path):
             caption = _page_caption_for_image(page, img_rect)
             caption_tag = _tag_from_caption(caption, CAPTION_PATTERNS_LAPORAN)
 
+            # 2) fallback: heading section terdekat yang mendahului gambar
+            #    ini secara posisi (bukan cuma "terakhir terlihat di halaman").
+            img_y0 = img_rect.y0 if img_rect is not None else 0
+            position_tag = tag_before(pnum, img_y0)
+
             if caption_tag and caption_tag not in used_tags:
                 tag = caption_tag
-            elif current_tag and current_tag not in used_tags:
-                tag = current_tag
+            elif position_tag and position_tag not in used_tags:
+                tag = position_tag
             else:
                 tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
             used_tags.add(tag)

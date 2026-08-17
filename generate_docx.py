@@ -63,6 +63,22 @@ def shade_cell(cell, color_hex):
     tcPr.append(shd)
 
 
+def flatten_ws(text):
+    """Ratakan teks bebas dari form/textarea (yang mungkin berisi baris baru
+    karena pengguna menekan Enter antar kalimat/poin) menjadi satu paragraf
+    mengalir dengan spasi tunggal. PENTING untuk paragraf JUSTIFY: kalau baris
+    baru mentah dibiarkan, python-docx mengubahnya jadi <w:br/> (line break)
+    DI DALAM paragraf yang sama, sehingga Word men-stretch tiap baris pendek
+    itu supaya rata kanan-kiri -- hasilnya spasi antar-kata jadi sangat lebar
+    dan tidak rapi. Menyatukan jadi satu alur teks membuat Word membungkus
+    baris secara alami berdasar lebar halaman, dan hanya baris TERAKHIR
+    paragraf (yang secara default tidak di-stretch) yang rata kiri biasa.
+    """
+    if not text:
+        return text
+    return re.sub(r"\s+", " ", str(text)).strip()
+
+
 def set_font(run, size=11, bold=False, italic=False, color=None):
     run.font.name = FONT
     run.font.size = Pt(size)
@@ -209,6 +225,101 @@ def build_gantt_table(builder, activities, start_bulan_tahun):
     return table
 
 
+def build_gantt_table_weekly(builder, activities_minggu, start_bulan_tahun, max_bulan):
+    """Versi tabel Gantt dengan presisi minggu (4 sub-kolom per bulan), dipakai
+    otomatis kalau kolom Minggu Mulai/Selesai diisi di form -- supaya pewarnaan
+    mengikuti persis minggu yang diisi, bukan cuma satu bulan penuh. Tampilan
+    tetap mengikuti format resmi (baris tahun, baris bulan), hanya ditambah
+    satu baris nomor minggu (1-4) dan kolom lebih sempit per minggu."""
+    max_minggu = max_bulan * 4
+    start_month, start_year = start_bulan_tahun
+
+    kalender = []
+    m, y = start_month, start_year
+    for _ in range(max_bulan):
+        kalender.append((BULAN_ID_SINGKAT[m - 1], y))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+
+    doc = builder.doc
+    ncols = 1 + max_minggu
+    table = doc.add_table(rows=0, cols=ncols)
+    table.style = "Table Grid"
+
+    # Baris 1: label tahun (merge per kelompok bulan x4 minggu dalam tahun yang sama)
+    row_year = table.add_row()
+    shade_cell(row_year.cells[0], "1F4E79")
+    row_year.cells[0].text = ""
+    i = 0
+    while i < max_bulan:
+        y = kalender[i][1]
+        j = i
+        while j < max_bulan and kalender[j][1] == y:
+            j += 1
+        start_cell = row_year.cells[1 + i * 4]
+        end_cell = row_year.cells[1 + j * 4 - 1]
+        merged = start_cell.merge(end_cell) if end_cell != start_cell else start_cell
+        shade_cell(merged, "1F4E79")
+        p = merged.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(str(y))
+        set_font(r, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+        i = j
+
+    # Baris 2: nama bulan (merge tiap 4 kolom minggu)
+    row_bulan = table.add_row()
+    shade_cell(row_bulan.cells[0], "1F4E79")
+    for i, (nama_bulan, _) in enumerate(kalender):
+        start_cell = row_bulan.cells[1 + i * 4]
+        end_cell = row_bulan.cells[1 + i * 4 + 3]
+        merged = start_cell.merge(end_cell)
+        shade_cell(merged, "1F4E79")
+        p = merged.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(nama_bulan)
+        set_font(r, size=9, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+    # Baris 3: header "Kegiatan" + nomor minggu 1-4 berulang tiap bulan
+    row_minggu = table.add_row()
+    shade_cell(row_minggu.cells[0], "1F4E79")
+    p0 = row_minggu.cells[0].paragraphs[0]
+    r0 = p0.add_run("Kegiatan")
+    set_font(r0, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    for i in range(max_minggu):
+        cell = row_minggu.cells[1 + i]
+        shade_cell(cell, "2E5E96")
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(str((i % 4) + 1))
+        set_font(r, size=8, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+    # Baris kegiatan
+    for nama, mulai, selesai in activities_minggu:
+        row = table.add_row()
+        cell0 = row.cells[0]
+        p0 = cell0.paragraphs[0]
+        r0 = p0.add_run(nama)
+        set_font(r0, size=9.5, bold=True)
+        for i in range(max_minggu):
+            minggu_ke = i + 1
+            cell = row.cells[1 + i]
+            cell.text = ""
+            if mulai <= minggu_ke <= selesai:
+                shade_cell(cell, "1F4E79")
+
+    table.columns[0].width = Cm(3.6)
+    for i in range(max_minggu):
+        table.columns[1 + i].width = Cm(0.42)
+    for row in table.rows:
+        row.cells[0].width = Cm(3.6)
+        for i in range(max_minggu):
+            row.cells[1 + i].width = Cm(0.42)
+
+    return table
+
+
 class Builder:
     def __init__(self):
         self.doc = Document()
@@ -251,7 +362,7 @@ class Builder:
         para.paragraph_format.line_spacing = 1.25
         if justify:
             para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        r = para.add_run(text)
+        r = para.add_run(flatten_ws(text))
         set_font(r, size=11, italic=italic)
         return para
 
@@ -262,7 +373,7 @@ class Builder:
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         r1 = para.add_run(label + ": ")
         set_font(r1, size=11, bold=True)
-        r2 = para.add_run(text)
+        r2 = para.add_run(flatten_ws(text))
         set_font(r2, size=11)
         return para
 
@@ -381,7 +492,7 @@ class Builder:
                 para = cell.paragraphs[0]
                 if i > 0:
                     para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                r = para.add_run(str(val))
+                r = para.add_run(flatten_ws(str(val)))
                 set_font(r, size=10.5)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         return table
@@ -399,14 +510,25 @@ def get_image_bytes(images, tag, nth=0):
 
 def activities_from_jadwal_table(jadwal_table):
     """Ubah data tabel jadwal terstruktur (list of dict berisi nama, tahun_mulai,
-    bulan_mulai, tahun_selesai, bulan_selesai -- masing2 dari input tabel form)
-    menjadi (activities, anchor_bulan_tahun, rincian) yang siap dipakai
-    build_gantt_table. 'anchor' otomatis diambil dari tanggal paling awal di
-    antara semua kegiatan, jadi mendukung rentang lebih dari 1 tahun tanpa
-    perlu field tanggal referensi terpisah. 'rincian' adalah list dict siap-pakai
-    untuk tabel rincian per-kegiatan (dengan info minggu kalau diisi)."""
+    bulan_mulai, tahun_selesai, bulan_selesai, dan minggu_mulai/minggu_selesai
+    opsional -- masing2 dari input tabel form) menjadi data siap pakai untuk
+    build_gantt_table / build_gantt_table_weekly. 'anchor' otomatis diambil dari
+    tanggal paling awal di antara semua kegiatan, jadi mendukung rentang lebih
+    dari 1 tahun tanpa perlu field tanggal referensi terpisah.
+
+    Mengembalikan tuple:
+    (activities_bulan, activities_minggu, anchor_bulan_tahun, rincian, ada_detail_minggu)
+    - activities_bulan: list (nama, bulan_mulai_rel, bulan_selesai_rel) -- presisi bulan,
+      dipakai kalau TIDAK ada satupun kegiatan yang diisi kolom Minggu.
+    - activities_minggu: list (nama, minggu_mulai_rel, minggu_selesai_rel) -- presisi
+      minggu (1 bulan = 4 minggu relatif terhadap anchor), dipakai kalau ADA kegiatan
+      yang diisi kolom Minggu, supaya pewarnaan Gantt chart mengikuti persis apa yang
+      diisi di form (minggu tertentu, bukan satu bulan penuh).
+    - rincian: list [nama, teks_mulai, teks_selesai] siap tampil sebagai tabel rincian.
+    - ada_detail_minggu: True kalau minimal satu kegiatan mengisi Minggu Mulai/Selesai.
+    """
     if not jadwal_table:
-        return [], None, []
+        return [], [], None, [], False
 
     def abs_month(tahun, bulan):
         return int(tahun) * 12 + int(bulan)
@@ -422,29 +544,46 @@ def activities_from_jadwal_table(jadwal_table):
             am1, am2 = am2, am1
         valid.append((row, am1, am2))
     if not valid:
-        return [], None, []
+        return [], [], None, [], False
 
     anchor_abs = min(v[1] for v in valid)
     anchor_year, anchor_month = divmod(anchor_abs - 1, 12)
     anchor_month += 1
 
-    activities = []
+    def minggu_int(v, default):
+        try:
+            n = int(v)
+            return n if 1 <= n <= 4 else default
+        except (TypeError, ValueError):
+            return default
+
+    ada_detail_minggu = any((row.get("minggu_mulai") or row.get("minggu_selesai")) for row, _, _ in valid)
+
+    activities_bulan = []
+    activities_minggu = []
     rincian = []
     for row, am1, am2 in valid:
         mulai_rel = am1 - anchor_abs + 1
         selesai_rel = am2 - anchor_abs + 1
         nama = row.get("nama", "").strip() or "-"
-        activities.append((nama, mulai_rel, selesai_rel))
+        activities_bulan.append((nama, mulai_rel, selesai_rel))
+
+        mg1 = minggu_int(row.get("minggu_mulai"), 1)
+        mg2 = minggu_int(row.get("minggu_selesai"), 4)
+        mulai_minggu_rel = (mulai_rel - 1) * 4 + mg1
+        selesai_minggu_rel = (selesai_rel - 1) * 4 + mg2
+        activities_minggu.append((nama, mulai_minggu_rel, selesai_minggu_rel))
 
         bl1_nama = BULAN_ID_SINGKAT[(int(row["bulan_mulai"]) - 1) % 12]
         bl2_nama = BULAN_ID_SINGKAT[(int(row["bulan_selesai"]) - 1) % 12]
-        mg1 = row.get("minggu_mulai") or ""
-        mg2 = row.get("minggu_selesai") or ""
-        mulai_txt = f"{bl1_nama}" + (f" Mgu-{mg1}" if mg1 else "") + f" {row['tahun_mulai']}"
-        selesai_txt = f"{bl2_nama}" + (f" Mgu-{mg2}" if mg2 else "") + f" {row['tahun_selesai']}"
+        mg1_txt = row.get("minggu_mulai") or ""
+        mg2_txt = row.get("minggu_selesai") or ""
+        mulai_txt = f"{bl1_nama}" + (f" Mgu-{mg1_txt}" if mg1_txt else "") + f" {row['tahun_mulai']}"
+        selesai_txt = f"{bl2_nama}" + (f" Mgu-{mg2_txt}" if mg2_txt else "") + f" {row['tahun_selesai']}"
         rincian.append([nama, mulai_txt, selesai_txt])
 
-    return activities, (anchor_month, anchor_year), rincian
+    return activities_bulan, activities_minggu, (anchor_month, anchor_year), rincian, ada_detail_minggu
+
 
 
 def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
@@ -573,7 +712,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     b.h3("3. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya")
     jadwal_table = prop.get("jadwal_table") or []
-    activities, anchor_bt, rincian = activities_from_jadwal_table(jadwal_table)
+    activities, activities_mgu, anchor_bt, rincian, ada_minggu = activities_from_jadwal_table(jadwal_table)
     if not activities:
         # kompatibel dengan draft lama yang masih pakai teks bebas "Nama : Bulan X - Bulan Y."
         activities = parse_jadwal_kegiatan(prop.get("jadwal_kegiatan", ""))
@@ -581,6 +720,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             __import__("datetime").datetime.now().month, __import__("datetime").datetime.now().year
         )
         rincian = []
+        activities_mgu = []
+        ada_minggu = False
     bangunan_txt2 = instalasi_bangunan if instalasi_bangunan else "instalasi penunjang kegiatan"
     posisi_txt2 = f" yang berada di {instalasi_posisi.lower()}" if instalasi_posisi else ""
     if activities:
@@ -589,7 +730,11 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         if rincian:
             b.data_table(["Nama Kegiatan", "Mulai", "Selesai"], rincian)
             b.caption("Tabel 1. Rincian Waktu Pelaksanaan Kegiatan Utama dan Pendukungnya.")
-        build_gantt_table(b, activities, anchor_bt)
+        if ada_minggu:
+            max_bulan = max(a[2] for a in activities)
+            build_gantt_table_weekly(b, activities_mgu, anchor_bt, max_bulan)
+        else:
+            build_gantt_table(b, activities, anchor_bt)
         b.caption(("Tabel 2. " if rincian else "Tabel 1. ") + "Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya (Gantt Chart).")
     else:
         jadwal = prop.get("jadwal_kegiatan", "")
