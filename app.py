@@ -819,12 +819,15 @@ a { text-decoration:none; }
   color:#F2A83B; margin-bottom:5px; }
 .asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
 .asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
+.asisten-promo-navi { flex:none; width:54px; height:54px; position:relative; z-index:1; filter:drop-shadow(0 6px 14px rgba(0,0,0,.28)); }
+.asisten-promo-navi img { width:100%; height:100%; object-fit:contain; display:block; }
 .asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
   color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
   position:relative; z-index:1; box-shadow:0 6px 16px rgba(214,130,26,.35); transition:.15s; }
 .asisten-promo-card:hover .asisten-promo-cta { filter:brightness(1.06); }
 @media (max-width: 780px) {
   .asisten-promo-card { flex-direction:column; align-items:flex-start; text-align:left; padding:22px; }
+  .asisten-promo-navi { align-self:center; }
   .asisten-promo-cta { width:100%; justify-content:center; }
 }
 """
@@ -990,7 +993,7 @@ def render_asisten_page():
   <div class="chat-shell">
     <div class="chat-card">
       <div class="chat-head">
-        <div class="chat-logo-badge"><img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi - Logo e-GeRAI"></div>
+        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GeRAI"></div>
         <div class="chat-head-text">
           <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
           <h2>Halo e-GeRAI BPRL Makassar</h2>
@@ -1225,12 +1228,15 @@ UPLOAD_HTML = """<!DOCTYPE html>
 <div class="asisten-promo-wrap">
   <a href="/asisten" class="asisten-promo-card">
     <div class="asisten-promo-badge">
-      <img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi - Asisten e-GeRAI">
+      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GeRAI">
     </div>
     <div class="asisten-promo-text">
       <div class="asisten-promo-eyebrow">Asisten e-GeRAI &middot; Tanya Jawab Otomatis</div>
       <div class="asisten-promo-title">Punya pertanyaan seputar KKPRL? Tanya langsung ke asisten kami</div>
       <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
+    </div>
+    <div class="asisten-promo-navi">
+      <img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi">
     </div>
     <div class="asisten-promo-cta">
       <span>Tanya Sekarang</span>
