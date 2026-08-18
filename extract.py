@@ -188,13 +188,24 @@ CAPTION_PATTERNS_LAPORAN = [
     (r"mawar\s*gelombang", "mawar_gelombang"),
     (r"mawar\s*arus", "mawar_arus"),
     (r"(fluktuasi\s*)?pasang\s*surut|siklus\s*pasut", "siklus_pasut"),
-    (r"(kontur\s*)?batimetri", "profil_batimetri"),
-    (r"(peta\s*)?sebaran\s*(spasial\s*)?ekosistem|peta\s*ekosistem", "peta_ekosistem"),
-    # Fallback kata tunggal generik -- dicek PALING TERAKHIR.
+    (r"tutupan\s*ekosistem|analisis\s*spasial(\s*\w+){0,4}\s*ekosistem|(peta\s*)?sebaran\s*(spasial\s*)?ekosistem|peta\s*ekosistem", "peta_ekosistem"),
+    (r"profil\s*(garis\s*)?batimetri|kontur\s*(&|dan)?\s*layout|(kontur\s*)?batimetri", "profil_batimetri"),
+    # Fallback frasa/kata lebih umum -- dicek belakangan supaya tidak
+    # "mencuri" caption yang sebenarnya lebih cocok ke pola spesifik di atas.
+    (r"ekosistem\s*pesisir|\bekosistem\b", "peta_ekosistem"),
+    (r"layout\s*area", "profil_batimetri"),
     (r"\bgelombang\b", "mawar_gelombang"),
     (r"\barus\b", "mawar_arus"),
     (r"\bpasut\b", "siklus_pasut"),
 ]
+
+# Urutan prioritas TAG (bukan urutan pola) dipakai oleh resolve_laporan_tags
+# di bawah -- tiap tag "mengklaim" kandidat gambar dengan caption paling
+# spesifik lebih dulu, sebelum tag lain mengambil sisanya. Ini mencegah efek
+# domino: kalau satu caption gagal cocok, gambar itu TIDAK lagi "mencuri"
+# tag milik gambar lain di section berikutnya (bug lama) -- ia cukup jatuh
+# ke "lainnya".
+LAPORAN_TAG_PRIORITY = ["mawar_gelombang", "mawar_arus", "siklus_pasut", "peta_ekosistem", "profil_batimetri"]
 
 
 def _tag_from_caption(caption_text, patterns):
@@ -203,13 +214,26 @@ def _tag_from_caption(caption_text, patterns):
     bukan berdasar section/heading yang mungkin jauh sebelumnya di dokumen.
     Return None kalau tidak ada pola yang cocok, supaya pemanggil bisa
     memakai fallback lama."""
+    tag, _rank = _tag_from_caption_ranked(caption_text, patterns)
+    return tag
+
+
+def _tag_from_caption_ranked(caption_text, patterns):
+    """Sama seperti _tag_from_caption, tapi juga mengembalikan indeks pola
+    yang cocok (makin kecil = makin spesifik, karena 'patterns' disusun dari
+    yang paling spesifik ke paling umum). Dipakai resolve_laporan_tags untuk
+    memprioritaskan caption yang PALING SPESIFIK ketika lebih dari satu
+    gambar sama-sama menyinggung topik yang sama (mis. dua gambar sama-sama
+    soal ekosistem, tapi yang satu captionnya cuma \"Ekosistem Pesisir\"
+    (umum) sementara yang lain \"Analisis Spasial - Tutupan Ekosistem Area\"
+    (lebih spesifik/rinci) -- yang lebih spesifik itu yang harus dipakai)."""
     if not caption_text:
-        return None
+        return None, None
     text = norm(caption_text)
-    for pattern, tag in patterns:
+    for rank, (pattern, tag) in enumerate(patterns):
         if re.search(pattern, text, re.IGNORECASE):
-            return tag
-    return None
+            return tag, rank
+    return None, None
 
 
 def _page_caption_for_image(page, img_rect):
@@ -437,6 +461,84 @@ LAPORAN_HEADINGS = [
     (r"kontur\s*batimetri", "profil_batimetri"),
 ]
 
+# Heading section SEDERHANA bergaya "II. BATIMETRI", "III. GELOMBANG", dst
+# (tanpa embel-embel "mawar"/"peta") -- banyak dipakai di laporan versi Word.
+# HANYA dicocokkan ke baris PENDEK yang PERSIS berisi nama section itu saja
+# (pakai ^...$), supaya tidak salah tangkap kalimat pembuka/pendahuluan yang
+# menyebut banyak istilah sekaligus dalam satu kalimat panjang (mis. "...
+# kondisi batimetri, dinamika gelombang, pola arus, ... serta sebaran
+# ekosistem pesisir ..." -- kalimat seperti ini BUKAN heading, harus diabaikan).
+LAPORAN_SECTION_HEADING_PATTERNS = [
+    (r"^([ivx]+\.?\s*)?gelombang$", "mawar_gelombang"),
+    (r"^([ivx]+\.?\s*)?arus$", "mawar_arus"),
+    (r"^([ivx]+\.?\s*)?pasang\s*surut$", "siklus_pasut"),
+    (r"^([ivx]+\.?\s*)?ekosistem(\s*pesisir)?$", "peta_ekosistem"),
+    (r"^([ivx]+\.?\s*)?batimetri$", "profil_batimetri"),
+]
+LAPORAN_HEADING_MAX_LEN = 40  # baris lebih panjang dari ini dianggap kalimat/prosa, bukan heading
+
+
+def resolve_laporan_tags(candidates):
+    """Tentukan tag akhir tiap gambar Laporan Hidro-Oseanografi TANPA efek
+    domino/tabrakan. 'candidates' adalah list dict per-gambar (urut sesuai
+    posisi di dokumen), masing2 minimal berisi 'caption_norm' (teks caption
+    ternormalisasi di dekat gambar itu, boleh kosong) dan 'heading_tag'
+    (tag dari section/heading terdekat yang mendahului gambar itu secara
+    posisi, boleh None).
+
+    Cara lama menandai gambar SATU PER SATU secara berurutan: begitu satu
+    caption gagal cocok ke pola manapun, gambar itu langsung "mencomot" tag
+    berikutnya yang belum kepakai dari daftar urutan tetap -- ini memicu efek
+    domino, SEMUA gambar setelahnya ikut bergeser salah tag (persis kasus
+    nyata yang dilaporkan: grafik pasang surut tertandai sebagai peta
+    ekosistem, dst). Fungsi ini menghindarinya lewat dua tahap terpisah:
+    1) setiap TAG (sesuai prioritas) mengklaim kandidat gambar PERTAMA
+       (urutan dokumen) yang caption-nya memang cocok ke tag itu;
+    2) tag yang sampai tahap ini masih belum ada pengklaimnya, baru dicoba
+       diisi dari heading_tag gambar yang tersisa.
+    Gambar yang tetap tidak dapat tag setelah kedua tahap itu diberi
+    'lainnya' -- BUKAN tag section lain yang salah.
+    """
+    n = len(candidates)
+    result = [None] * n
+    claimed = set()
+
+    ranked = [
+        _tag_from_caption_ranked(c.get("caption_norm", ""), CAPTION_PATTERNS_LAPORAN) for c in candidates
+    ]
+    best_caption_tag = [r[0] for r in ranked]
+    specificity = [r[1] for r in ranked]
+
+    for tag in LAPORAN_TAG_PRIORITY:
+        # Di antara semua kandidat yang caption-nya cocok ke tag ini, pilih
+        # yang PALING SPESIFIK dulu (rank pola terkecil); kalau seri, yang
+        # muncul lebih dulu di dokumen menang -- BUKAN asal kandidat pertama
+        # yang ditemukan, supaya caption yang lebih rinci/akurat diutamakan
+        # dibanding caption umum yang kebetulan nongol lebih dulu.
+        best_i = None
+        for i in range(n):
+            if result[i] is not None or best_caption_tag[i] != tag:
+                continue
+            if best_i is None or specificity[i] < specificity[best_i]:
+                best_i = i
+        if best_i is not None:
+            result[best_i] = tag
+            claimed.add(tag)
+
+    for tag in LAPORAN_TAG_PRIORITY:
+        if tag in claimed:
+            continue
+        for i in range(n):
+            if result[i] is None and candidates[i].get("heading_tag") == tag:
+                result[i] = tag
+                claimed.add(tag)
+                break
+
+    for i in range(n):
+        if result[i] is None:
+            result[i] = "lainnya"
+    return result
+
 
 def _detect_laporan_tag(text_before, current_tag):
     """Cari heading yang paling terakhir muncul di teks sebelum gambar ini,
@@ -531,6 +633,13 @@ def extract_narasi_sections(full_text_raw):
     for idx, (line_i, tag) in enumerate(headings):
         next_line_i = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
         chunk_lines = lines[line_i + 1: next_line_i]
+        # Buang baris yang sebetulnya CAPTION gambar (mis. "Gambar: PETA
+        # VISUAL - Ekosistem Pesisir"), bukan bagian narasi -- kalau tidak
+        # disaring, label caption itu ikut "bocor" jadi teks di tengah
+        # paragraf narasi hasil generate (pernah kejadian nyata: potongan
+        # "Gambar: ANALISIS SPASIAL -- Tutupan Ekosistem Area" nyelip di
+        # tengah kalimat narasi ekosistem).
+        chunk_lines = [ln for ln in chunk_lines if not CAPTION_RE.match(norm(ln))]
         chunk = norm(" ".join(chunk_lines)).strip(" .:-")
         chunk = chunk[:MAX_NARASI_LEN].strip()
         # tag None (PENDAHULUAN/PENUTUP) sengaja TIDAK disimpan -- lihat
@@ -583,7 +692,7 @@ def _parse_laporan_text(full_text, full_text_raw):
     data["tidal_range"] = m.group(1) if m else ""
     m = re.search(r"Bilangan\s*Formzahl:\s*(\d+\.\d+)", full_text)
     data["formzahl"] = m.group(1) if m else ""
-    tipe_m = re.search(r"diklasifikasikan.*?sebagai\s*([A-Za-z ]+?),", full_text)
+    tipe_m = re.search(r"diklasifikasikan.*?sebagai\s*\**\s*([A-Za-z ]+?)\**\s*,", full_text)
     data["tipe_pasut"] = norm(tipe_m.group(1)) if tipe_m else "Mixed Diurnal"
 
     m = re.search(r"area\s*rencana\s*kegiatan\s*seluas\s*([\d.]+)\s*Hektar", full_text)
@@ -614,8 +723,7 @@ def extract_laporan(pdf_path):
     full_text = norm(full_text_raw)
     data = _parse_laporan_text(full_text, full_text_raw)
 
-    # ---------------- IMAGES (deteksi berdasar heading per-halaman, dengan
-    # fallback ke urutan tetap untuk tag yang belum kepakai) ----------------
+    # ---------------- IMAGES ----------------
     # PENTING: heading dicatat berikut POSISI-nya (halaman + koordinat y),
     # bukan cuma "heading terakhir yang terlihat di teks satu halaman penuh".
     # Kalau tidak begitu, halaman yang memuat lebih dari satu heading (mis.
@@ -642,6 +750,12 @@ def extract_laporan(pdf_path):
                 if re.search(pattern, text_norm, re.IGNORECASE):
                     heading_positions.append((pnum, y0, tag))
                     break
+            else:
+                if len(text_norm) <= LAPORAN_HEADING_MAX_LEN:
+                    for pattern, tag in LAPORAN_SECTION_HEADING_PATTERNS:
+                        if re.match(pattern, text_norm, re.IGNORECASE):
+                            heading_positions.append((pnum, y0, tag))
+                            break
 
     def tag_before(pnum, y0):
         """Tag dari heading terakhir yang posisinya sebelum (pnum, y0) dalam
@@ -656,8 +770,7 @@ def extract_laporan(pdf_path):
         return best
 
     seen_hash = set()
-    images = []
-    used_tags = set()
+    candidates = []
     for pnum in range(len(doc)):
         page = doc[pnum]
         imglist = page.get_images(full=True)
@@ -671,31 +784,25 @@ def extract_laporan(pdf_path):
                 continue
             seen_hash.add(h)
 
-            # 1) coba tandai dari CAPTION ASLI di dekat gambar ini di halaman
-            #    yang sama (metode utama -- caption melekat ke gambarnya
-            #    sendiri, tak peduli urutan fisik gambar di dokumen sumber).
             rects = page.get_image_rects(xref)
             img_rect = rects[0] if rects else None
             caption = _page_caption_for_image(page, img_rect)
-            caption_tag = _tag_from_caption(caption, CAPTION_PATTERNS_LAPORAN)
-
-            # 2) fallback: heading section terdekat yang mendahului gambar
-            #    ini secara posisi (bukan cuma "terakhir terlihat di halaman").
             img_y0 = img_rect.y0 if img_rect is not None else 0
-            position_tag = tag_before(pnum, img_y0)
-
-            if caption_tag and caption_tag not in used_tags:
-                tag = caption_tag
-            elif position_tag and position_tag not in used_tags:
-                tag = position_tag
-            else:
-                tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
-            used_tags.add(tag)
-            images.append({
-                "tag": tag, "bytes": data_bytes, "ext": base["ext"],
+            candidates.append({
+                "caption_norm": norm(caption) if caption else "",
+                "heading_tag": tag_before(pnum, img_y0),
+                "bytes": data_bytes, "ext": base["ext"],
                 "width": w, "height": ht, "page": pnum + 1,
             })
     doc.close()
+
+    tags = resolve_laporan_tags(candidates)
+    images = []
+    for c, tag in zip(candidates, tags):
+        images.append({
+            "tag": tag, "bytes": c["bytes"], "ext": c["ext"],
+            "width": c["width"], "height": c["height"], "page": c["page"],
+        })
     return data, images
 
 
@@ -717,21 +824,45 @@ def extract_laporan_docx(docx_path):
     full_text = norm(full_text_raw)
     data = _parse_laporan_text(full_text, full_text_raw)
 
-    # ---------------- IMAGES (lacak per-paragraf, deteksi heading -- sama
-    # seperti versi PDF, tapi resolusinya lebih presisi karena docx tidak
-    # punya batas halaman tetap) ----------------
+    # ---------------- IMAGES ----------------
+    # Heading dilacak berikut POSISI-nya (indeks paragraf), lalu tiap gambar
+    # dicocokkan ke heading TERDEKAT YANG BENAR-BENAR MENDAHULUINYA -- bukan
+    # "heading section terakhir yang kebetulan pernah kelihatan" (rawan
+    # keliru kalau ada paragraf pembuka yang menyebut banyak istilah section
+    # sekaligus dalam satu kalimat, atau heading di paragraf lanjutan gagal
+    # cocok sehingga current_tag jadi 'nyangkut' di section sebelumnya).
     from docx.oxml.ns import qn as _qn
     paragraphs = doc.paragraphs
     para_texts_norm = [norm(p.text) for p in paragraphs]
 
+    heading_positions = []  # list of (para_idx, tag), terurut sesuai urutan baca
+    for pi, text_norm in enumerate(para_texts_norm):
+        if not text_norm:
+            continue
+        matched = False
+        for pattern, tag in LAPORAN_HEADINGS:
+            if re.search(pattern, text_norm, re.IGNORECASE):
+                heading_positions.append((pi, tag))
+                matched = True
+                break
+        if not matched and len(text_norm) <= LAPORAN_HEADING_MAX_LEN:
+            for pattern, tag in LAPORAN_SECTION_HEADING_PATTERNS:
+                if re.match(pattern, text_norm, re.IGNORECASE):
+                    heading_positions.append((pi, tag))
+                    break
+
+    def tag_before(pi):
+        best = None
+        for hp_pi, hp_tag in heading_positions:
+            if hp_pi <= pi:
+                best = hp_tag
+            else:
+                break
+        return best
+
     seen_hash = set()
-    images = []
-    used_tags = set()
-    current_tag = None
+    candidates = []
     for pi, para in enumerate(paragraphs):
-        para_text_norm = para_texts_norm[pi]
-        if para_text_norm:
-            current_tag = _detect_laporan_tag(para_text_norm, current_tag)
         for run in para.runs:
             blips = run._element.findall(".//" + _qn("a:blip"))
             for blip in blips:
@@ -748,21 +879,29 @@ def extract_laporan_docx(docx_path):
                     continue
                 seen_hash.add(h)
 
-                # 1) coba tandai dari CAPTION ASLI di paragraf ini/1-3
-                #    paragraf sesudahnya (metode utama, lihat catatan di
-                #    extract_proposal_docx).
-                caption_tag = _nearby_caption_tag(para_texts_norm, pi, CAPTION_PATTERNS_LAPORAN)
+                caption = None
+                offsets = [0, 1, -1, 2, -2, 3, -3]
+                for off in offsets:
+                    idx = pi + off
+                    if 0 <= idx < len(para_texts_norm) and para_texts_norm[idx]:
+                        if CAPTION_RE.match(para_texts_norm[idx]) or off == 0:
+                            caption = para_texts_norm[idx]
+                            break
 
-                if caption_tag and caption_tag not in used_tags:
-                    tag = caption_tag
-                elif current_tag and current_tag not in used_tags:
-                    tag = current_tag
-                else:
-                    tag = next((t for t in LAPORAN_IMAGE_ORDER if t not in used_tags), "lainnya")
-                used_tags.add(tag)
                 ext = image_part.content_type.split("/")[-1] if "/" in image_part.content_type else "png"
-                images.append({"tag": tag, "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0})
+                candidates.append({
+                    "caption_norm": caption or "",
+                    "heading_tag": tag_before(pi),
+                    "bytes": data_bytes, "ext": ext, "width": 0, "height": 0, "page": 0,
+                })
 
+    tags = resolve_laporan_tags(candidates)
+    images = []
+    for c, tag in zip(candidates, tags):
+        images.append({
+            "tag": tag, "bytes": c["bytes"], "ext": c["ext"],
+            "width": c["width"], "height": c["height"], "page": c["page"],
+        })
     return data, images
 
 

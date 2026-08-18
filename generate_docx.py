@@ -12,6 +12,35 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from llm_fallback import perkuat_narasi_ilmiah, buat_analisis_ekosistem
 
+try:
+    from PIL import Image as PILImage
+except Exception:
+    PILImage = None
+
+
+def normalize_image_bytes(img_bytes):
+    """Ubah bytes gambar apapun (hasil ekstraksi dari PDF/Word sumber, yang
+    kadang formatnya tidak umum -- mis. JPEG CMYK, JPEG2000/JP2, atau format
+    lain yang tidak dikenali python-docx) menjadi PNG standar yang PASTI bisa
+    diterima python-docx's add_picture(). Kalau Pillow tidak bisa membuka
+    bytes-nya sama sekali (benar-benar rusak/bukan gambar), return None
+    supaya pemanggil bisa fallback ke placeholder alih-alih membuat SELURUH
+    proses generate dokumen gagal gara-gara satu gambar bermasalah."""
+    if not img_bytes:
+        return None
+    if PILImage is None:
+        return img_bytes  # Pillow tak tersedia -- coba bytes asli apa adanya
+    try:
+        im = PILImage.open(io.BytesIO(img_bytes))
+        im.load()
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in im.mode else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
 NAVY = RGBColor(0x1F, 0x4E, 0x79)
 LIGHTBLUE = "DCE6F1"
 FONT = "Calibri"
@@ -77,6 +106,22 @@ def shade_cell(cell, color_hex):
     tcPr.append(shd)
 
 
+def strip_markdown_emphasis(text):
+    """Buang penanda markdown (*tebal*, **tebal**) dari teks -- narasi hasil
+    AI (perkuat_narasi_ilmiah/buat_analisis_ekosistem) kadang menghasilkan
+    format markdown untuk nama ilmiah/istilah teknis (mis. '*Acropora
+    cervicornis*'), tapi python-docx TIDAK merender markdown -- tanda
+    bintang itu akan tampil literal di dokumen Word, bukan jadi cetak
+    miring. Daripada mencoba menerjemahkan ke italic run terpisah (rumit
+    untuk teks yang sudah jadi satu string panjang), tanda bintangnya
+    dibuang saja supaya teksnya tetap bersih dan enak dibaca."""
+    if not text:
+        return text
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    return text
+
+
 def flatten_ws(text):
     """Ratakan teks bebas dari form/textarea (yang mungkin berisi baris baru
     karena pengguna menekan Enter antar kalimat/poin) menjadi satu paragraf
@@ -90,7 +135,8 @@ def flatten_ws(text):
     """
     if not text:
         return text
-    return re.sub(r"\s+", " ", str(text)).strip()
+    text = strip_markdown_emphasis(str(text))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def set_font(run, size=11, bold=False, italic=False, color=None):
@@ -225,7 +271,7 @@ def build_gantt_table(builder, activities, start_bulan_tahun):
             cell = row.cells[1 + i]
             cell.text = ""
             if mulai <= bulan_ke <= selesai:
-                shade_cell(cell, "1F4E79")
+                shade_cell(cell, "BFBFBF")
 
     # Lebar kolom: kolom "Kegiatan" lebih lebar, kolom bulan sempit & seragam
     table.columns[0].width = Cm(3.6)
@@ -321,7 +367,7 @@ def build_gantt_table_weekly(builder, activities_minggu, start_bulan_tahun, max_
             cell = row.cells[1 + i]
             cell.text = ""
             if mulai <= minggu_ke <= selesai:
-                shade_cell(cell, "1F4E79")
+                shade_cell(cell, "BFBFBF")
 
     table.columns[0].width = Cm(3.6)
     for i in range(max_minggu):
@@ -451,17 +497,23 @@ class Builder:
         return para
 
     def image(self, img_bytes, width_cm=14):
+        """Sisipkan gambar ke dokumen. Bytes-nya dinormalisasi ke PNG dulu
+        (lihat normalize_image_bytes) supaya format gambar apapun dari
+        sumber (JPEG CMYK, JP2, dsb) tetap bisa diterima python-docx.
+        Return paragraf-nya kalau berhasil, atau None kalau gambarnya
+        benar-benar tidak bisa dibaca/rusak -- pemanggil sebaiknya
+        melewatkan caption terkait kalau return-nya None, supaya tidak ada
+        caption "menggantung" tanpa gambar di atasnya."""
+        safe_bytes = normalize_image_bytes(img_bytes)
+        if safe_bytes is None:
+            return None
         para = self.doc.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = para.add_run()
-        run.add_picture(io.BytesIO(img_bytes), width=Cm(width_cm))
-        return para
-
-    def image_missing(self, label):
-        para = self.doc.add_paragraph()
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r = para.add_run(f"[GAMBAR '{label}' TIDAK DITEMUKAN DI DOKUMEN SUMBER]")
-        set_font(r, size=10, italic=True, color=RGBColor(0xAA, 0x00, 0x00))
+        try:
+            run.add_picture(io.BytesIO(safe_bytes), width=Cm(width_cm))
+        except Exception:
+            return None
         return para
 
     def page_break(self):
@@ -707,15 +759,10 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"dalam rangka pemenuhan perizinan dasar di lokasi yang dimohonkan sebelum mengajukan perizinan lanjutan.")
     img_no = 1
     siteplan_list = [im for im in prop_imgs if im["tag"] == "siteplan"]
-    if siteplan_list:
-        for idx, im in enumerate(siteplan_list):
-            b.image(im["bytes"], width_cm=13)
-            label = "Peta Rencana Tapak (Site Plan)" if idx == 0 else "Dokumentasi Tambahan Rencana Tapak (Site Plan)"
-            b.caption(f"Gambar {img_no}. {label} Kegiatan {perusahaan}.")
-            img_no += 1
-    else:
-        b.image_missing("siteplan")
-        b.caption(f"Gambar {img_no}. Peta Rencana Tapak (Site Plan) Kegiatan {perusahaan}.")
+    for idx, im in enumerate(siteplan_list):
+        b.image(im["bytes"], width_cm=13)
+        label = "Peta Rencana Tapak (Site Plan)" if idx == 0 else "Dokumentasi Tambahan Rencana Tapak (Site Plan)"
+        b.caption(f"Gambar {img_no}. {label} Kegiatan {perusahaan}.")
         img_no += 1
 
     dok_kegiatan_img = get_image_bytes(prop_imgs, "dok_kegiatan_eksisting")
@@ -799,10 +846,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     peta_lokasi_img = get_image_bytes(prop_imgs, "peta_lokasi")
     if peta_lokasi_img:
         b.image(peta_lokasi_img, width_cm=11)
-    else:
-        b.image_missing("peta_lokasi")
-    b.caption(f"Gambar {img_no}. Peta Lokasi dan Sebaran Titik Koordinat Rencana Kegiatan.")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Peta Lokasi dan Sebaran Titik Koordinat Rencana Kegiatan.")
+        img_no += 1
     sumber_peta = prop.get("sumber_peta", "")
     if sumber_peta:
         b.caption(f"Sumber Peta: {sumber_peta}")
@@ -843,15 +888,10 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(deskripsi_sekitar)
 
     foto_pantai_list = [im for im in prop_imgs if im["tag"] == "foto_pantai"]
-    if foto_pantai_list:
-        for idx, im in enumerate(foto_pantai_list):
-            b.image(im["bytes"], width_cm=11)
-            label = "Kondisi Eksisting Perairan dan Garis Pantai" if idx == 0 else "Dokumentasi Lapangan Tambahan Kondisi Garis Pantai"
-            b.caption(f"Gambar {img_no}. {label} di Sekitar Lokasi Permohonan.")
-            img_no += 1
-    else:
-        b.image_missing("foto_pantai")
-        b.caption(f"Gambar {img_no}. Kondisi Eksisting Perairan dan Garis Pantai di Sekitar Lokasi Permohonan.")
+    for idx, im in enumerate(foto_pantai_list):
+        b.image(im["bytes"], width_cm=11)
+        label = "Kondisi Eksisting Perairan dan Garis Pantai" if idx == 0 else "Dokumentasi Lapangan Tambahan Kondisi Garis Pantai"
+        b.caption(f"Gambar {img_no}. {label} di Sekitar Lokasi Permohonan.")
         img_no += 1
 
     dok_sekitar_list = [im for im in prop_imgs if im["tag"] == "dok_pemanfaatan_sekitar"]
@@ -884,13 +924,11 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     mgv_img = get_image_bytes(prop_imgs, "foto_mangrove")
     if mgv_img:
         b.image(mgv_img, width_cm=11)
-    else:
-        b.image_missing("foto_mangrove")
-    if mangrove_ada == "Tidak terdapat ekosistem mangrove":
-        b.caption(f"Gambar {img_no}. Kondisi Ekosistem Pesisir di Sekitar Lokasi Kegiatan.")
-    else:
-        b.caption(f"Gambar {img_no}. Kondisi Tutupan Vegetasi Mangrove di Sekitar Lokasi Kegiatan.")
-    img_no += 1
+        if mangrove_ada == "Tidak terdapat ekosistem mangrove":
+            b.caption(f"Gambar {img_no}. Kondisi Ekosistem Pesisir di Sekitar Lokasi Kegiatan.")
+        else:
+            b.caption(f"Gambar {img_no}. Kondisi Tutupan Vegetasi Mangrove di Sekitar Lokasi Kegiatan.")
+        img_no += 1
 
     b.h3("2. Lamun")
     ada_lamun = lap.get("ada_lamun")
@@ -916,11 +954,19 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         analisis_lamun = buat_analisis_ekosistem("lamun (seagrass)", lamun_spesies, lamun_persen, lamun_kondisi, lokasi_lengkap)
         if analisis_lamun:
             b.p(analisis_lamun)
-        lamun_img = get_image_bytes(prop_imgs, "foto_lamun")
-        if lamun_img:
-            b.image(lamun_img, width_cm=11)
+
+    # Foto dokumentasi kondisi perairan tetap ditampilkan kalau diunggah,
+    # TERLEPAS dari status ada/tidaknya ekosistem lamun -- foto ini
+    # mendokumentasikan kondisi perairan lokasi (mendukung klaim "tidak
+    # ditemukan" sekalipun), bukan cuma foto ekosistem lamun itu sendiri.
+    lamun_img = get_image_bytes(prop_imgs, "foto_lamun")
+    if lamun_img:
+        b.image(lamun_img, width_cm=11)
+        if lamun_ada_manual == "Terdapat ekosistem lamun":
             b.caption(f"Gambar {img_no}. Dokumentasi Ekosistem Lamun di Sekitar Lokasi Kegiatan.")
-            img_no += 1
+        else:
+            b.caption(f"Gambar {img_no}. Dokumentasi Kondisi Perairan di Sekitar Lokasi Kegiatan.")
+        img_no += 1
 
     b.h3("3. Terumbu Karang")
     karang_ha = g(lap, "eko_karang_ha")
@@ -975,18 +1021,14 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     karang_img = get_image_bytes(prop_imgs, "foto_karang_insitu")
     if karang_img:
         b.image(karang_img, width_cm=11)
-    else:
-        b.image_missing("foto_karang_insitu")
-    b.caption(f"Gambar {img_no}. Dokumentasi Survei In-Situ Koloni Terumbu Karang di Perairan Sekitar Lokasi Kegiatan.")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Dokumentasi Survei In-Situ Koloni Terumbu Karang di Perairan Sekitar Lokasi Kegiatan.")
+        img_no += 1
 
     eko_img = get_image_bytes(lap_imgs, "peta_ekosistem")
     if eko_img:
         b.image(eko_img, width_cm=11)
-    else:
-        b.image_missing("peta_ekosistem")
-    b.caption(f"Gambar {img_no}. Peta Sebaran Spasial Ekosistem Pesisir di Sekitar Titik Pusat Rencana Kegiatan.")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Peta Sebaran Spasial Ekosistem Pesisir di Sekitar Titik Pusat Rencana Kegiatan.")
+        img_no += 1
     b.p(f"Jarak ekosistem terdekat dari titik pusat rencana kegiatan adalah {jarak_eko} km, sehingga mitigasi "
         f"dampak perlu difokuskan pada upaya penghindaran (avoidance) terhadap area terumbu karang, pengendalian "
         f"sedimen, serta pengelolaan kualitas air.")
@@ -1006,10 +1048,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     gel_img = get_image_bytes(lap_imgs, "mawar_gelombang")
     if gel_img:
         b.image(gel_img, width_cm=9)
-    else:
-        b.image_missing("mawar_gelombang")
-    b.caption(f"Gambar {img_no}. Mawar Gelombang Ekstrem pada Titik Pusat Rencana Kegiatan (Arah Dominan {g(lap,'hs_arah')}\u00b0).")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Mawar Gelombang Ekstrem pada Titik Pusat Rencana Kegiatan (Arah Dominan {g(lap,'hs_arah')}\u00b0).")
+        img_no += 1
 
     b.h3("2. Arus")
     b.p(f"Kecepatan arus rata-rata tercatat sebesar {g(lap,'arus_rata')} m/detik, dengan kecepatan maksimum "
@@ -1020,10 +1060,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     arus_img = get_image_bytes(lap_imgs, "mawar_arus")
     if arus_img:
         b.image(arus_img, width_cm=9)
-    else:
-        b.image_missing("mawar_arus")
-    b.caption(f"Gambar {img_no}. Mawar Arus pada Titik Pusat Rencana Kegiatan (Arah Dominan {g(lap,'arus_arah')}\u00b0).")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Mawar Arus pada Titik Pusat Rencana Kegiatan (Arah Dominan {g(lap,'arus_arah')}\u00b0).")
+        img_no += 1
 
     b.data_table(
         ["Parameter", "Nilai Rata-rata", "Nilai Ekstrem", "Arah Dominan"],
@@ -1054,10 +1092,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     pasut_img = get_image_bytes(lap_imgs, "siklus_pasut")
     if pasut_img:
         b.image(pasut_img, width_cm=13)
-    else:
-        b.image_missing("siklus_pasut")
-    b.caption(f"Gambar {img_no}. Grafik Fluktuasi Pasang Surut Selama 14 Hari (Tipe {g(lap,'tipe_pasut')}).")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Grafik Fluktuasi Pasang Surut Selama 14 Hari (Tipe {g(lap,'tipe_pasut')}).")
+        img_no += 1
 
     b.h2("C. Profil Dasar Laut")
     b.p(f"Kedalaman pada titik pusat lokasi kegiatan tercatat sebesar {g(lap,'batimetri_titik_pusat')} meter "
@@ -1069,10 +1105,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     bati_img = get_image_bytes(lap_imgs, "profil_batimetri")
     if bati_img:
         b.image(bati_img, width_cm=13)
-    else:
-        b.image_missing("profil_batimetri")
-    b.caption(f"Gambar {img_no}. Profil Garis Batimetri pada Lintasan Pemeruman Titik Pusat Rencana Kegiatan.")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Profil Garis Batimetri pada Lintasan Pemeruman Titik Pusat Rencana Kegiatan.")
+        img_no += 1
 
     b.h2("D. Kondisi Sosial Ekonomi Masyarakat")
     sumber_sosek = prop.get("sumber_data_sosek", "") or "Badan Pusat Statistik"
@@ -1102,10 +1136,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     pola_img = get_image_bytes(prop_imgs, "peta_pola_ruang")
     if pola_img:
         b.image(pola_img, width_cm=13)
-    else:
-        b.image_missing("peta_pola_ruang")
-    b.caption(f"Gambar {img_no}. Peta Rencana Pola Ruang Wilayah dan Posisi Lokasi Permohonan.")
-    img_no += 1
+        b.caption(f"Gambar {img_no}. Peta Rencana Pola Ruang Wilayah dan Posisi Lokasi Permohonan.")
+        img_no += 1
 
     b.page_break()
     b.h1("IV. DOKUMEN PERSYARATAN LAINNYA")
@@ -1124,10 +1156,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             else:
                 b.bullet(f"{label}.")
     else:
-        b.bullet("Sertifikat Kepemilikan Lahan Darat.")
-        b.bullet("Dokumen identitas dan legalitas pemohon/perusahaan.")
-        b.bullet("Dokumentasi survei lapangan kondisi eksisting lokasi.")
-        b.bullet("Peta pendukung (peta lokasi, peta site plan, dan peta pola ruang wilayah).")
+        b.p(NA)
 
     sertifikat_img = get_image_bytes(prop_imgs, "sertifikat_lahan")
     if sertifikat_img:
