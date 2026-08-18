@@ -18,6 +18,37 @@ def norm(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def klasifikasi_tipe_pasut(formzahl_str):
+    """Tentukan tipe pasang surut dari NILAI ANGKA Bilangan Formzahl (F),
+    berdasarkan kategori baku berikut:
+      0    < F <= 0.25 : Semidiurnal (pasang surut harian ganda)
+      0.25 < F <= 1.50 : Mixed Semidiurnal (campuran condong harian ganda)
+      1.50 < F <= 3.00 : Mixed Diurnal (campuran condong harian tunggal)
+      F > 3.00         : Diurnal (pasang surut harian tunggal)
+    PENTING: tipe ini dihitung dari ANGKA Formzahl-nya sendiri, BUKAN dicari
+    lewat teks naratif di sekitarnya (mis. "...diklasifikasikan sebagai
+    X,...") -- pendekatan berbasis teks itu rapuh dan pernah terbukti salah
+    ambil teks yang sama sekali tidak relevan (mis. dari baris tabel sumber
+    yang typo/salah isi, seperti '(habitat biota laut)' alih-alih nama tipe
+    pasutnya), padahal angka Formzahl-nya sendiri sudah cukup untuk
+    menentukan tipe secara pasti dan konsisten di seluruh dokumen.
+    Return "" kalau formzahl_str tidak valid/kosong (biar pemanggil bisa
+    fallback ke default)."""
+    try:
+        f = float(str(formzahl_str).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return ""
+    if f <= 0:
+        return ""
+    if f <= 0.25:
+        return "Semidiurnal"
+    if f <= 1.50:
+        return "Mixed Semidiurnal"
+    if f <= 3.00:
+        return "Mixed Diurnal"
+    return "Diurnal"
+
+
 # ----------------------------------------------------------------------
 # PROPOSAL PDF
 # ----------------------------------------------------------------------
@@ -692,8 +723,15 @@ def _parse_laporan_text(full_text, full_text_raw):
     data["tidal_range"] = m.group(1) if m else ""
     m = re.search(r"Bilangan\s*Formzahl:\s*(\d+\.\d+)", full_text)
     data["formzahl"] = m.group(1) if m else ""
-    tipe_m = re.search(r"diklasifikasikan.*?sebagai\s*\**\s*([A-Za-z ]+?)\**\s*,", full_text)
-    data["tipe_pasut"] = norm(tipe_m.group(1)) if tipe_m else "Mixed Diurnal"
+    tipe_dari_angka = klasifikasi_tipe_pasut(data["formzahl"])
+    if tipe_dari_angka:
+        data["tipe_pasut"] = tipe_dari_angka
+    else:
+        # fallback kalau angka Formzahl-nya sendiri tidak ketemu di teks --
+        # coba cari dari kalimat naratif, baru kalau itu juga gagal pakai
+        # default paling umum.
+        tipe_m = re.search(r"diklasifikasikan.*?sebagai\s*\**\s*([A-Za-z ]+?)\**\s*,", full_text)
+        data["tipe_pasut"] = norm(tipe_m.group(1)) if tipe_m else "Mixed Diurnal"
 
     m = re.search(r"area\s*rencana\s*kegiatan\s*seluas\s*([\d.]+)\s*Hektar", full_text)
     data["eko_total_ha"] = m.group(1) if m else ""

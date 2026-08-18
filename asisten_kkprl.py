@@ -235,6 +235,41 @@ Alur proses: Pemegang KKPRL submit laporan via e-SEA → Verifikasi Dokumen Izin
 - Hotline Pengendalian Pemanfaatan Ruang Laut (Ditjen PRL, KKP): 0811-1012-0010, email pengendalian.prl@gmail.com, media sosial @ditpengendalianprl.
 - Layanan Pengaduan Online Rakyat (SP4N-LAPOR!): https://www.lapor.go.id.
 
+[24. KLASIFIKASI TIPE PASANG SURUT BERDASARKAN BILANGAN FORMZAHL (F)]
+Bilangan Formzahl dihitung dari perbandingan amplitudo komponen pasut tunggal terhadap ganda, dan menentukan tipe pasang surut suatu perairan:
+- 0 < F \u2264 0,25: Pasang surut harian ganda (Semidiurnal) \u2013 terjadi dua kali air pasang dan dua kali air surut dalam sehari dengan tinggi yang hampir sama.
+- 0,25 < F \u2264 1,50: Pasang surut campuran condong ke harian ganda (Mixed Semidiurnal) \u2013 dalam sehari terjadi dua kali pasang dan dua kali surut, tetapi tinggi dan periodenya berbeda.
+- 1,50 < F \u2264 3,00: Pasang surut campuran condong ke harian tunggal (Mixed Diurnal) \u2013 dalam sehari kadang terjadi satu kali atau dua kali pasang surut dengan karakteristik campuran.
+- F > 3,00: Pasang surut harian tunggal (Diurnal) \u2013 terjadi satu kali air pasang dan satu kali air surut dalam sehari.
+PENTING: tipe pasang surut HARUS ditentukan dari angka Bilangan Formzahl itu sendiri sesuai kategori di atas, bukan dari label/keterangan lain yang mungkin tertulis di dekatnya pada dokumen sumber (kadang ada salah ketik/keterangan tidak relevan tertinggal pada baris tabel Formzahl).
+
+[25. DEFINISI SINGKAT PKKPRL]
+Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut (PKKPRL) adalah izin dasar dari Kementerian Kelautan dan Perikanan (KKP) bagi pelaku usaha yang ingin memanfaatkan sebagian ruang laut secara menetap minimal 30 (tiga puluh) hari. Dokumen ini wajib dimiliki untuk kegiatan di perairan pesisir maupun wilayah yurisdiksi laut.
+
+[26. DAFTAR KODE KBLI YANG RELEVAN DENGAN KEGIATAN DI RUANG LAUT/PESISIR]
+KBLI (Klasifikasi Baku Lapangan Usaha Indonesia) dipakai untuk mengidentifikasi jenis kegiatan usaha saat mengajukan Perizinan Berusaha melalui OSS, termasuk untuk kegiatan yang memerlukan KKPRL. Berikut contoh kode KBLI yang umum relevan dengan pemanfaatan ruang laut:
+- 93295 \u2013 Wisata Pantai
+- 93296 \u2013 Wisata Agro
+- 93297 \u2013 Wisata Tirta
+- 93299 \u2013 Aktivitas Hiburan dan Rekreasi Lainnya YTDL (Yang Tidak Diklasifikasikan Lainnya)
+- 55101 \u2013 Aktivitas Hotel Bintang Lima
+- 55102 \u2013 Aktivitas Hotel Bintang Empat
+- 55103 \u2013 Aktivitas Hotel Bintang Tiga
+- 55104 \u2013 Aktivitas Hotel Bintang Dua
+- 55105 \u2013 Aktivitas Hotel Bintang Satu
+- 50113 \u2013 Angkutan Laut Dalam Negeri untuk Wisata
+- 03110 \u2013 Penangkapan Ikan dan Biota Air Lainnya di Laut
+- 03120 \u2013 Penangkapan Ikan dan Biota Air Lainnya di Perairan Air Tawar
+- 03211 \u2013 Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Laut Lainnya yang Tidak Dilindungi
+- 03212 \u2013 Pembudidayaan Ikan Hias Air Laut yang Tidak Dilindungi
+- 03213 \u2013 Pembudidayaan Tumbuhan Air Laut yang Tidak Dilindungi
+- 03214 \u2013 Pengembangbiakan Ikan dan Biota Air Laut yang Dilindungi
+- 03231 \u2013 Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Payau Lainnya yang Tidak Dilindungi
+- 03232 \u2013 Pembudidayaan Ikan Hias Air Payau yang Tidak Dilindungi
+- 03233 \u2013 Pembudidayaan Tumbuhan Air Payau yang Tidak Dilindungi
+- 03234 \u2013 Pengembangbiakan Biota Air Payau yang Dilindungi
+Catatan: daftar ini bukan daftar lengkap seluruh kode KBLI yang bisa memerlukan KKPRL -- kalau pemohon menanyakan kode KBLI di luar daftar ini, arahkan untuk mengecek klasifikasi resminya lewat sistem OSS (oss.go.id) karena kegiatan usaha di ruang laut sangat beragam.
+
 Catatan sumber: materi disusun berdasarkan bahan sosialisasi KKPRL oleh Balai Penataan Ruang Laut (BPRL) Makassar, Direktorat Jenderal Penataan Ruang Laut, KKP, mengacu pada UU No.6/2023, PP No.21/2021, PP No.28/2025, Permen KP No.28/2021, Permen KP No.31/2021, PP No.85/2021, dan Kepdirjen PRL No.77/2023 (materi "Asistensi Laporan Tahunan e-SEA Pengendalian" & "Panduan Pengguna Sistem Laporan Tahunan KKPRL 2026"). Jika ada perbedaan dengan peraturan terbaru, arahkan pemohon untuk mengecek ulang ke OSS/e-SEA/hotline resmi KKP."""
 
 
