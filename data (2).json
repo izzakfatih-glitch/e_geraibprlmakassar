@@ -1,0 +1,82 @@
+{
+  "prop_data": {
+    "_lokasi_parts": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "non_reklamasi": false,
+    "reklamasi": false,
+    "kegiatan_berusaha": false,
+    "non_berusaha": false,
+    "non_strategis": false,
+    "kegiatan_status": "",
+    "sumber_peta": "",
+    "deskripsi_kegiatan": "",
+    "manfaat_kegiatan": "",
+    "tujuan_kegiatan": "",
+    "instalasi_bangunan": "",
+    "instalasi_posisi": "",
+    "jadwal_kegiatan": "",
+    "jadwal_table": [],
+    "dokumen_data_dukung": "",
+    "dokumen_data_dukung_detail": [],
+    "mangrove_ada": "",
+    "mangrove_spesies": "",
+    "mangrove_persen": "",
+    "mangrove_kondisi": "",
+    "lamun_ada_manual": "",
+    "lamun_spesies": "",
+    "lamun_persen": "",
+    "lamun_kondisi": "",
+    "karang_ada": "",
+    "karang_spesies": "",
+    "karang_persen_manual": "",
+    "karang_kondisi": "",
+    "batas_utara": "",
+    "batas_timur": "",
+    "batas_selatan": "",
+    "batas_barat": "",
+    "deskripsi_pemanfaatan_sekitar": "",
+    "mata_pencaharian": "",
+    "sumber_data_sosek": "",
+    "tahun_data_sosek": "",
+    "aksesibilitas_lokasi": "",
+    "koordinat": [
+      [
+        "1",
+        "122.64300",
+        "-3.93340",
+        "P1"
+      ],
+      [
+        "2",
+        "122.64995",
+        "-3.92869",
+        "P2"
+      ],
+      [
+        "3",
+        "122.65664",
+        "-3.93481",
+        "P3"
+      ],
+      [
+        "4",
+        "122.64737",
+        "-3.94128",
+        "P4"
+      ]
+    ],
+    "koordinat_header": [
+      "Nomor Titik",
+      "Longitude (X)",
+      "Latitude (Y)",
+      "Keterangan"
+    ]
+  },
+  "lap_data": {},
+  "prop_images": [],
+  "lap_images": []
+}
