@@ -4,6 +4,7 @@ hasil ekstraksi (lihat extract.py).
 """
 import io
 import re
+import time
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -11,6 +12,20 @@ from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from llm_fallback import perkuat_narasi_ilmiah, buat_analisis_ekosistem
+
+# Batas waktu KUMULATIF (detik) untuk SEMUA pemanggilan AI "pemanis narasi"
+# (perkuat_narasi_ilmiah/buat_analisis_ekosistem) dalam SATU proses generate
+# dokumen -- bisa dipanggil sampai 8x (mangrove/lamun/karang/ekosistem/
+# gelombang/arus/pasut/batimetri). Walau tiap panggilan sudah dibatasi
+# timeout masing-masing di llm_fallback.py, DELAPAN panggilan berurutan yang
+# masing2 lambat tetap bisa menumpuk melebihi timeout worker gunicorn (300
+# detik) -- terutama saat banyak pengguna memakai aplikasi bersamaan dan API
+# jadi lebih lambat merespons. Begitu anggaran waktu ini habis, sisa
+# panggilan "pemanis" yang belum sempat jalan DILEWATI (pakai teks
+# asli/kalimat dasar apa adanya) supaya dokumen tetap PASTI selesai dibuat
+# dan SEMUA data yang sudah benar diisi pengguna (koordinat, jadwal
+# kegiatan, dst) tidak ikut hilang gara-gara satu bagian narasi yang lambat.
+NARASI_TIME_BUDGET_SECONDS = 150
 
 try:
     from PIL import Image as PILImage
@@ -655,6 +670,20 @@ def activities_from_jadwal_table(jadwal_table):
 def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     b = Builder()
 
+    # Lihat catatan NARASI_TIME_BUDGET_SECONDS di atas -- anggaran waktu
+    # kumulatif untuk semua panggilan AI "pemanis narasi" di bawah.
+    _narasi_deadline = time.time() + NARASI_TIME_BUDGET_SECONDS
+
+    def _enhance_ekosistem(jenis, spesies, persentase, kondisi, konteks_lokasi=""):
+        if time.time() >= _narasi_deadline:
+            return ""
+        return buat_analisis_ekosistem(jenis, spesies, persentase, kondisi, konteks_lokasi)
+
+    def _enhance_narasi(teks_asli, konteks=""):
+        if time.time() >= _narasi_deadline:
+            return teks_asli
+        return perkuat_narasi_ilmiah(teks_asli, konteks=konteks)
+
     lokasi_parts = prop.get("_lokasi_parts") or []
     desa = lokasi_parts[0] if len(lokasi_parts) > 0 else g(prop, "_desa")
     kecamatan = lokasi_parts[1] if len(lokasi_parts) > 1 else desa
@@ -918,7 +947,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(f"Berdasarkan hasil pengamatan langsung kondisi pesisir di sekitar lokasi kegiatan, terdapat ekosistem "
             f"mangrove yang didominasi oleh jenis {spesies}, dengan persentase tutupan mencapai {persen_mgv}% "
             f"pada kondisi {kondisi_mgv}.")
-        analisis_mgv = buat_analisis_ekosistem("mangrove", spesies, persen_mgv, kondisi_mgv, lokasi_lengkap)
+        analisis_mgv = _enhance_ekosistem("mangrove", spesies, persen_mgv, kondisi_mgv, lokasi_lengkap)
         if analisis_mgv:
             b.p(analisis_mgv)
     mgv_img = get_image_bytes(prop_imgs, "foto_mangrove")
@@ -951,7 +980,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         lamun_kondisi = g(prop, "lamun_kondisi")
         b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem lamun yang didominasi "
             f"oleh jenis {lamun_spesies}, dengan persentase tutupan mencapai {lamun_persen}% pada kondisi {lamun_kondisi}.")
-        analisis_lamun = buat_analisis_ekosistem("lamun (seagrass)", lamun_spesies, lamun_persen, lamun_kondisi, lokasi_lengkap)
+        analisis_lamun = _enhance_ekosistem("lamun (seagrass)", lamun_spesies, lamun_persen, lamun_kondisi, lokasi_lengkap)
         if analisis_lamun:
             b.p(analisis_lamun)
 
@@ -1009,7 +1038,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         b.p(f"Berdasarkan hasil pengamatan pemohon di lapangan, teridentifikasi ekosistem terumbu karang yang "
             f"didominasi oleh jenis {karang_spesies_m}, dengan persentase tutupan mencapai {karang_persen_m}% "
             f"pada kondisi {karang_kondisi_m}.")
-        analisis_karang = buat_analisis_ekosistem(
+        analisis_karang = _enhance_ekosistem(
             "terumbu karang", karang_spesies_m, karang_persen_m, karang_kondisi_m, lokasi_lengkap
         )
         if analisis_karang:
@@ -1034,7 +1063,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"sedimen, serta pengelolaan kualitas air.")
     narasi_lap_eko = lap.get("_narasi", {}) or {}
     if narasi_lap_eko.get("ekosistem"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap_eko["ekosistem"], konteks="analisis ekosistem pesisir"))
+        b.p(_enhance_narasi(narasi_lap_eko["ekosistem"], konteks="analisis ekosistem pesisir"))
 
     b.h2("B. Hidro-Oseanografi")
     narasi_lap = lap.get("_narasi", {}) or {}
@@ -1044,7 +1073,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"{g(lap,'hs_arah')}\u00b0. Parameter ini menjadi acuan utama dalam desain ketahanan struktur bangunan laut "
         f"terhadap beban gelombang ekstrem.")
     if narasi_lap.get("gelombang"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["gelombang"], konteks="analisis gelombang laut"))
+        b.p(_enhance_narasi(narasi_lap["gelombang"], konteks="analisis gelombang laut"))
     gel_img = get_image_bytes(lap_imgs, "mawar_gelombang")
     if gel_img:
         b.image(gel_img, width_cm=9)
@@ -1056,7 +1085,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"ekstrem sebesar {g(lap,'arus_maks')} m/detik dan arah dominan dari {g(lap,'arus_arah')}\u00b0. Parameter "
         f"ini menjadi indikator potensi gerusan (scouring) di sekitar struktur bangunan laut.")
     if narasi_lap.get("arus"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["arus"], konteks="analisis arus laut"))
+        b.p(_enhance_narasi(narasi_lap["arus"], konteks="analisis arus laut"))
     arus_img = get_image_bytes(lap_imgs, "mawar_arus")
     if arus_img:
         b.image(arus_img, width_cm=9)
@@ -1077,7 +1106,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"dengan tunggang air (tidal range) sebesar {g(lap,'tidal_range')} meter, elevasi tertinggi (HAT) "
         f"sebesar +{g(lap,'hat')} meter, dan elevasi terendah (LAT) sebesar {g(lap,'lat')} meter.")
     if narasi_lap.get("pasut"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["pasut"], konteks="analisis pasang surut"))
+        b.p(_enhance_narasi(narasi_lap["pasut"], konteks="analisis pasang surut"))
     b.data_table(
         ["Parameter Pasang Surut", "Elevasi"],
         [
@@ -1101,7 +1130,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"{g(lap,'batimetri_panjang_lintasan')} km menunjukkan kedalaman terdalam mencapai "
         f"{g(lap,'batimetri_terdalam')} meter.")
     if narasi_lap.get("batimetri"):
-        b.p(perkuat_narasi_ilmiah(narasi_lap["batimetri"], konteks="analisis profil batimetri/dasar laut"))
+        b.p(_enhance_narasi(narasi_lap["batimetri"], konteks="analisis profil batimetri/dasar laut"))
     bati_img = get_image_bytes(lap_imgs, "profil_batimetri")
     if bati_img:
         b.image(bati_img, width_cm=13)

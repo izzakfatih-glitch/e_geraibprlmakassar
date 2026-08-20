@@ -88,7 +88,7 @@ ATURAN KETAT:
             model=MODEL,
             max_tokens=6000,
             messages=[{"role": "user", "content": prompt}],
-            timeout=170.0,
+            timeout=130.0,
         )
         hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
         if not hasil:
@@ -100,7 +100,34 @@ ATURAN KETAT:
 
 def _client():
     from anthropic import Anthropic
-    return Anthropic()  # otomatis baca ANTHROPIC_API_KEY dari environment
+    # PENTING: batasi max_retries secara eksplisit. SDK Anthropic secara
+    # default retry hingga 2x kalau request gagal/timeout -- kalau
+    # dikombinasikan dengan timeout per-percobaan yang cukup besar, TOTAL
+    # waktu tunggu worst-case bisa jauh melebihi timeout worker gunicorn
+    # (300 detik), yang membuat gunicorn MEMATIKAN worker-nya secara paksa
+    # di tengah request -- koneksi terputus mentah tanpa sempat mengirim
+    # respons apa pun (proxy hosting biasanya menampilkan "upstream error"
+    # ke pengguna, dan SEMUA data yang sudah benar diisi pengguna -- mis.
+    # tabel koordinat, tabel jadwal kegiatan -- ikut tidak pernah sampai ke
+    # dokumen yang dihasilkan, karena requestnya mati total sebelum sempat
+    # selesai). Membatasi retry di sini mencegah efek domino itu di SEMUA
+    # pemanggilan API.
+    return Anthropic(max_retries=1)  # otomatis baca ANTHROPIC_API_KEY dari environment
+
+
+def _client_fast():
+    """Klien khusus untuk pemanggilan API yang sifatnya "pemanis" opsional
+    (mis. perkuat_narasi_ilmiah, buat_analisis_ekosistem) -- dipanggil
+    BERKALI-KALI (bisa sampai 8x) dalam satu proses generate dokumen, dan
+    SUDAH punya fallback aman (kembalikan teks asli/kosong) kalau gagal.
+    TANPA retry sama sekali supaya satu panggilan yang lambat langsung
+    gagal cepat dan lanjut ke bagian berikutnya, bukan menunggu 2x lipat
+    lebih lama -- penting karena delapan panggilan berurutan yang masing2
+    retry bisa dengan mudah melebihi timeout worker gunicorn kalau terjadi
+    bersamaan (mis. saat banyak pengguna memakai aplikasi bersamaan dan API
+    sedang agak lambat merespons)."""
+    from anthropic import Anthropic
+    return Anthropic(max_retries=0)
 
 
 def llm_fill_missing_fields(full_text, missing_keys, field_hints):
@@ -144,6 +171,7 @@ JSON:"""
             model=MODEL,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
+            timeout=45.0,
         )
         text = "".join(block.text for block in resp.content if hasattr(block, "text"))
         text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
@@ -217,7 +245,7 @@ def buat_analisis_ekosistem(jenis, spesies, persentase, kondisi, konteks_lokasi=
     if not api_key_available():
         return ""
     try:
-        client = _client()
+        client = _client_fast()
         lokasi_txt = f" di {konteks_lokasi}" if konteks_lokasi else ""
         prompt = (
             f"Data primer/hasil pengamatan lapangan untuk ekosistem {jenis}{lokasi_txt}:\n"
@@ -240,6 +268,7 @@ def buat_analisis_ekosistem(jenis, spesies, persentase, kondisi, konteks_lokasi=
             model=MODEL,
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
+            timeout=25.0,
         )
         hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
         return hasil
@@ -261,7 +290,7 @@ def perkuat_narasi_ilmiah(teks_asli, konteks=""):
     if not api_key_available():
         return teks_asli
     try:
-        client = _client()
+        client = _client_fast()
         prompt = (
             "Berikut ini narasi/deskripsi asli dari sebuah laporan teknis kelautan "
             f"(konteks: {konteks}):\n\n\"\"\"\n{teks_asli}\n\"\"\"\n\n"
@@ -279,6 +308,7 @@ def perkuat_narasi_ilmiah(teks_asli, konteks=""):
             model=MODEL,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
+            timeout=25.0,
         )
         hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
         # Kalau hasilnya kosong/mencurigakan (jauh lebih pendek dari asli,

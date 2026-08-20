@@ -243,74 +243,49 @@ Bilangan Formzahl dihitung dari perbandingan amplitudo komponen pasut tunggal te
 - F > 3,00: Pasang surut harian tunggal (Diurnal) \u2013 terjadi satu kali air pasang dan satu kali air surut dalam sehari.
 PENTING: tipe pasang surut HARUS ditentukan dari angka Bilangan Formzahl itu sendiri sesuai kategori di atas, bukan dari label/keterangan lain yang mungkin tertulis di dekatnya pada dokumen sumber (kadang ada salah ketik/keterangan tidak relevan tertinggal pada baris tabel Formzahl).
 
-[25. DEFINISI SINGKAT PKKPRL]
-Persetujuan Kesesuaian Kegiatan Pemanfaatan Ruang Laut (PKKPRL) adalah izin dasar dari Kementerian Kelautan dan Perikanan (KKP) bagi pelaku usaha yang ingin memanfaatkan sebagian ruang laut secara menetap minimal 30 (tiga puluh) hari. Dokumen ini wajib dimiliki untuk kegiatan di perairan pesisir maupun wilayah yurisdiksi laut.
-
-[26. DAFTAR KODE KBLI YANG RELEVAN DENGAN KEGIATAN DI RUANG LAUT/PESISIR]
-KBLI (Klasifikasi Baku Lapangan Usaha Indonesia) dipakai untuk mengidentifikasi jenis kegiatan usaha saat mengajukan Perizinan Berusaha melalui OSS, termasuk untuk kegiatan yang memerlukan KKPRL. Berikut contoh kode KBLI yang umum relevan dengan pemanfaatan ruang laut:
-- 93295 \u2013 Wisata Pantai
-- 93296 \u2013 Wisata Agro
-- 93297 \u2013 Wisata Tirta
-- 93299 \u2013 Aktivitas Hiburan dan Rekreasi Lainnya YTDL (Yang Tidak Diklasifikasikan Lainnya)
-- 55101 \u2013 Aktivitas Hotel Bintang Lima
-- 55102 \u2013 Aktivitas Hotel Bintang Empat
-- 55103 \u2013 Aktivitas Hotel Bintang Tiga
-- 55104 \u2013 Aktivitas Hotel Bintang Dua
-- 55105 \u2013 Aktivitas Hotel Bintang Satu
-- 50113 \u2013 Angkutan Laut Dalam Negeri untuk Wisata
-- 03110 \u2013 Penangkapan Ikan dan Biota Air Lainnya di Laut
-- 03120 \u2013 Penangkapan Ikan dan Biota Air Lainnya di Perairan Air Tawar
-- 03211 \u2013 Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Laut Lainnya yang Tidak Dilindungi
-- 03212 \u2013 Pembudidayaan Ikan Hias Air Laut yang Tidak Dilindungi
-- 03213 \u2013 Pembudidayaan Tumbuhan Air Laut yang Tidak Dilindungi
-- 03214 \u2013 Pengembangbiakan Ikan dan Biota Air Laut yang Dilindungi
-- 03231 \u2013 Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Payau Lainnya yang Tidak Dilindungi
-- 03232 \u2013 Pembudidayaan Ikan Hias Air Payau yang Tidak Dilindungi
-- 03233 \u2013 Pembudidayaan Tumbuhan Air Payau yang Tidak Dilindungi
-- 03234 \u2013 Pengembangbiakan Biota Air Payau yang Dilindungi
-Catatan: daftar ini bukan daftar lengkap seluruh kode KBLI yang bisa memerlukan KKPRL -- kalau pemohon menanyakan kode KBLI di luar daftar ini, arahkan untuk mengecek klasifikasi resminya lewat sistem OSS (oss.go.id) karena kegiatan usaha di ruang laut sangat beragam.
-
 Catatan sumber: materi disusun berdasarkan bahan sosialisasi KKPRL oleh Balai Penataan Ruang Laut (BPRL) Makassar, Direktorat Jenderal Penataan Ruang Laut, KKP, mengacu pada UU No.6/2023, PP No.21/2021, PP No.28/2025, Permen KP No.28/2021, Permen KP No.31/2021, PP No.85/2021, dan Kepdirjen PRL No.77/2023 (materi "Asistensi Laporan Tahunan e-SEA Pengendalian" & "Panduan Pengguna Sistem Laporan Tahunan KKPRL 2026"). Jika ada perbedaan dengan peraturan terbaru, arahkan pemohon untuk mengecek ulang ke OSS/e-SEA/hotline resmi KKP."""
 
 
-def api_key_available():
+def _api_key_available():
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def _client():
-    from anthropic import Anthropic
-    return Anthropic()  # otomatis baca ANTHROPIC_API_KEY dari environment
-
-
 def chat_reply(messages):
-    """
-    messages: list of {"role": "user"|"assistant", "content": str}
-    Return: string balasan asisten. Tidak pernah melempar exception ke
-    pemanggil -- kalau gagal, kembalikan pesan error yang ramah pengguna.
-    """
-    if not api_key_available():
-        return ("Maaf, asisten belum aktif karena konfigurasi server "
-                "(ANTHROPIC_API_KEY) belum diset oleh admin. Silakan hubungi "
-                "hotline BPRL Makassar atau cek informasi KKPRL di e-SEA "
-                "(https://e-sea.kkp.go.id/).")
+    """Balas satu giliran percakapan chatbot Tanya Navi.
 
+    messages: list dict {"role": "user"/"assistant", "content": str},
+    riwayat percakapan URUT dari yang paling lama ke paling baru (pesan
+    terakhir adalah pertanyaan pengguna yang perlu dijawab). Sudah
+    divalidasi/dibersihkan oleh pemanggil (lihat api_asisten_chat di
+    app.py) sebelum sampai di sini.
+
+    Return string balasan chatbot, atau pesan yang menjelaskan kalau
+    asisten sedang tidak tersedia (mis. API key belum diset / terjadi
+    error) -- TIDAK PERNAH melempar exception ke pemanggil, supaya rute
+    /api/asisten-chat selalu bisa mengembalikan respons JSON yang valid."""
     if not messages:
-        return "Silakan tuliskan pertanyaan Anda seputar KKPRL."
+        return "Silakan tuliskan pertanyaan Anda seputar KKPRL, nanti akan saya bantu jawab."
 
-    # Batasi jumlah riwayat yang dikirim supaya request tetap ringan
-    trimmed = messages[-MAX_HISTORY_MESSAGES:]
+    if not _api_key_available():
+        return ("Mohon maaf, Asisten Navi sedang tidak tersedia saat ini karena kunci akses "
+                "ke layanan AI belum diset di server. Silakan hubungi admin BPRL Makassar, "
+                "atau coba lagi beberapa saat lagi.")
 
     try:
-        client = _client()
+        from anthropic import Anthropic
+        client = Anthropic(max_retries=1)
+
+        riwayat = messages[-MAX_HISTORY_MESSAGES:]
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=1000,
+            max_tokens=1200,
             system=SYSTEM_PROMPT,
-            messages=trimmed,
+            messages=riwayat,
+            timeout=60.0,
         )
         text = "".join(block.text for block in resp.content if hasattr(block, "text")).strip()
-        return text or "Maaf, terjadi kendala saat memproses pertanyaan. Silakan coba lagi."
-    except Exception as e:
-        print(f"[asisten_kkprl] gagal memanggil Claude API: {e}")
-        return ("Maaf, terjadi kendala teknis saat menghubungi asisten. "
-                "Silakan coba lagi sebentar lagi, atau hubungi hotline BPRL Makassar.")
+        return text or "Maaf, saya belum bisa menjawab pertanyaan itu. Bisa coba ditanyakan dengan cara lain?"
+    except Exception:
+        return ("Mohon maaf, terjadi kendala teknis saat memproses pertanyaan Anda. "
+                "Silakan coba lagi sebentar lagi, atau hubungi admin BPRL Makassar kalau masih bermasalah.")
+
