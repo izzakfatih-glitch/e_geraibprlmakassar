@@ -444,7 +444,11 @@ import io as _io
 import time
 
 _staff_cache = {"data": {}, "fetched_at": 0}
-STAFF_CACHE_TTL = 300  # detik (5 menit)
+STAFF_CACHE_TTL = 60  # detik (1 menit) -- lebih pendek dari sebelumnya (5 menit) supaya
+# perubahan di Google Sheet (mis. menambahkan tanda "Ya" pada kolom Admin/Analisis
+# untuk seorang petugas) lebih cepat berlaku otomatis tanpa perlu tindakan apa pun.
+# Untuk kepastian LANGSUNG (tanpa menunggu), admin bisa pakai tombol "Refresh Data
+# Petugas" (lihat route /admin/refresh-staff di bawah) yang memaksa fetch ulang saat itu juga.
 
 # Kode Nama (username login, BUKAN kode petugas/password) yang SELALU
 # dianggap admin apa pun isi Google Sheet-nya -- jaring pengaman kalau
@@ -2018,7 +2022,14 @@ def render_admin_riwayat_list_page():
     body = """
 <div class="review-wrap">
   <div class="review-card">
-    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Semua Petugas <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(staff_rows)} petugas)</span></h3>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <h3 style="margin:0;">""" + ICONS["chart-bar"] + f""" Riwayat Semua Petugas <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(staff_rows)} petugas)</span></h3>
+      <form method="POST" action="/admin/refresh-staff" style="margin:0;">
+        <input type="hidden" name="next" value="/admin/riwayat">
+        <button type="submit" class="ex-fill" style="cursor:pointer;">\U0001F504 Refresh Data Petugas</button>
+      </form>
+    </div>
+    <p class="ff-hint" style="margin:6px 0 0;">Baru mengubah kolom Admin/Analisis di Google Sheet? Data petugas otomatis diperbarui tiap 1 menit -- kalau butuh langsung berlaku sekarang, tekan tombol di atas.</p>
     {table_html}
     <p style="margin-top:10px;"><a href="/riwayat-saya" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Riwayat Isian Saya</a></p>
   </div>
@@ -3920,6 +3931,20 @@ def _require_analis():
 <p>Halaman Analisis &amp; Koreksi Proposal hanya bisa diakses oleh petugas yang ditunjuk untuk melakukan Analisis. Hubungi admin jika Anda seharusnya memiliki akses ini.</p>
 </div></div></body></html>"""), 403
     return None
+
+
+@app.route("/admin/refresh-staff", methods=["POST"])
+def admin_refresh_staff():
+    """Paksa ambil ulang daftar petugas dari Google Sheet saat itu juga --
+    supaya perubahan (mis. menandai kolom Admin/Analisis = "Ya" untuk
+    petugas tertentu) langsung berlaku tanpa perlu menunggu cache
+    kedaluwarsa (lihat STAFF_CACHE_TTL) atau redeploy. Khusus admin."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    fetch_staff_list(force=True)
+    tujuan = request.form.get("next") or url_for("admin_riwayat_list")
+    return redirect(tujuan)
 
 
 @app.route("/admin/riwayat")
