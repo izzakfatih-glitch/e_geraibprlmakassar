@@ -698,6 +698,9 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     jenis_kegiatan = g(prop, "Jenis Kegiatan")
 
     # ================= COVER =================
+    jenis_permohonan = prop.get("jenis_permohonan", "Persetujuan").strip() or "Persetujuan"
+    jenis_permohonan_label = "KONFIRMASI" if jenis_permohonan.lower().startswith("konfirmasi") else "PERSETUJUAN"
+
     title = b.doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = title.add_run("DRAFT PROPOSAL TEKNIS")
@@ -705,7 +708,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
 
     sub = b.doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = sub.add_run("PERMOHONAN PERSETUJUAN KESESUAIAN KEGIATAN\nPEMANFAATAN RUANG LAUT (PKKPRL)")
+    r = sub.add_run(f"PERMOHONAN {jenis_permohonan_label} KESESUAIAN KEGIATAN\nPEMANFAATAN RUANG LAUT (PKKPRL)")
     set_font(r, size=14, bold=True)
 
     note = b.doc.add_paragraph()
@@ -735,7 +738,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     # ================= BAB I =================
     b.h1("I. RENCANA BANGUNAN DAN INSTALASI LAUT")
     b.h2("Pendahuluan")
-    b.p(f"Proposal teknis ini disusun sebagai bagian dari persyaratan permohonan Persetujuan Kesesuaian "
+    b.p(f"Proposal teknis ini disusun sebagai bagian dari persyaratan permohonan {jenis_permohonan_label.capitalize()} Kesesuaian "
         f"Kegiatan Pemanfaatan Ruang Laut (PKKPRL), sebagaimana diatur dalam Peraturan Pemerintah Nomor 21 "
         f"Tahun 2021 tentang Penyelenggaraan Penataan Ruang, Peraturan Menteri Kelautan dan Perikanan Nomor "
         f"28 Tahun 2021 tentang Penyelenggaraan Penataan Ruang Laut, serta ketentuan pelaksanaan pada sistem "

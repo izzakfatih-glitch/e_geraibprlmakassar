@@ -2586,6 +2586,19 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
     <input type="hidden" name="draft_owner_kode" value=\"""" + (draft_owner_kode or "") + """\">
 
     <div class="manual-upload-card">
+      <h3>""" + ICONS["doc"] + """ Jenis Permohonan KKPRL</h3>
+      <div class="ff-hint" style="margin-bottom:10px;">Pilih salah satu -- otomatis menyesuaikan judul dan isi Dokumen Draft Proposal yang dihasilkan. <b>Persetujuan KKPRL</b> umumnya untuk Pelaku Usaha (kegiatan Berusaha). <b>Konfirmasi KKPRL</b> umumnya untuk Pemerintah Pusat/Daerah dengan kegiatan Non Berusaha yang bersifat Strategis Nasional.</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">
+        <label class="radio-row" style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;">
+          <input type="radio" name="jenis_permohonan" value="Persetujuan" checked style="width:16px;height:16px;"> Persetujuan KKPRL
+        </label>
+        <label class="radio-row" style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;">
+          <input type="radio" name="jenis_permohonan" value="Konfirmasi" style="width:16px;height:16px;"> Konfirmasi KKPRL
+        </label>
+      </div>
+    </div>
+
+    <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
       <a href="https://fadly2002-gerai-pelayanan-bprl.hf.space/" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
@@ -3142,6 +3155,33 @@ document.querySelectorAll('.species-search').forEach(function(inp) {
   b.addEventListener('change', function() { if (b.checked) a.checked = false; });
 });
 
+// Jenis Permohonan (Persetujuan/Konfirmasi): Konfirmasi KKPRL pada dasarnya
+// untuk kegiatan Non Berusaha (bukan pelaku usaha), jadi kolom KBLI (kode
+// klasifikasi usaha) tidak relevan dan otomatis disembunyikan, dan pilihan
+// "Kegiatan Berusaha" pun ikut disembunyikan -- tersisa "Kegiatan Non
+// Berusaha" saja yang otomatis tercentang (tapi tetap checkbox biasa yang
+// bisa diubah manual, tidak dikunci/disabled). Balik ke Persetujuan akan
+// menampilkan semuanya lagi seperti semula.
+window.applyJenisPermohonan = function() {
+  var selected = document.querySelector('input[name="jenis_permohonan"]:checked');
+  var isKonfirmasi = !!selected && selected.value === 'Konfirmasi';
+  var kbliSelect = document.getElementById('prop__KBLI');
+  var kbliRow = kbliSelect ? kbliSelect.closest('.field-row') : null;
+  var berusahaCb = document.getElementById('cb2');
+  var berusahaRow = berusahaCb ? berusahaCb.closest('.checkbox-row') : null;
+  var nonBerusahaCb = document.getElementById('cb2b');
+  if (kbliRow) kbliRow.style.display = isKonfirmasi ? 'none' : '';
+  if (berusahaRow) berusahaRow.style.display = isKonfirmasi ? 'none' : '';
+  if (isKonfirmasi && nonBerusahaCb && !nonBerusahaCb.checked) {
+    nonBerusahaCb.checked = true;
+    if (berusahaCb) berusahaCb.checked = false;
+  }
+};
+document.getElementsByName('jenis_permohonan').forEach(function(r) {
+  r.addEventListener('change', window.applyJenisPermohonan);
+});
+window.applyJenisPermohonan();
+
 // Dropdown dengan opsi "Lainnya..." -> munculkan input teks tambahan
 document.querySelectorAll('select[data-allow-other="true"]').forEach(function(sel) {
   var otherInput = document.getElementById(sel.id + '_other');
@@ -3601,6 +3641,7 @@ document.getElementById('manualForm').addEventListener('submit', function() {
     }}
     Array.prototype.forEach.call(els, function(el) {{
       if (el.type === 'checkbox') {{ el.checked = (val === true || val === 'true'); }}
+      else if (el.type === 'radio') {{ el.checked = (el.value === val); if (el.checked) el.dispatchEvent(new Event('change')); }}
       else if (el.tagName === 'SELECT') {{
         el.value = val;
         if (el.value !== val) {{
@@ -4354,6 +4395,7 @@ def build_prop_data_from_manual_form(form, files):
 
     prop_data = {}
     prop_data, _ = apply_form_values(form, prop_data, {})
+    prop_data["jenis_permohonan"] = form.get("jenis_permohonan", "Persetujuan").strip() or "Persetujuan"
     prop_data["non_reklamasi"] = "non_reklamasi" in form
     prop_data["reklamasi"] = "reklamasi" in form
     prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in form
