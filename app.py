@@ -1384,6 +1384,36 @@ REVIEW_CSS = """
 .sticky-bar button.btn-draft { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
   box-shadow:none; flex:none; width:auto; white-space:nowrap; padding:15px 20px; }
 .sticky-bar button.btn-draft:hover { background:#f3f8ff; filter:none; }
+
+/* Kartu aksi utama form manual (Simpan / Proses & Lanjut / Unduh Draft) --
+   TIDAK sticky (sengaja terpisah dari .sticky-bar di atas, yang masih
+   dipakai halaman Tinjau & Koreksi Data) supaya duduk normal di alur
+   halaman, di antara kartu upload dan "Data Draft Proposal", dengan
+   tampilan kartu tersendiri yang lebih menonjol & mudah ditemukan --
+   tombol utama "Proses & Lanjut" dibuat lebih besar & jadi pusat perhatian,
+   dua tombol lain jadi aksi sekunder di sampingnya.*/
+.manual-action-card { background:#fff; border-radius:16px; padding:20px 22px; margin-bottom:18px;
+  box-shadow:0 8px 26px rgba(18,58,99,.10); border:1px solid #e7eef6; text-align:center; }
+.manual-action-card .mac-label { font-size:12px; font-weight:800; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.04em; margin-bottom:12px; }
+.manual-action-row { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; }
+.manual-action-row .btn-primary-big { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:17px 34px; border-radius:14px; font-size:15.5px; font-weight:800; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; gap:9px;
+  box-shadow:0 8px 22px rgba(30,99,199,.32); order:2; }
+.manual-action-row .btn-primary-big:hover { filter:brightness(1.06); }
+.manual-action-row .btn-primary-big svg { width:20px; height:20px; flex:none; }
+.manual-action-row .btn-secondary-sm { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
+  padding:13px 18px; border-radius:12px; font-size:13px; font-weight:700; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap; }
+.manual-action-row .btn-secondary-sm:hover { background:#f3f8ff; }
+.manual-action-row .btn-secondary-sm svg { width:16px; height:16px; flex:none; }
+.manual-action-row .btn-secondary-sm.mac-order-1 { order:1; }
+.manual-action-row .btn-secondary-sm.mac-order-3 { order:3; }
+@media (max-width: 560px) {
+  .manual-action-row { flex-direction:column; }
+  .manual-action-row .btn-primary-big, .manual-action-row .btn-secondary-sm { width:100%; order:initial; }
+}
 .back-link { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700;
   color:var(--blue); margin-top:14px; }
 
@@ -2618,11 +2648,12 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
       </div>
     </div>
 
-    <div class="sticky-bar">
-      <div class="sticky-bar-row">
-        <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-draft">""" + ICONS["check-circle"] + """ Simpan</button>
-        <button type="submit">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
-        <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-draft">""" + ICONS["download"] + """ Unduh Draft</button>
+    <div class="manual-action-card">
+      <div class="mac-label">Sudah Yakin dengan Isian di Atas?</div>
+      <div class="manual-action-row">
+        <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-secondary-sm mac-order-1">""" + ICONS["check-circle"] + """ Simpan</button>
+        <button type="submit" class="btn-primary-big">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+        <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-secondary-sm mac-order-3">""" + ICONS["download"] + """ Unduh Draft</button>
       </div>
     </div>
 
