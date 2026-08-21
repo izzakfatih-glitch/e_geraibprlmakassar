@@ -1414,6 +1414,30 @@ REVIEW_CSS = """
   .manual-action-row { flex-direction:column; }
   .manual-action-row .btn-primary-big, .manual-action-row .btn-secondary-sm { width:100%; order:initial; }
 }
+
+/* Kartu pilihan Jenis Permohonan KKPRL (Persetujuan/Konfirmasi) -- didesain
+   sebagai "toggle card" besar yang jelas terlihat, bukan radio bulat kecil
+   biasa, supaya menarik perhatian sebagai keputusan penting sebelum mengisi
+   Data Draft Proposal di bawahnya. */
+.jenis-permohonan-card { background:#fff; border-radius:16px; padding:22px 24px; margin-bottom:18px;
+  box-shadow:0 8px 26px rgba(18,58,99,.10); border:1px solid #e7eef6; }
+.jp-toggle-row { display:flex; gap:14px; flex-wrap:wrap; margin-top:14px; }
+.jp-toggle { flex:1 1 220px; position:relative; }
+.jp-toggle input[type=radio] { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+.jp-toggle-face { display:flex; align-items:center; gap:12px; border:2px solid #d7e2ee; border-radius:14px;
+  padding:16px 18px; background:#fafcfe; transition:.15s; cursor:pointer; }
+.jp-toggle-icon { flex:none; width:38px; height:38px; border-radius:50%; background:#eaf1fc; color:var(--blue);
+  display:flex; align-items:center; justify-content:center; }
+.jp-toggle-icon svg { width:20px; height:20px; }
+.jp-toggle-text { flex:1; }
+.jp-toggle-title { font-size:14.5px; font-weight:800; color:var(--navy); }
+.jp-toggle-sub { font-size:11.5px; color:var(--muted); margin-top:2px; }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face { border-color:var(--blue); background:#eaf3fd;
+  box-shadow:0 4px 14px rgba(47,127,224,.18); }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face .jp-toggle-icon { background:var(--blue); color:#fff; }
+.jp-toggle input[type=radio]:focus-visible ~ .jp-toggle-face { outline:2px solid var(--blue); outline-offset:2px; }
+.jp-toggle-face:hover { border-color:#aac6e8; }
+
 .back-link { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700;
   color:var(--blue); margin-top:14px; }
 
@@ -2616,19 +2640,6 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
     <input type="hidden" name="draft_owner_kode" value=\"""" + (draft_owner_kode or "") + """\">
 
     <div class="manual-upload-card">
-      <h3>""" + ICONS["doc"] + """ Jenis Permohonan KKPRL</h3>
-      <div class="ff-hint" style="margin-bottom:10px;">Pilih salah satu -- otomatis menyesuaikan judul dan isi Dokumen Draft Proposal yang dihasilkan. <b>Persetujuan KKPRL</b> umumnya untuk Pelaku Usaha (kegiatan Berusaha). <b>Konfirmasi KKPRL</b> umumnya untuk Pemerintah Pusat/Daerah dengan kegiatan Non Berusaha yang bersifat Strategis Nasional.</div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;">
-        <label class="radio-row" style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;">
-          <input type="radio" name="jenis_permohonan" value="Persetujuan" checked style="width:16px;height:16px;"> Persetujuan KKPRL
-        </label>
-        <label class="radio-row" style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;">
-          <input type="radio" name="jenis_permohonan" value="Konfirmasi" style="width:16px;height:16px;"> Konfirmasi KKPRL
-        </label>
-      </div>
-    </div>
-
-    <div class="manual-upload-card">
       <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
       <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
       <a href="https://fadly2002-gerai-pelayanan-bprl.hf.space/" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
@@ -2654,6 +2665,33 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
         <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-secondary-sm mac-order-1">""" + ICONS["check-circle"] + """ Simpan</button>
         <button type="submit" class="btn-primary-big">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
         <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-secondary-sm mac-order-3">""" + ICONS["download"] + """ Unduh Draft</button>
+      </div>
+    </div>
+
+    <div class="jenis-permohonan-card">
+      <h3>""" + ICONS["doc"] + """ Jenis Permohonan KKPRL</h3>
+      <div class="ff-hint" style="margin-bottom:0;">Pilih salah satu -- otomatis menyesuaikan judul dan isi Dokumen Draft Proposal yang dihasilkan. <b>Persetujuan KKPRL</b> umumnya untuk Pelaku Usaha (kegiatan Berusaha). <b>Konfirmasi KKPRL</b> umumnya untuk Pemerintah Pusat/Daerah dengan kegiatan Non Berusaha yang bersifat Strategis Nasional.</div>
+      <div class="jp-toggle-row">
+        <label class="jp-toggle">
+          <input type="radio" name="jenis_permohonan" value="Persetujuan" checked>
+          <div class="jp-toggle-face">
+            <div class="jp-toggle-icon">""" + ICONS["check-circle"] + """</div>
+            <div class="jp-toggle-text">
+              <div class="jp-toggle-title">Persetujuan KKPRL</div>
+              <div class="jp-toggle-sub">Untuk Pelaku Usaha (kegiatan Berusaha)</div>
+            </div>
+          </div>
+        </label>
+        <label class="jp-toggle">
+          <input type="radio" name="jenis_permohonan" value="Konfirmasi">
+          <div class="jp-toggle-face">
+            <div class="jp-toggle-icon">""" + ICONS["doc"] + """</div>
+            <div class="jp-toggle-text">
+              <div class="jp-toggle-title">Konfirmasi KKPRL</div>
+              <div class="jp-toggle-sub">Untuk Pemerintah Pusat/Daerah, Non Berusaha</div>
+            </div>
+          </div>
+        </label>
       </div>
     </div>
 
