@@ -1392,27 +1392,22 @@ REVIEW_CSS = """
    tampilan kartu tersendiri yang lebih menonjol & mudah ditemukan --
    tombol utama "Proses & Lanjut" dibuat lebih besar & jadi pusat perhatian,
    dua tombol lain jadi aksi sekunder di sampingnya.*/
-.manual-action-card { background:#fff; border-radius:16px; padding:20px 22px; margin-bottom:18px;
-  box-shadow:0 8px 26px rgba(18,58,99,.10); border:1px solid #e7eef6; text-align:center; }
-.manual-action-card .mac-label { font-size:12px; font-weight:800; color:var(--muted);
-  text-transform:uppercase; letter-spacing:.04em; margin-bottom:12px; }
-.manual-action-row { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; }
-.manual-action-row .btn-primary-big { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
-  border:none; padding:17px 34px; border-radius:14px; font-size:15.5px; font-weight:800; cursor:pointer;
-  display:inline-flex; align-items:center; justify-content:center; gap:9px;
-  box-shadow:0 8px 22px rgba(30,99,199,.32); order:2; }
+.manual-action-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+.manual-action-row .btn-primary-big { flex:1; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:16px; border-radius:12px; font-size:14.5px; font-weight:800; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  box-shadow:0 6px 18px rgba(30,99,199,.28); }
 .manual-action-row .btn-primary-big:hover { filter:brightness(1.06); }
-.manual-action-row .btn-primary-big svg { width:20px; height:20px; flex:none; }
-.manual-action-row .btn-secondary-sm { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
-  padding:13px 18px; border-radius:12px; font-size:13px; font-weight:700; cursor:pointer;
-  display:inline-flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap; }
+.manual-action-row .btn-primary-big svg { width:19px; height:19px; flex:none; }
+.manual-action-row .btn-secondary-sm { flex:none; background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
+  padding:16px 20px; border-radius:12px; font-size:14px; font-weight:700; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap; }
 .manual-action-row .btn-secondary-sm:hover { background:#f3f8ff; }
-.manual-action-row .btn-secondary-sm svg { width:16px; height:16px; flex:none; }
-.manual-action-row .btn-secondary-sm.mac-order-1 { order:1; }
-.manual-action-row .btn-secondary-sm.mac-order-3 { order:3; }
+.manual-action-row .btn-secondary-sm svg { width:19px; height:19px; flex:none; }
 @media (max-width: 560px) {
-  .manual-action-row { flex-direction:column; }
-  .manual-action-row .btn-primary-big, .manual-action-row .btn-secondary-sm { width:100%; order:initial; }
+  .manual-action-row { flex-wrap:wrap; }
+  .manual-action-row .btn-primary-big { flex:1 1 100%; order:-1; }
+  .manual-action-row .btn-secondary-sm { flex:1; }
 }
 
 /* Kartu pilihan Jenis Permohonan KKPRL (Persetujuan/Konfirmasi) -- didesain
@@ -1425,16 +1420,21 @@ REVIEW_CSS = """
 .jp-toggle { flex:1 1 220px; position:relative; }
 .jp-toggle input[type=radio] { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
 .jp-toggle-face { display:flex; align-items:center; gap:12px; border:2px solid #d7e2ee; border-radius:14px;
-  padding:16px 18px; background:#fafcfe; transition:.15s; cursor:pointer; }
+  padding:16px 18px; background:#fafcfe; transition:.15s; cursor:pointer; position:relative; }
 .jp-toggle-icon { flex:none; width:38px; height:38px; border-radius:50%; background:#eaf1fc; color:var(--blue);
   display:flex; align-items:center; justify-content:center; }
 .jp-toggle-icon svg { width:20px; height:20px; }
 .jp-toggle-text { flex:1; }
 .jp-toggle-title { font-size:14.5px; font-weight:800; color:var(--navy); }
 .jp-toggle-sub { font-size:11.5px; color:var(--muted); margin-top:2px; }
+.jp-toggle-badge { position:absolute; top:-8px; right:-8px; width:24px; height:24px; border-radius:50%;
+  background:#1e9e5a; color:#fff; display:none; align-items:center; justify-content:center;
+  box-shadow:0 2px 6px rgba(30,158,90,.4); border:2px solid #fff; }
+.jp-toggle-badge svg { width:13px; height:13px; }
 .jp-toggle input[type=radio]:checked ~ .jp-toggle-face { border-color:var(--blue); background:#eaf3fd;
   box-shadow:0 4px 14px rgba(47,127,224,.18); }
 .jp-toggle input[type=radio]:checked ~ .jp-toggle-face .jp-toggle-icon { background:var(--blue); color:#fff; }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face .jp-toggle-badge { display:flex; }
 .jp-toggle input[type=radio]:focus-visible ~ .jp-toggle-face { outline:2px solid var(--blue); outline-offset:2px; }
 .jp-toggle-face:hover { border-color:#aac6e8; }
 
@@ -2659,13 +2659,10 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
       </div>
     </div>
 
-    <div class="manual-action-card">
-      <div class="mac-label">Sudah Yakin dengan Isian di Atas?</div>
-      <div class="manual-action-row">
-        <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-secondary-sm mac-order-1">""" + ICONS["check-circle"] + """ Simpan</button>
-        <button type="submit" class="btn-primary-big">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
-        <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-secondary-sm mac-order-3">""" + ICONS["download"] + """ Unduh Draft</button>
-      </div>
+    <div class="manual-action-row">
+      <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-secondary-sm">""" + ICONS["check-circle"] + """ Simpan</button>
+      <button type="submit" class="btn-primary-big">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+      <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-secondary-sm">""" + ICONS["download"] + """ Unduh Draft</button>
     </div>
 
     <div class="jenis-permohonan-card">
@@ -2680,6 +2677,7 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
               <div class="jp-toggle-title">Persetujuan KKPRL</div>
               <div class="jp-toggle-sub">Untuk Pelaku Usaha (kegiatan Berusaha)</div>
             </div>
+            <div class="jp-toggle-badge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
           </div>
         </label>
         <label class="jp-toggle">
@@ -2690,6 +2688,7 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
               <div class="jp-toggle-title">Konfirmasi KKPRL</div>
               <div class="jp-toggle-sub">Untuk Pemerintah Pusat/Daerah, Non Berusaha</div>
             </div>
+            <div class="jp-toggle-badge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
           </div>
         </label>
       </div>
