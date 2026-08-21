@@ -18,8 +18,18 @@
     "tujuan_kegiatan": "",
     "instalasi_bangunan": "",
     "instalasi_posisi": "",
-    "jadwal_kegiatan": "",
-    "jadwal_table": [],
+    "jadwal_kegiatan": "Pengurusan PKKPRL : Januari 2026 - Maret 2026.",
+    "jadwal_table": [
+      {
+        "nama": "Pengurusan PKKPRL",
+        "tahun_mulai": "2026",
+        "bulan_mulai": "1",
+        "minggu_mulai": "",
+        "tahun_selesai": "2026",
+        "bulan_selesai": "3",
+        "minggu_selesai": ""
+      }
+    ],
     "dokumen_data_dukung": "",
     "dokumen_data_dukung_detail": [],
     "mangrove_ada": "",
@@ -46,14 +56,14 @@
     "koordinat": [
       [
         "1",
-        "122.643",
-        "-3.9334",
+        "122.65",
+        "-3.93",
         "P1"
       ],
       [
         "2",
-        "122.6499",
-        "-3.9287",
+        "122.66",
+        "-3.94",
         "P2"
       ]
     ],

@@ -325,22 +325,29 @@ def load_draft_laporan(kode_nama, job_id):
         return None
 
 
-def merge_draft_images(kode_nama, job_id, prop_images):
+def merge_draft_images(kode_nama, job_id, prop_images, hapus_tags=None):
     """Gabungkan gambar yang BARU diunggah pada submit ini (prop_images)
     dengan gambar yang sudah tersimpan sebelumnya lewat tombol \"Simpan\"
     (job_id yang sama) -- supaya kalau pengguna sudah pernah mengunggah
     gambar tapi lupa mengunggah ulang di sesi berikutnya, gambar lama tetap
     dipakai (tidak hilang). Tag yang di-upload ulang pada submit ini akan
-    MENGGANTIKAN (bukan menumpuk) gambar lama dengan tag yang sama."""
+    MENGGANTIKAN (bukan menumpuk) gambar lama dengan tag yang sama.
+
+    hapus_tags: set/list tag yang secara eksplisit ditandai untuk DIHAPUS
+    lewat tombol \u00d7 pada gambar tersimpan (lihat img-remove-saved di JS) --
+    tag-tag ini dikecualikan sepenuhnya dari hasil gabungan, walau tidak ada
+    upload baru yang menggantikannya."""
     if not kode_nama or not job_id:
         return prop_images
     saved = load_draft_images(kode_nama, job_id)
     if not saved:
         return prop_images
+    hapus_set = set(hapus_tags or [])
     new_tags = {im.get("tag") for im in prop_images}
     merged = list(prop_images)
     for im in saved:
-        if im.get("tag") not in new_tags:
+        tag = im.get("tag")
+        if tag not in new_tags and tag not in hapus_set:
             merged.append(im)
     return merged
 
@@ -1775,17 +1782,18 @@ def render_select_html(fname, options, allow_other=False):
 
 def dukung_item_html(idx, checkbox_name, label):
     """Satu baris item Dokumen Data Dukung: checkbox + (kalau dicentang)
-    muncul otomatis kolom Link Google Drive dan Upload File."""
+    muncul otomatis kolom Link Google Drive (opsional). Sengaja TIDAK ada
+    upload file langsung ke server di sini -- demi keamanan data Pengguna
+    Jasa, dokumen pendukung cukup ditautkan lewat Google Drive milik
+    mereka sendiri, bukan diunggah ke server aplikasi."""
     cb_id = f"dd{idx}"
     return (
         f'<div class="dukung-item">'
         f'<div class="checkbox-row"><input type="checkbox" name="{checkbox_name}" id="{cb_id}" class="dukung-cb" data-target="dukung_detail_{cb_id}">'
         f'<label for="{cb_id}">{label}</label></div>'
         f'<div class="dukung-detail" id="dukung_detail_{cb_id}" style="display:none;">'
-        f'<div class="field-row"><label>Link Google Drive Dokumen</label>'
-        f'<input type="text" name="{checkbox_name}_drive" placeholder="Tempel link Google Drive di sini"></div>'
-        f'<div class="field-row"><label>Atau Upload File</label>'
-        f'<input type="file" name="{checkbox_name}_file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"></div>'
+        f'<div class="field-row"><label>Link Google Drive Dokumen <span style="font-weight:400;color:var(--muted);">(opsional)</span></label>'
+        f'<input type="text" name="{checkbox_name}_drive" placeholder="Tempel link Google Drive di sini (opsional)"></div>'
         f'</div></div>'
     )
 
@@ -1858,6 +1866,16 @@ IMAGE_FIELD_TAGS = [
     ("img_dok_sosialisasi", "dok_sosialisasi"),
     ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
 ]
+_IMAGE_FIELD_TO_TAG = dict(IMAGE_FIELD_TAGS)
+
+
+def _hapus_field_names_to_tags(field_names):
+    """Ubah daftar NAMA FIELD form (mis. 'img_foto_mangrove', dikirim tombol
+    hapus pada thumbnail gambar tersimpan) menjadi TAG internal gambar (mis.
+    'foto_mangrove') yang dipakai merge_draft_images -- keduanya berbeda
+    penamaan (lihat IMAGE_FIELD_TAGS), jadi harus diterjemahkan dulu supaya
+    penghapusan benar-benar cocok dengan tag gambar yang tersimpan."""
+    return [_IMAGE_FIELD_TO_TAG.get(fn, fn) for fn in (field_names or [])]
 
 
 def img_field_html(field_name, label, desc="", multiple=False, note="", saved_previews=None):
@@ -1866,21 +1884,22 @@ def img_field_html(field_name, label, desc="", multiple=False, note="", saved_pr
     saved_html = ""
     if saved_previews:
         thumbs = "".join(
-            f'<div class="img-thumb img-thumb-saved" title="Tersimpan dari isian sebelumnya &mdash; '
+            f'<div class="img-thumb img-thumb-saved" data-field="{field_name}" title="Tersimpan dari isian sebelumnya &mdash; '
             f'tidak perlu diunggah ulang, kecuali ingin menggantinya">'
             f'<img src="{p["url"]}" alt="{label}">'
             f'<span class="img-thumb-badge">\u2713 Tersimpan</span>'
+            f'<button type="button" class="img-remove img-remove-saved" data-field="{field_name}" title="Hapus gambar tersimpan ini">&times;</button>'
             f'</div>'
             for p in saved_previews
         )
-        saved_html = f'<div class="img-preview-list img-preview-saved">{thumbs}</div>'
+        saved_html = f'<div class="img-preview-list img-preview-saved" id="{field_name}_saved_preview">{thumbs}</div>'
     return (
         f'<div class="file-field-row">'
         f'<label>{label}{note_html}</label>{desc_html}'
         f'<div class="img-input-row">'
         f'<button type="button" class="img-upload-btn" data-field="{field_name}">{ICONS["doc"]} Upload File</button>'
         f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
-        f'<span class="ipt-text"><b>Ctrl+V</b><br>paste</span></div>'
+        f'<span class="ipt-text"><b>Klik / Ctrl+V</b><br>tempel gambar</span></div>'
         f'</div>'
         f'<input type="file" name="{field_name}" id="{field_name}" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple style="display:none">'
         f'{saved_html}'
@@ -3280,11 +3299,35 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
     renderPreviews();
   }
 
-  // Area Paste: HANYA untuk fokus + Ctrl+V + drag-drop. Klik TIDAK membuka file browser.
+  // Area Paste: fokus + Ctrl+V + drag-drop SEPERTI SEBELUMNYA, DITAMBAH klik
+  // langsung mencoba ambil gambar dari clipboard lewat Clipboard API -- supaya
+  // "paste" tidak cuma bisa lewat keyboard shortcut Ctrl+V (mis. di HP/tablet
+  // yang tidak ada tombol Ctrl, atau pengguna yang lebih familiar klik tombol).
   target.addEventListener('paste', function(e) {
     var items = (e.clipboardData || window.clipboardData).items;
     for (var i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image/') === 0) { addFile(items[i].getAsFile()); }
+    }
+  });
+  target.addEventListener('click', async function() {
+    if (!navigator.clipboard || !navigator.clipboard.read) { target.focus(); return; }
+    try {
+      var clipItems = await navigator.clipboard.read();
+      var found = false;
+      for (var ci = 0; ci < clipItems.length; ci++) {
+        var item = clipItems[ci];
+        for (var ti = 0; ti < item.types.length; ti++) {
+          var type = item.types[ti];
+          if (type.indexOf('image/') === 0) {
+            var blob = await item.getType(type);
+            addFile(new File([blob], 'clipboard-image.' + type.split('/')[1], { type: type }));
+            found = true;
+          }
+        }
+      }
+      if (!found) target.focus();
+    } catch (err) {
+      target.focus();
     }
   });
   target.addEventListener('dragover', function(e) { e.preventDefault(); target.classList.add('dragover'); });
@@ -3298,6 +3341,24 @@ document.querySelectorAll('.img-paste-target').forEach(function(target) {
   uploadBtn.addEventListener('click', function() { input.click(); });
   input.addEventListener('change', function() {
     for (var i = 0; i < input.files.length; i++) { addFile(input.files[i]); }
+  });
+});
+
+// Hapus gambar TERSIMPAN (dari isian/draft sebelumnya) -- tandai lewat hidden
+// input supaya server tahu field ini harus DIKOSONGKAN, bukan cuma disembunyikan
+// di tampilan. Beda dari tombol hapus gambar baru di atas (yang cuma perlu
+// menghapus dari array `files` di memori karena belum tersimpan di server).
+document.querySelectorAll('.img-remove-saved').forEach(function(btn) {
+  btn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    var fieldName = btn.dataset.field;
+    var thumb = btn.closest('.img-thumb');
+    if (thumb) thumb.remove();
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'hapus_gambar_tersimpan';
+    hidden.value = fieldName;
+    document.getElementById('manualForm').appendChild(hidden);
   });
 });
 
@@ -4533,7 +4594,8 @@ def proposal_manual_simpan():
         owner_kode = _effective_draft_owner_kode(user, request.form)
         existing_job_id = request.form.get("existing_job_id", "").strip()
         job_id = existing_job_id or uuid.uuid4().hex[:12]
-        prop_images = merge_draft_images(owner_kode, job_id, prop_images)
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
+        prop_images = merge_draft_images(owner_kode, job_id, prop_images, hapus_tags=hapus_tags)
         save_draft(owner_kode, job_id, prop_data, prop_images,
                    laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
     except Exception as e:
@@ -4587,8 +4649,9 @@ def proposal_manual_submit():
         current_user = session.get("user")
         draft_job_id = request.form.get("existing_job_id", "").strip() or job_id
         owner_kode = _effective_draft_owner_kode(current_user, request.form)
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
         if owner_kode:
-            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images)
+            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images, hapus_tags=hapus_tags)
 
         # File Laporan yang dipakai untuk generate dokumen sekarang: file
         # baru kalau diunggah, atau file Laporan tersimpan sebelumnya untuk
@@ -4654,8 +4717,9 @@ def proposal_manual_draft():
         current_user = session.get("user")
         draft_job_id = request.form.get("existing_job_id", "").strip() or uuid.uuid4().hex[:12]
         owner_kode = _effective_draft_owner_kode(current_user, request.form)
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
         if owner_kode:
-            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images)
+            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images, hapus_tags=hapus_tags)
             save_draft(owner_kode, draft_job_id, prop_data, prop_images,
                        laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
 
