@@ -879,7 +879,8 @@ a { text-decoration:none; }
 .asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
 .asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
 .asisten-promo-navi { flex:none; width:78px; height:78px; position:relative; z-index:1; filter:drop-shadow(0 6px 14px rgba(0,0,0,.28)); }
-.asisten-promo-navi img { width:100%; height:100%; object-fit:contain; display:block; }
+.asisten-promo-navi img, .asisten-promo-navi video { width:100%; height:100%; object-fit:contain; display:block; }
+.asisten-promo-navi .navi-video-wrap { width:100%; height:100%; }
 .asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
   color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
   position:relative; z-index:1; box-shadow:0 6px 16px rgba(214,130,26,.35); transition:.15s; }
@@ -890,10 +891,6 @@ a { text-decoration:none; }
   .asisten-promo-cta { width:100%; justify-content:center; }
 }
 .asisten-promo-wrap { position:relative; }
-.promo-mascot-full { position:absolute; right:28px; bottom:100%; height:150px; width:auto; z-index:3;
-  filter:drop-shadow(0 10px 18px rgba(10,37,87,.3)); }
-.promo-mascot-full video, .promo-mascot-full img { height:100%; width:auto; display:block; border-radius:12px 12px 0 0; }
-@media (max-width: 780px) { .promo-mascot-full { display:none; } }
 
 /* Video maskot Tanya Navi (autoplay-loop-muted, meniru perilaku GIF) --
    dipakai baik di kartu promo beranda maupun di halaman Tanya Navi. Audio
@@ -908,6 +905,8 @@ a { text-decoration:none; }
   display:flex; align-items:center; justify-content:center; font-size:12px; padding:0; z-index:2; }
 .navi-unmute-btn:hover { background:rgba(10,37,87,.95); }
 .navi-unmute-btn svg { width:13px; height:13px; }
+.asisten-promo-navi .navi-unmute-btn, .chat-head-navi .navi-unmute-btn { width:18px; height:18px; bottom:0; right:0; border-width:1px; }
+.asisten-promo-navi .navi-unmute-btn svg, .chat-head-navi .navi-unmute-btn svg { width:9px; height:9px; }
 """
 
 NAVI_UNMUTE_JS = """
@@ -919,7 +918,9 @@ document.querySelectorAll('.navi-video-wrap').forEach(function(wrap) {
   var video = wrap.querySelector('video');
   var btn = wrap.querySelector('.navi-unmute-btn');
   if (!video || !btn) return;
-  btn.addEventListener('click', function() {
+  btn.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
     video.muted = !video.muted;
     btn.classList.toggle('is-unmuted', !video.muted);
     if (!video.muted) { video.play().catch(function() {}); }
@@ -989,18 +990,10 @@ HEADER_HTML = """
 
 
 ASISTEN_CSS = """
-.chat-page-row { max-width:940px; margin:0 auto; display:flex; align-items:flex-end; gap:24px; }
-.chat-page-mascot { flex:none; width:200px; display:flex; justify-content:center; }
-.chat-page-mascot img, .chat-page-mascot video { width:100%; height:auto; display:block; filter:drop-shadow(0 10px 20px rgba(10,37,87,.22)); border-radius:14px; }
-@media (max-width: 820px) {
-  .chat-page-row { flex-direction:column; align-items:center; gap:6px; }
-  .chat-page-mascot { width:130px; order:-1; }
-  .chat-shell { flex:none; width:100%; margin:0 auto; }
-}
 .chat-shell {
   --deep:#0A2557; --sea:#12468C; --tide:#1AA6E0; --gold:#F2A83B; --gold-deep:#D6821A;
   --foam:#EAF6FC; --sand:#F3F7FB; --cink:#0A2557; --cline:rgba(10,37,87,0.13); --cwhite:#FFFFFF;
-  max-width:720px; flex:1; min-width:0;
+  max-width:720px; margin:0 auto;
   font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
 }
 .chat-card {
@@ -1099,19 +1092,17 @@ def render_asisten_page():
 <div class="asisten-wrap">
   <a href="/" class="asisten-back">&larr; Kembali ke Beranda</a>
 
-  <div class="chat-page-row">
-    <div class="chat-page-mascot">
-      <div class="navi-video-wrap">
-        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
-          <source src="/static/navi-mascot-video.mp4" type="video/mp4">
-        </video>
-        <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
-      </div>
-    </div>
-    <div class="chat-shell">
+  <div class="chat-shell">
     <div class="chat-card">
       <div class="chat-head">
-        <div class="chat-head-navi"><img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi"></div>
+        <div class="chat-head-navi">
+          <div class="navi-video-wrap">
+            <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+              <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+            </video>
+            <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+          </div>
+        </div>
         <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GerAI"></div>
         <div class="chat-head-text">
           <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
@@ -1146,7 +1137,6 @@ def render_asisten_page():
       </form>
     </div>
     <div class="chat-foot">Jawaban bersifat informatif, bukan pengganti dokumen resmi peraturan KKP.</div>
-  </div>
   </div>
 </div>
 
@@ -1347,14 +1337,6 @@ UPLOAD_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="asisten-promo-wrap">
-  <div class="promo-mascot-full">
-    <div class="navi-video-wrap">
-      <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
-        <source src="/static/navi-mascot-video.mp4" type="video/mp4">
-      </video>
-      <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
-    </div>
-  </div>
   <a href="/asisten" class="asisten-promo-card">
     <div class="asisten-promo-badge">
       <img src="/static/logo-egerai-icon.png" alt="Asisten e-GerAI">
@@ -1365,7 +1347,12 @@ UPLOAD_HTML = """<!DOCTYPE html>
       <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
     </div>
     <div class="asisten-promo-navi">
-      <img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi">
+      <div class="navi-video-wrap">
+        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+          <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+        </video>
+        <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+      </div>
     </div>
     <div class="asisten-promo-cta">
       <span>Tanya Navi Sekarang</span>
