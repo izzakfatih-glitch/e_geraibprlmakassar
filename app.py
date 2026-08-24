@@ -889,6 +889,42 @@ a { text-decoration:none; }
   .asisten-promo-navi { align-self:center; }
   .asisten-promo-cta { width:100%; justify-content:center; }
 }
+.asisten-promo-wrap { position:relative; }
+.promo-mascot-full { position:absolute; right:28px; bottom:100%; height:150px; width:auto; z-index:3;
+  filter:drop-shadow(0 10px 18px rgba(10,37,87,.3)); }
+.promo-mascot-full video, .promo-mascot-full img { height:100%; width:auto; display:block; border-radius:12px 12px 0 0; }
+@media (max-width: 780px) { .promo-mascot-full { display:none; } }
+
+/* Video maskot Tanya Navi (autoplay-loop-muted, meniru perilaku GIF) --
+   dipakai baik di kartu promo beranda maupun di halaman Tanya Navi. Audio
+   TIDAK bisa autoplay dengan suara -- ini pembatasan baku semua browser
+   modern (Chrome/Firefox/Safari/Edge) demi mencegah suara mendadak yang
+   mengganggu pengguna, bukan keterbatasan implementasi di sini. Tombol
+   kecil speaker disediakan supaya pengguna bisa mengaktifkan suara sendiri
+   dengan satu klik/tap kalau mau. */
+.navi-video-wrap { position:relative; display:inline-block; line-height:0; }
+.navi-unmute-btn { position:absolute; bottom:6px; right:6px; width:26px; height:26px; border-radius:50%;
+  background:rgba(10,37,87,.78); color:#fff; border:1.5px solid rgba(255,255,255,.7); cursor:pointer;
+  display:flex; align-items:center; justify-content:center; font-size:12px; padding:0; z-index:2; }
+.navi-unmute-btn:hover { background:rgba(10,37,87,.95); }
+.navi-unmute-btn svg { width:13px; height:13px; }
+"""
+
+NAVI_UNMUTE_JS = """
+// Tombol unmute video maskot Tanya Navi -- browser TIDAK mengizinkan video
+// autoplay dengan suara (kebijakan baku semua browser modern), jadi video
+// diputar otomatis dalam kondisi bisu (seperti GIF), dan pengguna bisa
+// mengaktifkan suaranya sendiri lewat tombol kecil ini kalau mau.
+document.querySelectorAll('.navi-video-wrap').forEach(function(wrap) {
+  var video = wrap.querySelector('video');
+  var btn = wrap.querySelector('.navi-unmute-btn');
+  if (!video || !btn) return;
+  btn.addEventListener('click', function() {
+    video.muted = !video.muted;
+    btn.classList.toggle('is-unmuted', !video.muted);
+    if (!video.muted) { video.play().catch(function() {}); }
+  });
+});
 """
 
 ICONS = {
@@ -953,10 +989,18 @@ HEADER_HTML = """
 
 
 ASISTEN_CSS = """
+.chat-page-row { max-width:940px; margin:0 auto; display:flex; align-items:flex-end; gap:24px; }
+.chat-page-mascot { flex:none; width:200px; display:flex; justify-content:center; }
+.chat-page-mascot img, .chat-page-mascot video { width:100%; height:auto; display:block; filter:drop-shadow(0 10px 20px rgba(10,37,87,.22)); border-radius:14px; }
+@media (max-width: 820px) {
+  .chat-page-row { flex-direction:column; align-items:center; gap:6px; }
+  .chat-page-mascot { width:130px; order:-1; }
+  .chat-shell { flex:none; width:100%; margin:0 auto; }
+}
 .chat-shell {
   --deep:#0A2557; --sea:#12468C; --tide:#1AA6E0; --gold:#F2A83B; --gold-deep:#D6821A;
   --foam:#EAF6FC; --sand:#F3F7FB; --cink:#0A2557; --cline:rgba(10,37,87,0.13); --cwhite:#FFFFFF;
-  max-width:720px; margin:0 auto;
+  max-width:720px; flex:1; min-width:0;
   font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
 }
 .chat-card {
@@ -971,21 +1015,21 @@ ASISTEN_CSS = """
 }
 .chat-head::after { content:""; position:absolute; right:-40px; bottom:-60px; width:180px; height:180px;
   border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.4), transparent 70%); }
-.chat-logo-badge { flex-shrink:0; width:44px; height:44px; border-radius:11px; background:rgba(255,255,255,.96);
+.chat-logo-badge { flex-shrink:0; width:88px; height:88px; border-radius:20px; background:rgba(255,255,255,.96);
   display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(0,0,0,.18);
-  position:relative; z-index:1; padding:5px; }
+  position:relative; z-index:1; padding:9px; }
 .chat-logo-badge img { width:100%; height:100%; object-fit:contain; }
 .chat-head-navi { position:absolute; top:10px; right:14px; width:78px; height:78px; z-index:2;
   filter:drop-shadow(0 6px 14px rgba(0,0,0,.3)); }
-.chat-head-navi img { width:100%; height:100%; object-fit:contain; display:block; }
+.chat-head-navi img, .chat-head-navi video { width:100%; height:100%; object-fit:contain; display:block; }
 @media (max-width: 480px) { .chat-head-navi { width:60px; height:60px; top:10px; right:10px; } .chat-head { padding-right:76px; } }
 .chat-head-text { position:relative; z-index:1; flex:1; min-width:0; }
 .chat-eyebrow { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; opacity:.78; font-weight:700; }
 .chat-head h2 { margin:3px 0 3px; font-size:18px; font-weight:800; letter-spacing:-.01em; }
 .chat-sub { font-size:12px; opacity:.85; max-width:440px; line-height:1.5; }
-.chat-status { display:inline-flex; align-items:center; gap:6px; margin-top:10px; font-size:10.5px;
-  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); padding:3px 9px 3px 7px; border-radius:999px; }
-.chat-dot { width:6px; height:6px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 3px rgba(242,168,59,.3); }
+.chat-status { display:inline-flex; align-items:center; gap:14px; margin-top:10px; font-size:26.25px;
+  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); padding:7px 20px 7px 15px; border-radius:999px; }
+.chat-dot { width:14px; height:14px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 3px rgba(242,168,59,.3); flex:none; }
 
 .chat-chips { display:flex; gap:8px; padding:12px 14px; overflow-x:auto; background:var(--foam);
   border-bottom:1px solid var(--cline); scrollbar-width:none; }
@@ -1055,7 +1099,16 @@ def render_asisten_page():
 <div class="asisten-wrap">
   <a href="/" class="asisten-back">&larr; Kembali ke Beranda</a>
 
-  <div class="chat-shell">
+  <div class="chat-page-row">
+    <div class="chat-page-mascot">
+      <div class="navi-video-wrap">
+        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+          <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+        </video>
+        <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+      </div>
+    </div>
+    <div class="chat-shell">
     <div class="chat-card">
       <div class="chat-head">
         <div class="chat-head-navi"><img src="/static/logo-tanya-navi-icon.png" alt="Tanya Navi"></div>
@@ -1093,6 +1146,7 @@ def render_asisten_page():
       </form>
     </div>
     <div class="chat-foot">Jawaban bersifat informatif, bukan pengganti dokumen resmi peraturan KKP.</div>
+  </div>
   </div>
 </div>
 
@@ -1190,6 +1244,7 @@ def render_asisten_page():
     askAsisten(q);
   });
 })();
+""" + NAVI_UNMUTE_JS + """
 </script>
 </body></html>"""
 
@@ -1292,6 +1347,14 @@ UPLOAD_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="asisten-promo-wrap">
+  <div class="promo-mascot-full">
+    <div class="navi-video-wrap">
+      <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+        <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+      </video>
+      <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+    </div>
+  </div>
   <a href="/asisten" class="asisten-promo-card">
     <div class="asisten-promo-badge">
       <img src="/static/logo-egerai-icon.png" alt="Asisten e-GerAI">
@@ -1361,6 +1424,7 @@ setupDropzone(2);
 document.getElementById('genForm').addEventListener('submit', function() {
   document.getElementById('spinner').style.display = 'block';
 });
+""" + NAVI_UNMUTE_JS + """
 </script>
 </body></html>"""
 
