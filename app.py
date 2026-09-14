@@ -482,12 +482,25 @@ ANALIS_KODE_HARDCODED = {"101", "114"}
 RIWAYAT_ANALISIS_SEMUA_KODE = {"101", "114"}
 
 
+def _clean_cell(v):
+    """Bersihkan nilai sel Google Sheet dari karakter tak-kasatmata (zero-
+    width space \\u200b, BOM \\ufeff, dsb) yang sering ikut kebawa saat
+    copy-paste ke spreadsheet dari web/PDF/Word -- Python str.strip() TIDAK
+    otomatis membuang karakter semacam ini (beda dari spasi biasa/non-
+    breaking space yang memang sudah tertangani), sehingga cek semacam
+    "Ya" == "Ya" bisa diam-diam gagal cocok walau keduanya kelihatan sama
+    persis secara visual. Dipakai untuk SEMUA nilai sel penting dari sheet
+    staf (Kode Nama, Kode Petugas, Admin, Analisis, dst) supaya pencocokan
+    akses selalu andal."""
+    return (v or "").replace("\u200b", "").replace("\ufeff", "").strip()
+
+
 def _is_admin_value(v):
-    return (v or "").strip().lower() in ("ya", "yes", "true", "1", "admin", "y")
+    return _clean_cell(v).lower() in ("ya", "yes", "true", "1", "admin", "y")
 
 
 def _is_analis_value(v):
-    return (v or "").strip().lower() in ("ya", "yes", "true", "1", "analis", "y")
+    return _clean_cell(v).lower() in ("ya", "yes", "true", "1", "analis", "y")
 
 
 def parse_koordinat_file(file_storage):
@@ -634,9 +647,9 @@ def fetch_staff_list(force=False):
         reader = csv.DictReader(_io.StringIO(raw))
         staff = {}
         for row in reader:
-            nama = (row.get("Nama") or "").strip()
-            kode_nama = (row.get("Kode Nama") or "").strip()
-            kode_petugas = (row.get("Kode petugas") or "").strip()
+            nama = _clean_cell(row.get("Nama"))
+            kode_nama = _clean_cell(row.get("Kode Nama"))
+            kode_petugas = _clean_cell(row.get("Kode petugas"))
             admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
             is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
             analis_raw = (row.get("Analis") or row.get("analis") or row.get("Petugas Analisis")
@@ -4048,8 +4061,8 @@ def login_pegawai_form():
 
 @app.route("/login-pegawai", methods=["POST"])
 def login_pegawai_submit():
-    kode_nama = (request.form.get("kode_nama") or "").strip()
-    kode_petugas = (request.form.get("kode_petugas") or "").strip()
+    kode_nama = _clean_cell(request.form.get("kode_nama"))
+    kode_petugas = _clean_cell(request.form.get("kode_petugas"))
     staff = fetch_staff_list()
     entry = staff.get(kode_nama)
     if entry and entry["password"] == kode_petugas:
