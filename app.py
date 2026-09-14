@@ -471,7 +471,15 @@ ADMIN_KODE_HARDCODED = {"01"}
 # koreksi/penilaian dokumen, jadi HANYA petugas yang ditunjuk (kolom
 # "Analis"/"Petugas Analisis" bernilai Ya/TRUE/1 di Google Sheet, atau kode
 # nama yang didaftarkan di sini, atau akun admin) yang boleh mengaksesnya.
-ANALIS_KODE_HARDCODED = set()
+ANALIS_KODE_HARDCODED = {"101", "114"}
+
+# Kode Nama yang boleh membuka "Riwayat Analisis Semua Petugas" (melihat
+# hasil Analisis & Koreksi Proposal yang disimpan oleh SEMUA petugas
+# analisis, bukan cuma milik sendiri) -- akses ini SENGAJA dibatasi ketat
+# ke kode nama yang didaftarkan eksplisit di sini saja, TIDAK otomatis
+# untuk admin/petugas analisis lain, karena isinya adalah hasil kerja
+# petugas lain yang sifatnya lebih sensitif dibanding riwayat sendiri.
+RIWAYAT_ANALISIS_SEMUA_KODE = {"101", "114"}
 
 
 def _is_admin_value(v):
@@ -4154,6 +4162,39 @@ def _require_analis():
     return None
 
 
+def _require_riwayat_semua_analisis():
+    """Helper guard untuk halaman Riwayat Analisis Semua Petugas -- HANYA
+    petugas dengan "Kode Petugas" (kolom password di Google Sheet, mis.
+    101/114) yang terdaftar di RIWAYAT_ANALISIS_SEMUA_KODE yang boleh
+    mengakses (lihat catatan di konstanta itu).
+
+    PENTING: ini SENGAJA dicocokkan ke "Kode Petugas" (password), BUKAN
+    "Kode Nama" (username login yang disimpan di session.user.kode) --
+    angka semacam 101/114 (tiga digit) adalah pola "Kode Petugas" di
+    Google Sheet, beda dari "Kode Nama" yang dua digit (01, 02, ...).
+    Karena password TIDAK disimpan di session setelah login, kode petugas
+    pengguna yang sedang login dicari ulang lewat fetch_staff_list()
+    berdasarkan Kode Nama-nya (session.user.kode) setiap kali guard ini
+    dipanggil.
+
+    Return response penolakan kalau tidak berhak, atau None kalau boleh
+    lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    entry = fetch_staff_list().get(user.get("kode")) or {}
+    kode_petugas_user = entry.get("password", "")
+    if kode_petugas_user not in RIWAYAT_ANALISIS_SEMUA_KODE:
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["lock"] + """ Akses Ditolak</h3>
+<p>Halaman Riwayat Analisis Semua Petugas hanya bisa diakses oleh petugas tertentu yang ditunjuk.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
 @app.route("/admin/refresh-staff", methods=["POST"])
 def admin_refresh_staff():
     """Paksa ambil ulang daftar petugas dari Google Sheet saat itu juga --
@@ -4359,6 +4400,8 @@ def analisis_riwayat_list():
         return denied
     user = session.get("user") or {}
     items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR, disimpan_oleh=user.get("kode", ""))
+    kode_petugas_user = (fetch_staff_list().get(user.get("kode")) or {}).get("password", "")
+    boleh_lihat_semua = kode_petugas_user in RIWAYAT_ANALISIS_SEMUA_KODE
     if items:
         rows = "".join(
             f"<tr><td>{it['waktu']}</td><td>{it['nama_proposal']}</td>"
@@ -4373,15 +4416,21 @@ def analisis_riwayat_list():
     else:
         table_html = '<p style="color:var(--muted);font-size:13.5px;">Belum ada hasil analisis yang disimpan.</p>'
 
+    semua_petugas_link = (
+        '<p style="margin-top:6px;"><a href="/analisis-riwayat-semua-petugas" style="color:var(--blue);font-weight:700;font-size:13px;">'
+        + ICONS["chart-bar"] + " Lihat Riwayat Analisis Semua Petugas &rarr;</a></p>"
+    ) if boleh_lihat_semua else ""
+
     body = ("""<div class="review-wrap">
   <div class="review-card">
     <h3>""" + ICONS["chart-bar"] + """ Riwayat Analisis Tersimpan</h3>
     """ + table_html + """
     <p style="margin-top:10px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Analisis Proposal</a></p>
+    """ + semua_petugas_link + """
   </div>
 </div>""")
 
-    return """<!DOCTYPE html>
+    return render_template_string("""<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Riwayat Analisis Tersimpan &mdash; e-GerAI KKPRL</title>
@@ -4398,7 +4447,61 @@ def analisis_riwayat_list():
   <p>Daftar hasil Analisis &amp; Koreksi Proposal yang pernah Anda simpan.</p>
 </section>
 """ + body + """
-</body></html>"""
+</body></html>""")
+
+
+@app.route("/analisis-riwayat-semua-petugas", methods=["GET"])
+def analisis_riwayat_semua_petugas():
+    """Riwayat Analisis & Koreksi Proposal dari SEMUA petugas (bukan cuma
+    punya sendiri) -- akses dibatasi ketat lewat _require_riwayat_semua_analisis()
+    ke kode nama yang terdaftar di RIWAYAT_ANALISIS_SEMUA_KODE saja."""
+    denied = _require_riwayat_semua_analisis()
+    if denied:
+        return denied
+    items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR)
+    staff_list = fetch_staff_list()
+    if items:
+        rows = "".join(
+            f"<tr><td>{it['waktu']}</td>"
+            f"<td>{(staff_list.get(it.get('disimpan_oleh', '')) or {}).get('nama') or it.get('disimpan_oleh') or '<i>tidak diketahui</i>'}</td>"
+            f"<td>{it['nama_proposal']}</td>"
+            f"<td>{it['nama_laporan'] or '<i>(tanpa laporan pembanding)</i>'}</td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}\" class=\"riwayat-link\">Lihat</a></td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}/unduh\" class=\"riwayat-link\">Unduh</a></td></tr>"
+            for it in items
+        )
+        table_html = ("""<table class="history-table"><thead><tr>
+          <th>Waktu Disimpan</th><th>Disimpan Oleh</th><th>Proposal</th><th>Laporan Pembanding</th><th></th><th></th>
+        </tr></thead><tbody>""" + rows + """</tbody></table>""")
+    else:
+        table_html = '<p style="color:var(--muted);font-size:13.5px;">Belum ada hasil analisis yang disimpan oleh petugas manapun.</p>'
+
+    body = ("""<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + """ Riwayat Analisis Semua Petugas <span style="font-weight:400;color:var(--muted);font-size:12px;">(""" + str(len(items)) + """ hasil)</span></h3>
+    """ + table_html + """
+    <p style="margin-top:10px;"><a href="/analisis-riwayat" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Riwayat Saya</a></p>
+  </div>
+</div>""")
+
+    return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Analisis Semua Petugas &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.riwayat-link { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  padding:6px 12px; border-radius:8px; text-decoration:none; display:inline-block; }
+.riwayat-link:hover { background:#dcebfa; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Analisis Semua Petugas</h1>
+  <p>Daftar hasil Analisis &amp; Koreksi Proposal yang disimpan oleh seluruh petugas analisis.</p>
+</section>
+""" + body + """
+</body></html>""")
 
 
 @app.route("/analisis-riwayat/<entry_id>", methods=["GET"])
