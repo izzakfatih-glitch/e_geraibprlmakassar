@@ -1,3 +1,5 @@
+   from api import api_bp
+   app.register_blueprint(api_bp);
 """
 Aplikasi Web Penggabung Proposal PKKPRL
 =========================================
