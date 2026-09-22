@@ -3984,7 +3984,7 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
 
 
 PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health", "/asisten", "/api/asisten-chat"}
-PUBLIC_PREFIXES = ("/static/",)
+PUBLIC_PREFIXES = ("/static/", "/api/v1/")
 
 
 @app.before_request
