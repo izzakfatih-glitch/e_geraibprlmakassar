@@ -1,0 +1,27 @@
+diff --git a/app.py b/app.py
+index 43da8b5..6bc7f6e 100644
+--- a/app.py
++++ b/app.py
+@@ -101,6 +101,10 @@ MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
+ 
+ app = Flask(__name__)
+ app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
++
++# REST API JSON terpisah (lihat api.py): /api/v1/asisten/* & /api/v1/dokumen/*
++from api import api_bp
++app.register_blueprint(api_bp)
+ # PENTING: SECRET_KEY wajib SAMA di semua worker proses (Procfile pakai -w 4,
+ # artinya ada 4 proses gunicorn berbeda) supaya cookie sesi yang ditandatangani
+ # oleh 1 worker bisa tetap dikenali/valid saat request berikutnya ditangani
+@@ -3982,7 +3986,10 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
+ 
+ 
+ PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health", "/asisten", "/api/asisten-chat"}
+-PUBLIC_PREFIXES = ("/static/",)
++# /api/v1/: REST API JSON terpisah (lihat api.py), diamankan dengan header
++# X-API-Key sendiri (lihat require_api_key di api.py), bukan sesi login
++# pegawai -- jadi wajib dikecualikan dari require_login_pegawai di bawah.
++PUBLIC_PREFIXES = ("/static/", "/api/v1/")
+ 
+ 
+ @app.before_request
