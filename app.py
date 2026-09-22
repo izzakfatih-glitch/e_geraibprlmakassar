@@ -1119,7 +1119,7 @@ def render_asisten_page():
       <div class="chat-head">
         <div class="chat-head-navi">
           <div class="navi-video-wrap">
-            <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+            <video autoplay muted loop playsinline poster="/static/navi-mascot-full-transparent.png">
               <source src="/static/navi-mascot-video.mp4" type="video/mp4">
             </video>
             <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
@@ -1370,7 +1370,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
     </div>
     <div class="asisten-promo-navi">
       <div class="navi-video-wrap">
-        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+        <video autoplay muted loop playsinline poster="/static/navi-mascot-full-transparent.png">
           <source src="/static/navi-mascot-video.mp4" type="video/mp4">
         </video>
         <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
