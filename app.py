@@ -899,9 +899,8 @@ a { text-decoration:none; }
   color:#F2A83B; margin-bottom:5px; }
 .asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
 .asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
-.asisten-promo-navi { flex:none; width:78px; height:78px; position:relative; z-index:1; }
-.asisten-promo-navi img, .asisten-promo-navi video { width:100%; height:100%; object-fit:contain; display:block;
-  mix-blend-mode:multiply; }
+.asisten-promo-navi { flex:none; width:78px; height:78px; position:relative; z-index:1; filter:drop-shadow(0 6px 14px rgba(0,0,0,.28)); }
+.asisten-promo-navi img, .asisten-promo-navi video { width:100%; height:100%; object-fit:contain; display:block; }
 .asisten-promo-navi .navi-video-wrap { width:100%; height:100%; }
 .asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
   color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
@@ -1034,9 +1033,9 @@ ASISTEN_CSS = """
   display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(0,0,0,.18);
   position:relative; z-index:1; padding:9px; }
 .chat-logo-badge img { width:100%; height:100%; object-fit:contain; }
-.chat-head-navi { position:absolute; top:10px; right:14px; width:78px; height:78px; z-index:2; }
-.chat-head-navi img, .chat-head-navi video { width:100%; height:100%; object-fit:contain; display:block;
-  mix-blend-mode:multiply; }
+.chat-head-navi { position:absolute; top:10px; right:14px; width:78px; height:78px; z-index:2;
+  filter:drop-shadow(0 6px 14px rgba(0,0,0,.3)); }
+.chat-head-navi img, .chat-head-navi video { width:100%; height:100%; object-fit:contain; display:block; }
 @media (max-width: 480px) { .chat-head-navi { width:60px; height:60px; top:10px; right:10px; } .chat-head { padding-right:76px; } }
 .chat-head-text { position:relative; z-index:1; flex:1; min-width:0; }
 .chat-eyebrow { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; opacity:.78; font-weight:700; }
@@ -1119,7 +1118,7 @@ def render_asisten_page():
       <div class="chat-head">
         <div class="chat-head-navi">
           <div class="navi-video-wrap">
-            <video autoplay muted loop playsinline poster="/static/navi-mascot-full-transparent.png">
+            <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
               <source src="/static/navi-mascot-video.mp4" type="video/mp4">
             </video>
             <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
@@ -1370,7 +1369,7 @@ UPLOAD_HTML = """<!DOCTYPE html>
     </div>
     <div class="asisten-promo-navi">
       <div class="navi-video-wrap">
-        <video autoplay muted loop playsinline poster="/static/navi-mascot-full-transparent.png">
+        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
           <source src="/static/navi-mascot-video.mp4" type="video/mp4">
         </video>
         <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
