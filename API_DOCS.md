@@ -5,11 +5,19 @@ API JSON terpisah dari halaman web yang sudah ada, untuk dua fitur:
 1. **Asisten Tanya-Jawab KKPRL** (`/api/v1/asisten/*`)
 2. **Generate Dokumen Proposal Teknis PKKPRL** (`/api/v1/dokumen/*`)
 
+Tersedia dalam **dua implementasi yang setara** (endpoint, request/response,
+autentikasi, dan kode error identik) — pilih salah satu sesuai kebutuhan:
+
+| File | Framework | Cara jalan |
+| --- | --- | --- |
+| `api.py` | Flask Blueprint | Dipasang ke `app.py` yang sudah ada (satu proses dengan halaman web) |
+| `api_fastapi.py` | FastAPI (ASGI) | Berdiri sendiri lewat `uvicorn`, terpisah dari `app.py` |
+
 Base URL: `https://<domain-anda>/api/v1`
 
 ---
 
-## Cara Pasang
+## Opsi A — Flask Blueprint (`api.py`)
 
 1. Copy `api.py` ke folder root project (sejajar dengan `app.py`, `extract.py`, dst).
 2. Terapkan `app.py.patch` ke `app.py`, atau tambahkan manual 2 potongan berikut:
@@ -29,6 +37,38 @@ Base URL: `https://<domain-anda>/api/v1`
 3. (Opsional tapi disarankan) Set environment variable `API_KEY` di server (Render/Railway/VPS) dengan nilai rahasia bebas Anda pilih. Kalau diset, semua endpoint (kecuali `/health`) wajib menyertakan header `X-API-Key`. Kalau tidak diset, API terbuka tanpa autentikasi — cocok untuk uji coba lokal saja.
 
 Tidak ada perubahan lain pada `app.py` — semua route/halaman web yang sudah ada tetap jalan seperti biasa.
+
+---
+
+## Opsi B — FastAPI mandiri (`api_fastapi.py`)
+
+Cocok kalau Anda ingin API JSON ini berjalan sebagai service terpisah dari
+halaman web Flask (mis. di port/host/proses berbeda), dengan dokumentasi
+interaktif otomatis (Swagger UI) bawaan FastAPI.
+
+1. Install dependency tambahan (sudah ada di `requirements.txt`):
+   ```bash
+   pip install fastapi "uvicorn[standard]" python-multipart
+   ```
+2. Jalankan:
+   ```bash
+   uvicorn api_fastapi:app --host 0.0.0.0 --port 8001
+   ```
+   Untuk produksi (multi-worker), pakai:
+   ```bash
+   uvicorn api_fastapi:app --host 0.0.0.0 --port $PORT --workers 4
+   ```
+3. Dokumentasi interaktif otomatis tersedia di `/docs` (Swagger) dan `/redoc`.
+4. Autentikasi sama seperti Opsi A: set `API_KEY` (dan `ANTHROPIC_API_KEY`
+   untuk fitur asisten) sebagai environment variable di server yang sama.
+5. File ini berdiri sendiri — **tidak perlu** menyentuh `app.py` sama
+   sekali. Jalankan `app.py` (Flask, halaman web) dan `api_fastapi.py`
+   (FastAPI, JSON API) sebagai dua proses terpisah (bisa di port berbeda
+   pada mesin/host yang sama, atau di-deploy sebagai dua service terpisah
+   di platform hosting Anda).
+
+Semua contoh `curl` di bawah berlaku sama persis untuk kedua opsi — cukup
+arahkan ke base URL/port service yang sedang Anda jalankan.
 
 ---
 

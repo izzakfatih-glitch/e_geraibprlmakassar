@@ -100,8 +100,6 @@ print(f"[startup] DATA_DIR (riwayat/draft tersimpan di sini) = {DATA_DIR}")
 MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
 
 app = Flask(__name__)
-from api import api_bp
-app.register_blueprint(api_bp);
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 # PENTING: SECRET_KEY wajib SAMA di semua worker proses (Procfile pakai -w 4,
 # artinya ada 4 proses gunicorn berbeda) supaya cookie sesi yang ditandatangani

@@ -18,6 +18,8 @@ sekaligus.
 ```
 webapp/
 ├── app.py               <- server web (Flask) + HTML tertanam di dalamnya
+├── api.py               <- REST API JSON (Flask Blueprint), dipasang ke app.py
+├── api_fastapi.py        <- REST API JSON (FastAPI), berjalan mandiri lewat uvicorn -- lihat API_DOCS.md
 ├── extract.py           <- mesin pembaca/pengekstrak PDF (+ fallback Claude API)
 ├── generate_docx.py     <- mesin penyusun dokumen Word
 ├── review_fields.py     <- daftar field yang bisa dikoreksi di halaman review

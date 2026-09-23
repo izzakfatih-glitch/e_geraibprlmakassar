@@ -1,0 +1,29 @@
+# Secrets -- JANGAN pernah di-commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Data runtime (dihasilkan aplikasi, bersifat sementara)
+uploads/
+outputs/
+jobs/
+drafts/
+analisis_tersimpan/
+history.jsonl
+
+# Arsip & file sistem
+*.zip
+.DS_Store
+Thumbs.db
+
+# File "download" bekas unduhan browser yang tidak sengaja tersimpan
+download
+download ([0-9]*)
+
+# Editor
+.idea/
+.vscode/

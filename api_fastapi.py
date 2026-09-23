@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-api.py -- REST API (JSON) untuk e-GerAI KKPRL BPRL Makassar
-=============================================================
+api_fastapi.py -- REST API (JSON) untuk e-GerAI KKPRL BPRL Makassar, versi FastAPI
+====================================================================================
 
-Menyediakan 2 kelompok endpoint sebagai Flask Blueprint terpisah dari
-halaman web (app.py) yang sudah ada, supaya bisa dipanggil langsung oleh
-aplikasi lain (mobile app, sistem internal, Postman, dsb) dengan request/
-response JSON murni -- tanpa perlu login sesi browser.
+Reimplementasi endpoint yang sama persis dengan `api.py` (Flask Blueprint),
+kali ini sebagai aplikasi FastAPI ASGI yang berdiri sendiri, terpisah dari
+halaman web (app.py) yang sudah ada. Cocok dipakai langsung oleh aplikasi
+lain (mobile app, sistem internal, Postman, dsb) dengan request/response
+JSON murni -- tanpa perlu login sesi browser.
 
 1) ASISTEN TANYA-JAWAB KKPRL
    POST /api/v1/asisten/chat        -> tanya jawab ke asisten (Claude API)
@@ -26,15 +27,13 @@ response JSON murni -- tanpa perlu login sesi browser.
                                         di-generate (opsional, buat
                                         housekeeping)
 
-Cara pasang ke app.py yang sudah ada (di dekat baris "app = Flask(__name__)"
-setelah app dibuat, atau di baris paling bawah sebelum `if __name__ ==`):
-
-    from api import api_bp
-    app.register_blueprint(api_bp)
+Cara menjalankan (terpisah dari app.py/Flask):
+    pip install fastapi "uvicorn[standard]" python-multipart
+    uvicorn api_fastapi:app --host 0.0.0.0 --port 8001
 
 Autentikasi (opsional tapi disarankan untuk API publik):
     Set environment variable API_KEY di server. Kalau diset, semua
-    endpoint /api/v1/* WAJIB menyertakan header:
+    endpoint /api/v1/* (kecuali /health) WAJIB menyertakan header:
         X-API-Key: <nilai API_KEY>
     Kalau API_KEY tidak diset, endpoint terbuka tanpa autentikasi
     (cocok untuk uji coba lokal saja -- JANGAN dipakai begitu saja di
@@ -44,9 +43,20 @@ import os
 import uuid
 import shutil
 import traceback
-from functools import wraps
+from typing import Optional
 
-from flask import Blueprint, request, jsonify, send_file, after_this_request
+from fastapi import FastAPI, File, Form, Header, UploadFile, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except ImportError:
+    pass  # no python-dotenv: ANTHROPIC_API_KEY must come from the process env
 
 from extract import extract_proposal_with_fallback, extract_laporan_with_fallback
 from generate_docx import build_document
@@ -62,32 +72,32 @@ for _d in (UPLOAD_DIR, OUTPUT_DIR, JOBS_DIR):
     os.makedirs(_d, exist_ok=True)
 
 ALLOWED_EXT = (".pdf", ".docx")
+MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB, sama seperti batas di app.py
 
-api_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+app = FastAPI(title="e-GerAI KKPRL BPRL Makassar API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
 
 
 # ---------------------------------------------------------------------------
-# Util: autentikasi API key (opsional) + helper error JSON + CORS ringan
+# Util: autentikasi API key (opsional) + helper error JSON, mengikuti bentuk
+# response yang sama persis dengan api.py (Flask) supaya klien yang sudah
+# terintegrasi tidak perlu berubah.
 # ---------------------------------------------------------------------------
 def _api_key_required():
     return bool(os.environ.get("API_KEY"))
 
 
-def require_api_key(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if _api_key_required():
-            sent = request.headers.get("X-API-Key", "")
-            if not sent or sent != os.environ.get("API_KEY"):
-                return err("unauthorized", "API key tidak valid atau tidak disertakan (header X-API-Key).", 401)
-        return view(*args, **kwargs)
-    return wrapped
-
-
 def err(code, message, http_status=400, **extra):
     body = {"success": False, "error": {"code": code, "message": message}}
     body["error"].update(extra)
-    return jsonify(body), http_status
+    return JSONResponse(body, status_code=http_status)
 
 
 def ok(data=None, http_status=200, **extra):
@@ -95,31 +105,30 @@ def ok(data=None, http_status=200, **extra):
     if data is not None:
         body["data"] = data
     body.update(extra)
-    return jsonify(body), http_status
+    return JSONResponse(body, status_code=http_status)
 
 
-@api_bp.after_request
-def _add_cors_headers(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-    return resp
+def check_api_key(x_api_key: Optional[str]):
+    """Return None kalau lolos, atau JSONResponse error 401 kalau ditolak."""
+    if _api_key_required():
+        expected = os.environ.get("API_KEY")
+        if not x_api_key or x_api_key != expected:
+            return err("unauthorized", "API key tidak valid atau tidak disertakan (header X-API-Key).", 401)
+    return None
 
 
-@api_bp.route("/<path:_any>", methods=["OPTIONS"])
-def _cors_preflight(_any):
-    return ("", 204)
-
-
-@api_bp.errorhandler(413)
-def _too_large(_e):
-    return err("payload_too_large", "Ukuran file yang diunggah melebihi batas maksimum.", 413)
+@app.middleware("http")
+async def _limit_upload_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_CONTENT_LENGTH:
+        return err("payload_too_large", "Ukuran file yang diunggah melebihi batas maksimum.", 413)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
 # 0) Health check
 # ---------------------------------------------------------------------------
-@api_bp.route("/health", methods=["GET"])
+@app.get("/api/v1/health")
 def health():
     return ok({"status": "ok"})
 
@@ -127,16 +136,26 @@ def health():
 # ---------------------------------------------------------------------------
 # 1) ASISTEN TANYA-JAWAB KKPRL
 # ---------------------------------------------------------------------------
-@api_bp.route("/asisten/status", methods=["GET"])
-@require_api_key
-def asisten_status():
+@app.get("/api/v1/asisten/status")
+def asisten_status(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
     aktif = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return ok({"aktif": aktif})
 
 
-@api_bp.route("/asisten/chat", methods=["POST"])
-@require_api_key
-def asisten_chat():
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list = Field(default_factory=list)
+
+
+@app.post("/api/v1/asisten/chat")
+async def asisten_chat(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     """
     Body JSON:
     {
@@ -152,8 +171,16 @@ def asisten_chat():
     Response 200:
     { "success": true, "data": { "reply": "..." } }
     """
-    payload = request.get_json(silent=True)
-    if payload is None:
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return err("invalid_json", "Body request harus JSON valid dengan Content-Type: application/json.")
+
+    if not isinstance(payload, dict):
         return err("invalid_json", "Body request harus JSON valid dengan Content-Type: application/json.")
 
     messages = payload.get("messages")
@@ -184,12 +211,15 @@ def asisten_chat():
 # ---------------------------------------------------------------------------
 # 2) GENERATE DOKUMEN
 # ---------------------------------------------------------------------------
-@api_bp.route("/dokumen/fields", methods=["GET"])
-@require_api_key
-def dokumen_fields():
+@app.get("/api/v1/dokumen/fields")
+def dokumen_fields(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     """Daftar field yang bisa dikoreksi sebelum generate, dikelompokkan,
     lengkap dengan nama field ('source__key') yang dipakai di endpoint
     /dokumen/generate."""
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
     groups = []
     for group_name, fields in FIELD_GROUPS:
         groups.append({
@@ -207,9 +237,12 @@ def dokumen_fields():
     return ok({"groups": groups})
 
 
-@api_bp.route("/dokumen/ekstrak", methods=["POST"])
-@require_api_key
-def dokumen_ekstrak():
+@app.post("/api/v1/dokumen/ekstrak")
+async def dokumen_ekstrak(
+    proposal: Optional[UploadFile] = File(default=None),
+    laporan: Optional[UploadFile] = File(default=None),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+):
     """
     Multipart/form-data:
       - proposal: file PDF/.docx (Draft Proposal PKKPRL)
@@ -229,19 +262,20 @@ def dokumen_ekstrak():
     job_id ini dipakai di POST /api/v1/dokumen/generate untuk membangun
     dokumen final (berlaku sekitar 2 jam sebelum dibersihkan otomatis).
     """
-    proposal_file = request.files.get("proposal")
-    laporan_file = request.files.get("laporan")
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
 
-    if not proposal_file or not laporan_file or proposal_file.filename == "" or laporan_file.filename == "":
+    if not proposal or not laporan or not proposal.filename or not laporan.filename:
         return err("missing_files", "Kedua file wajib diunggah: field 'proposal' dan 'laporan'.")
 
-    if not proposal_file.filename.lower().endswith(ALLOWED_EXT):
+    if not proposal.filename.lower().endswith(ALLOWED_EXT):
         return err("invalid_file_type", "File 'proposal' harus berformat PDF atau Word (.docx).")
-    if not laporan_file.filename.lower().endswith(ALLOWED_EXT):
+    if not laporan.filename.lower().endswith(ALLOWED_EXT):
         return err("invalid_file_type", "File 'laporan' harus berformat PDF atau Word (.docx).")
 
-    proposal_ext = ".docx" if proposal_file.filename.lower().endswith(".docx") else ".pdf"
-    laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+    proposal_ext = ".docx" if proposal.filename.lower().endswith(".docx") else ".pdf"
+    laporan_ext = ".docx" if laporan.filename.lower().endswith(".docx") else ".pdf"
 
     job_store.cleanup_old_jobs(JOBS_DIR)
 
@@ -250,10 +284,13 @@ def dokumen_ekstrak():
     os.makedirs(tmp_dir, exist_ok=True)
     proposal_path = os.path.join(tmp_dir, "proposal" + proposal_ext)
     laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
-    proposal_file.save(proposal_path)
-    laporan_file.save(laporan_path)
 
     try:
+        with open(proposal_path, "wb") as f:
+            f.write(await proposal.read())
+        with open(laporan_path, "wb") as f:
+            f.write(await laporan.read())
+
         prop_data, prop_images = extract_proposal_with_fallback(proposal_path, log=lambda *_: None)
         lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
@@ -269,8 +306,6 @@ def dokumen_ekstrak():
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # _lokasi_parts, _sumber_gambar_asli dsb (kalau ada) ikut dikembalikan
-    # apa adanya supaya klien bisa lihat semua data hasil ekstraksi.
     return ok({
         "job_id": job_id,
         "prop_data": prop_data,
@@ -279,9 +314,8 @@ def dokumen_ekstrak():
     })
 
 
-@api_bp.route("/dokumen/generate", methods=["POST"])
-@require_api_key
-def dokumen_generate():
+@app.post("/api/v1/dokumen/generate")
+async def dokumen_generate(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     """
     Body JSON:
     {
@@ -302,7 +336,17 @@ def dokumen_generate():
 
     Response error: JSON { "success": false, "error": {...} }
     """
-    payload = request.get_json(silent=True) or {}
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
     job_id = (payload.get("job_id") or "").strip()
     koreksi = payload.get("koreksi") or {}
 
@@ -321,8 +365,6 @@ def dokumen_generate():
 
     prop_data, prop_images, lap_data, lap_images = loaded
 
-    # apply_form_values menerima objek mirip dict (mendukung 'in' dan
-    # '.get'); dict koreksi dari JSON sudah cocok dipakai langsung.
     str_koreksi = {k: ("" if v is None else str(v)) for k, v in koreksi.items()}
     prop_data, lap_data = apply_form_values(str_koreksi, prop_data, lap_data)
 
@@ -335,29 +377,50 @@ def dokumen_generate():
     finally:
         job_store.delete_job(JOBS_DIR, job_id)
 
-    @after_this_request
-    def cleanup(response):
+    perusahaan = (prop_data.get("Nama Perusahaan/Instansi") or "PKKPRL").replace(" ", "_").replace(".", "")
+    download_name = f"Proposal_Teknis_PKKPRL_{perusahaan}.docx"
+
+    def _cleanup():
         try:
             os.remove(output_path)
         except OSError:
             pass
-        return response
 
-    perusahaan = (prop_data.get("Nama Perusahaan/Instansi") or "PKKPRL").replace(" ", "_").replace(".", "")
-    download_name = f"Proposal_Teknis_PKKPRL_{perusahaan}.docx"
-
-    return send_file(
+    return FileResponse(
         output_path,
-        as_attachment=True,
-        download_name=download_name,
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=download_name,
+        background=BackgroundTask(_cleanup),
     )
 
 
-@api_bp.route("/dokumen/job/<job_id>", methods=["DELETE"])
-@require_api_key
-def dokumen_hapus_job(job_id):
+@app.delete("/api/v1/dokumen/job/{job_id}")
+def dokumen_hapus_job(job_id: str, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     """Hapus job hasil ekstraksi yang belum jadi di-generate (opsional,
     untuk housekeeping / kalau pengguna batal melanjutkan)."""
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
     job_store.delete_job(JOBS_DIR, job_id)
     return ok({"deleted": True, "job_id": job_id})
+
+
+# ---------------------------------------------------------------------------
+# Handler generik untuk error yang tidak ditangkap secara eksplisit di atas,
+# supaya respons tetap berbentuk JSON konsisten { success, error } alih-alih
+# halaman error HTML bawaan.
+# ---------------------------------------------------------------------------
+@app.exception_handler(404)
+async def _not_found(request: Request, exc):
+    return err("not_found", "Endpoint tidak ditemukan.", 404)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc):
+    traceback.print_exc()
+    return err("internal_error", "Terjadi kesalahan pada server.", 500)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api_fastapi:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8001)))
