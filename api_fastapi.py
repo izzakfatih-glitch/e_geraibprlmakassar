@@ -111,8 +111,11 @@ def ok(data=None, http_status=200, **extra):
 def check_api_key(x_api_key: Optional[str]):
     """Return None kalau lolos, atau JSONResponse error 401 kalau ditolak."""
     if _api_key_required():
-        expected = os.environ.get("API_KEY")
-        if not x_api_key or x_api_key != expected:
+        # .strip() di kedua sisi: nilai tempelan di dashboard hosting sering
+        # punya spasi/newline tersembunyi yang membuat perbandingan String
+        # mentah selalu gagal (padahal key-nya benar).
+        expected = (os.environ.get("API_KEY") or "").strip()
+        if not x_api_key or x_api_key.strip() != expected:
             return err("unauthorized", "API key tidak valid atau tidak disertakan (header X-API-Key).", 401)
     return None
 

@@ -12,6 +12,15 @@ tidak tersedia.
 import os
 import traceback
 
+# Nilai env var hasil tempel di dashboard hosting (Railway/Render) sering
+# ikut kebawa spasi/newline tersembunyi. HTTP header TIDAK boleh berisi \n,
+# sehingga satu karakter itu saja membuat SEMUA request ke Claude API gagal
+# dengan LocalProtocolError "Illegal header value" -- yang lalu dipermalukan
+# jadi pesan "kendala teknis" oleh chat_reply. Strip saat startup supaya
+# aman apa pun cara nilainya ditempel di dashboard.
+if os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"].strip()
+
 MODEL = "claude-sonnet-4-6"
 MAX_HISTORY_MESSAGES = 20  # batasi riwayat yang dikirim ke API per request
 
