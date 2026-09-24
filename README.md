@@ -19,7 +19,8 @@ sekaligus.
 webapp/
 ├── app.py               <- server web (Flask) + HTML tertanam di dalamnya
 ├── api.py               <- REST API JSON (Flask Blueprint), dipasang ke app.py
-├── api_fastapi.py        <- REST API JSON (FastAPI), berjalan mandiri lewat uvicorn -- lihat API_DOCS.md
+├── api_fastapi.py       <- REST API JSON (FastAPI) -- lihat API_DOCS.md
+├── main.py              <- entry point gabungan Flask+FastAPI (dipakai Procfile/Railway)
 ├── extract.py           <- mesin pembaca/pengekstrak PDF (+ fallback Claude API)
 ├── generate_docx.py     <- mesin penyusun dokumen Word
 ├── review_fields.py     <- daftar field yang bisa dikoreksi di halaman review
@@ -56,7 +57,7 @@ buka `http://192.168.1.5:5000` dari HP.
    repository GitHub Anda tadi.
 4. Isi pengaturan:
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn -w 4 -b 0.0.0.0:$PORT app:app --timeout 120`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4`
 5. (Opsional, untuk fallback Claude API) Di bagian **Environment
    Variables**, tambahkan:
    - Key: `ANTHROPIC_API_KEY`
@@ -86,7 +87,7 @@ buka `http://192.168.1.5:5000` dari HP.
 ```bash
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY="sk-ant-..."   # opsional
-gunicorn -w 4 -b 0.0.0.0:8000 app:app --timeout 120
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 Lalu arahkan domain/Nginx ke port 8000.
 

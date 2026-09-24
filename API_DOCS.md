@@ -12,8 +12,16 @@ autentikasi, dan kode error identik) — pilih salah satu sesuai kebutuhan:
 | --- | --- | --- |
 | `api.py` | Flask Blueprint | Dipasang ke `app.py` yang sudah ada (satu proses dengan halaman web) |
 | `api_fastapi.py` | FastAPI (ASGI) | Berdiri sendiri lewat `uvicorn`, terpisah dari `app.py` |
+| `main.py` | FastAPI + Flask | **Untuk produksi (Railway/Render/Procfile)**: gabungan keduanya dalam 1 proses — `/api/v1/*` → FastAPI, sisanya → Flask |
 
 Base URL: `https://<domain-anda>/api/v1`
+
+> **Penting untuk Railway/Render:** platform tersebut menjalankan SATU start
+> command per service (lihat `Procfile`). Pakai `main.py`
+> (`uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4`) supaya halaman
+> web **dan** API `/api/v1/*` sama-sama terlayani di domain yang sama.
+> Kalau start command masih `gunicorn ... app:app`, hanya halaman web yang
+> jalan dan semua request `/api/v1/*` akan membalas **404**.
 
 ---
 

@@ -1,1 +1,1 @@
-web: gunicorn -w 4 -b 0.0.0.0:$PORT app:app --timeout 300
+web: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4
