@@ -10,6 +10,7 @@ chat akan mengembalikan pesan yang menjelaskan bahwa asisten sedang
 tidak tersedia.
 """
 import os
+import traceback
 
 MODEL = "claude-sonnet-4-6"
 MAX_HISTORY_MESSAGES = 20  # batasi riwayat yang dikirim ke API per request
@@ -312,6 +313,11 @@ def chat_reply(messages):
         text = "".join(block.text for block in resp.content if hasattr(block, "text")).strip()
         return text or "Maaf, saya belum bisa menjawab pertanyaan itu. Bisa coba ditanyakan dengan cara lain?"
     except Exception:
+        # Cetak error asli ke log server (stdout/stderr -> terlihat di log
+        # Railway/Render) supaya penyebab sebenarnya bisa didiagnosis
+        # (mis. API key salah, saldo habis, timeout) -- pesan ke user tetap
+        # generik seperti sebelumnya.
+        traceback.print_exc()
         return ("Mohon maaf, terjadi kendala teknis saat memproses pertanyaan Anda. "
                 "Silakan coba lagi sebentar lagi, atau hubungi admin BPRL Makassar kalau masih bermasalah.")
 
