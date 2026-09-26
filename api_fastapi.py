@@ -742,6 +742,9 @@ async def analisis_riwayat_hapus(entry_id: str, x_api_key: Optional[str] = Heade
 @app.api_route(
     "/api/v1/{unmatched_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    # include_in_schema=False: jangan tampil di /docs (Swagger) -- kalau tidak,
+    # 7 method route cadangan ini membanjiri daftar endpoint.
+    include_in_schema=False,
 )
 async def api_v1_not_found(unmatched_path: str):
     return err("not_found", "Endpoint tidak ditemukan.", 404)
