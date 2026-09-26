@@ -1,18 +1,22 @@
 # REST API — e-GerAI KKPRL BPRL Makassar
 
-API JSON terpisah dari halaman web yang sudah ada, untuk dua fitur:
+API JSON terpisah dari halaman web yang sudah ada, untuk tiga fitur:
 
 1. **Asisten Tanya-Jawab KKPRL** (`/api/v1/asisten/*`)
 2. **Generate Dokumen Proposal Teknis PKKPRL** (`/api/v1/dokumen/*`)
+3. **Analisis & Koreksi Proposal** (`/api/v1/analisis/*`) — padanan API dari
+   halaman web `/analisis-proposal` (audit konsistensi Proposal vs Laporan
+   pembanding lewat Claude, plus simpan/riwayat/unduh hasil analisis)
 
-Tersedia dalam **dua implementasi yang setara** (endpoint, request/response,
-autentikasi, dan kode error identik) — pilih salah satu sesuai kebutuhan:
+Tersedia dalam **dua implementasi** (endpoint, request/response,
+autentikasi, dan kode error identik untuk fitur 1–2 — pilih salah satu
+sesuai kebutuhan):
 
 | File | Framework | Cara jalan |
 | --- | --- | --- |
-| `api.py` | Flask Blueprint | Dipasang ke `app.py` yang sudah ada (satu proses dengan halaman web) |
-| `api_fastapi.py` | FastAPI (ASGI) | Berdiri sendiri lewat `uvicorn`, terpisah dari `app.py` |
-| `main.py` | FastAPI + Flask | **Untuk produksi (Railway/Render/Procfile)**: gabungan keduanya dalam 1 proses — `/api/v1/*` → FastAPI, sisanya → Flask |
+| `api.py` | Flask Blueprint | Dipasang ke `app.py` yang sudah ada (satu proses dengan halaman web) — hanya fitur 1 & 2 |
+| `api_fastapi.py` | FastAPI (ASGI) | Berdiri sendiri lewat `uvicorn`, terpisah dari `app.py` — lengkap, termasuk fitur 3 |
+| `main.py` | FastAPI + Flask | **Untuk produksi (Railway/Render/Procfile)**: gabungan keduanya dalam 1 proses — `/api/v1/*` → FastAPI (termasuk fitur 3), sisanya → Flask |
 
 Base URL: `https://<domain-anda>/api/v1`
 
@@ -198,6 +202,95 @@ Batalkan job yang belum di-generate (housekeeping opsional).
 
 ---
 
+## 3) Analisis & Koreksi Proposal
+
+Padanan API dari halaman web `/analisis-proposal`. Alurnya sama: unggah
+Proposal (wajib) + Laporan pembanding (opsional, bisa banyak berkas) →
+server mengekstrak teks semua berkas → Claude audit konsistensinya →
+hasil berupa Markdown.
+
+> Endpoint di section ini hanya ada di implementasi FastAPI
+> (`api_fastapi.py` / `main.py`), tidak di Flask Blueprint `api.py`.
+
+### `POST /api/v1/analisis/proposal`
+Jalankan analisis. Multipart/form-data — field `proposal`/`laporan` boleh
+diulang untuk multiple berkas (masing-masing maks 10).
+
+```bash
+curl -X POST https://domain-anda/api/v1/analisis/proposal \
+  -H "X-API-Key: xxx" \
+  -F "proposal=@proposal_teknis_v3.pdf" \
+  -F "proposal=@lampiran_gambar.xlsx" \
+  -F "laporan=@laporan_hidro.pdf"
+```
+```json
+{
+  "success": true,
+  "data": {
+    "hasil_markdown": "## Ringkasan\n...",
+    "nama_proposal": "proposal_teknis_v3.pdf, lampiran_gambar.xlsx",
+    "nama_laporan": "laporan_hidro.pdf"
+  }
+}
+```
+- `proposal` wajib (1–10 berkas), `laporan` opsional (0–10 berkas).
+- Format: PDF, `.docx`, `.xlsx`, `.xlsm`. Total request maksimal 30 MB.
+- Butuh `ANTHROPIC_API_KEY` di server (kalau kosong → error
+  `analysis_failed` dengan keterangan).
+- `hasil_markdown` dikirim apa adanya ke endpoint `unduh`/`simpan` di bawah.
+
+### `POST /api/v1/analisis/unduh`
+Ubah hasil analisis menjadi file Word.
+
+```bash
+curl -X POST https://domain-anda/api/v1/analisis/unduh \
+  -H "Content-Type: application/json" -H "X-API-Key: xxx" \
+  -d '{"hasil_markdown": "...", "nama_proposal": "proposal_v3.pdf"}' \
+  -o Analisis_Proposal.docx
+```
+- Response sukses: **file `.docx` langsung** (bukan JSON).
+
+### `POST /api/v1/analisis/simpan`
+Simpan hasil analisis permanen di server (tombol "Simpan Hasil Analisis").
+
+```bash
+curl -X POST https://domain-anda/api/v1/analisis/simpan \
+  -H "Content-Type: application/json" -H "X-API-Key: xxx" \
+  -d '{"hasil_markdown": "...", "nama_proposal": "proposal_v3.pdf", "disimpan_oleh": "budi"}'
+```
+```json
+{ "success": true, "data": { "entry_id": "edf527af2e6a" } }
+```
+- `disimpan_oleh` opsional (penanda petugas/pengguna — API tidak punya
+  sesi login, jadi isi manual agar bisa difilter via `?disimpan_oleh=`).
+- Simpan ke disk lokal container — kalau hosting pakai filesystem
+  ephemeral (Railway), data bisa hilang saat redeploy.
+
+### `GET /api/v1/analisis/riwayat`
+Daftar hasil tersimpan. Query opsional: `disimpan_oleh` (filter petugas),
+`limit` (default 200, maks 500). Tanpa filter, semua entri ikut
+dikembalikan.
+
+```bash
+curl "https://domain-anda/api/v1/analisis/riwayat?disimpan_oleh=budi&limit=50" \
+  -H "X-API-Key: xxx"
+```
+```json
+{ "success": true, "data": { "items": [{"id": "edf527af2e6a", "waktu": "...", "nama_proposal": "...", ...}], "total": 1 } }
+```
+
+### `GET /api/v1/analisis/riwayat/{entry_id}`
+Lihat satu hasil lengkap → `{ "meta": {...}, "hasil_markdown": "..." }`.
+
+### `GET /api/v1/analisis/riwayat/{entry_id}/unduh`
+Unduh hasil tersimpan sebagai file `.docx`.
+
+### `DELETE /api/v1/analisis/riwayat/{entry_id}`
+Hapus permanen satu hasil → `{ "deleted": true, "entry_id": "..." }`.
+Kalau tidak ada → 404 `entry_not_found`.
+
+---
+
 ## Format Error
 
 Semua error (kecuali sukses download file) berbentuk:
@@ -208,7 +301,7 @@ Semua error (kecuali sukses download file) berbentuk:
 }
 ```
 
-Kode umum: `unauthorized` (401), `missing_files` / `invalid_file_type` / `missing_job_id` / `invalid_messages` (400), `job_not_found` (404), `payload_too_large` (413), `extraction_failed` / `generate_failed` / `internal_error` (500).
+Kode umum: `unauthorized` (401), `missing_files` / `invalid_file_type` / `too_many_files` / `no_text` / `missing_job_id` / `invalid_job_id` / `invalid_koreksi` / `invalid_messages` / `invalid_input` / `invalid_limit` / `invalid_entry_id` / `validation_error` (400), `job_not_found` / `entry_not_found` (404), `payload_too_large` (413), `extraction_failed` / `generate_failed` / `analysis_failed` / `docx_failed` / `save_failed` / `internal_error` (500).
 
 ---
 
@@ -219,5 +312,10 @@ Sudah diuji end-to-end secara lokal:
 - `POST /asisten/chat` (respons normal & fallback saat API key kosong, validasi input) ✔
 - `GET /dokumen/fields` ✔
 - `POST /dokumen/ekstrak` → `POST /dokumen/generate` (menghasilkan file `.docx` valid, koreksi field diterapkan) ✔
+- `POST /analisis/proposal` (analisis asli ke Claude dari berkas `.docx`, `hasil_markdown` berisi laporan audit) ✔
+- `POST /analisis/unduh` & `/riwayat/{id}/unduh` (menghasilkan `.docx` valid) ✔
+- `POST /analisis/simpan` → `GET /riwayat` → `GET /riwayat/{id}` → `DELETE /riwayat/{id}` (404 saat dihapus dua kali) ✔
+- Validasi analisis: tanpa file, ekstensi salah, >10 berkas, `limit` bukan angka ✔
+- Anti path-traversal `job_id`/`entry_id` (mis. `..` ditolak 400) ✔
 - Proteksi `X-API-Key` (401 tanpa/salah key, 200 dengan key benar) ✔
 - Halaman web yang sudah ada (`/`, dsb) tidak terganggu ✔

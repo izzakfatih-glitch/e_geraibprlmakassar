@@ -27,6 +27,23 @@ JSON murni -- tanpa perlu login sesi browser.
                                         di-generate (opsional, buat
                                         housekeeping)
 
+3) ANALISIS & KOREKSI PROPOSAL
+   POST   /api/v1/analisis/proposal        -> upload proposal (+ laporan
+                                               pembanding, bisa banyak
+                                               berkas), server mengekstrak
+                                               teks lalu minta Claude audit
+                                               konsistensinya -> markdown
+   POST   /api/v1/analisis/unduh           -> ubah hasil analisis jadi
+                                               file Word (.docx) untuk
+                                               diunduh
+   POST   /api/v1/analisis/simpan          -> simpan hasil analisis
+                                               permanen, dapat entry_id
+   GET    /api/v1/analisis/riwayat         -> daftar hasil tersimpan
+   GET    /api/v1/analisis/riwayat/<id>    -> lihat 1 hasil tersimpan
+   GET    /api/v1/analisis/riwayat/<id>/unduh -> unduh hasil tersimpan
+                                                 sebagai .docx
+   DELETE /api/v1/analisis/riwayat/<id>    -> hapus hasil tersimpan
+
 Cara menjalankan (terpisah dari app.py/Flask):
     pip install fastapi "uvicorn[standard]" python-multipart
     uvicorn api_fastapi:app --host 0.0.0.0 --port 8001
@@ -40,16 +57,19 @@ Autentikasi (opsional tapi disarankan untuk API publik):
     produksi publik tanpa API_KEY).
 """
 import os
+import re
 import uuid
 import shutil
 import traceback
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, Header, UploadFile, Request
+from fastapi import FastAPI, File, Header, UploadFile, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 try:
     from dotenv import load_dotenv
@@ -58,9 +78,11 @@ try:
 except ImportError:
     pass  # no python-dotenv: ANTHROPIC_API_KEY must come from the process env
 
-from extract import extract_proposal_with_fallback, extract_laporan_with_fallback
-from generate_docx import build_document
+from extract import extract_proposal_with_fallback, extract_laporan_with_fallback, extract_full_text_multi
+from generate_docx import build_document, markdown_report_to_docx_bytes
+from llm_fallback import analisis_konsistensi_proposal
 from review_fields import FIELD_GROUPS, form_field_name, apply_form_values
+import analisis_store
 import asisten_kkprl
 import job_store
 
@@ -68,11 +90,24 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 JOBS_DIR = os.path.join(BASE_DIR, "jobs")
+# Ikut pola app.py: data dir bisa dioverride lewat env DATA_DIR (mis. Railway
+# volume mount) supaya data analisis ikut tersimpan di tempat yang sama.
+ANALISIS_STORE_DIR = os.path.join(os.environ.get("DATA_DIR") or BASE_DIR, "analisis_tersimpan")
 for _d in (UPLOAD_DIR, OUTPUT_DIR, JOBS_DIR):
     os.makedirs(_d, exist_ok=True)
 
 ALLOWED_EXT = (".pdf", ".docx")
+# Batas & ekstensi yang sama dengan app.py (ALLOWED_ANALISIS_EXT, MAX_ANALISIS_FILES).
+ALLOWED_ANALISIS_EXT = (".pdf", ".docx", ".xlsx", ".xlsm")
+MAX_ANALISIS_FILES = 10
 MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB, sama seperti batas di app.py
+
+# job_id & analisis entry_id keduanya = uuid4().hex[:12]. Wajib divalidasi
+# sebelum dipakai jadi nama direktori: nilai ".." saja akan membuat
+# os.path.join melewati JOBS_DIR/ANALISIS_STORE_DIR (rmtree = hapus semua).
+_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 app = FastAPI(title="e-GerAI KKPRL BPRL Makassar API", version="1.0.0")
 
@@ -203,7 +238,10 @@ async def asisten_chat(request: Request, x_api_key: Optional[str] = Header(defau
         return err("invalid_messages", "Tidak ada pesan valid (role harus 'user'/'assistant', content teks tidak kosong).")
 
     try:
-        reply = asisten_kkprl.chat_reply(clean_messages)
+        # run_in_threadpool: panggilan Claude bisa berjalan puluhan detik --
+        # kalau dieksekusi langsung di event loop, seluruh worker ini (dan
+        # semua request lain yang masuk ke worker itu) ikut tersendat.
+        reply = await run_in_threadpool(asisten_kkprl.chat_reply, clean_messages)
     except Exception:
         traceback.print_exc()
         return err("internal_error", "Terjadi kesalahan saat memproses percakapan.", 500)
@@ -294,8 +332,8 @@ async def dokumen_ekstrak(
         with open(laporan_path, "wb") as f:
             f.write(await laporan.read())
 
-        prop_data, prop_images = extract_proposal_with_fallback(proposal_path, log=lambda *_: None)
-        lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+        prop_data, prop_images = await run_in_threadpool(extract_proposal_with_fallback, proposal_path, log=lambda *_: None)
+        lap_data, lap_images = await run_in_threadpool(extract_laporan_with_fallback, laporan_path, log=lambda *_: None)
         job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
     except Exception:
         traceback.print_exc()
@@ -355,6 +393,8 @@ async def dokumen_generate(request: Request, x_api_key: Optional[str] = Header(d
 
     if not job_id:
         return err("missing_job_id", "Field 'job_id' wajib diisi (didapat dari respons /dokumen/ekstrak).")
+    if not _ID_RE.fullmatch(job_id):
+        return err("invalid_job_id", "Field 'job_id' tidak valid (harus 12 karakter hex dari respons /dokumen/ekstrak).")
     if not isinstance(koreksi, dict):
         return err("invalid_koreksi", "Field 'koreksi' harus berupa object/dict (field_name -> nilai baru).")
 
@@ -373,7 +413,7 @@ async def dokumen_generate(request: Request, x_api_key: Optional[str] = Header(d
 
     output_path = os.path.join(OUTPUT_DIR, f"Proposal_Final_{job_id}.docx")
     try:
-        build_document(prop_data, prop_images, lap_data, lap_images, output_path)
+        await run_in_threadpool(build_document, prop_data, prop_images, lap_data, lap_images, output_path)
     except Exception:
         traceback.print_exc()
         return err("generate_failed", "Terjadi kesalahan saat membuat dokumen final. Silakan coba lagi.", 500)
@@ -404,8 +444,307 @@ def dokumen_hapus_job(job_id: str, x_api_key: Optional[str] = Header(default=Non
     denied = check_api_key(x_api_key)
     if denied is not None:
         return denied
+    if not _ID_RE.fullmatch(job_id):
+        # Tolak ".." dkk sebelum masuk job_store.delete_job: nilai itu akan
+        # membentuk path JOBS_DIR/../.. dan rmtree-nya bisa menghapus isi
+        # direktori project, bukan cuma satu job.
+        return err("invalid_job_id", "job_id tidak valid.", 400)
     job_store.delete_job(JOBS_DIR, job_id)
     return ok({"deleted": True, "job_id": job_id})
+
+
+# ---------------------------------------------------------------------------
+# 3) ANALISIS & KOREKSI PROPOSAL
+#    Padanan API dari halaman web /analisis-proposal + /analisis-riwayat.
+#    Alurnya sama: unggah Proposal (wajib) + Laporan pembanding (opsional),
+#    teks semua berkas diekstrak, lalu Claude audit konsistensinya dan
+#    menghasilkan laporan Markdown.
+# ---------------------------------------------------------------------------
+def _analisis_docx_download_name(nama_proposal):
+    """Nama file unduhan hasil analisis -- sama pola dengan app.py:
+    ASCII-only supaya aman di header Content-Disposition."""
+    base = re.sub(r"[^A-Za-z0-9_\-]", "_", (nama_proposal or "").strip()) or "proposal"
+    return f"Analisis_Proposal_{base[:60]}.docx"
+
+
+def _analisis_subjudul(nama_proposal, nama_laporan):
+    sub = f"Proposal: {nama_proposal or '-'}"
+    if nama_laporan:
+        sub += f" · Laporan: {nama_laporan}"
+    return sub
+
+
+def _analisis_docx_response(hasil_markdown, nama_proposal, nama_laporan):
+    """Build dokumen .docx dari hasil analisis, kirim sebagai response body."""
+    try:
+        docx_bytes = markdown_report_to_docx_bytes(
+            hasil_markdown, subjudul=_analisis_subjudul(nama_proposal, nama_laporan)
+        )
+    except Exception:
+        traceback.print_exc()
+        return err("docx_failed", "Gagal membuat dokumen Word dari hasil analisis.", 500)
+    return Response(
+        content=docx_bytes,
+        media_type=DOCX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="{_analisis_docx_download_name(nama_proposal)}"'},
+    )
+
+
+def _analisis_saved_name(filename):
+    """Bersihkan nama berkas unggahan menjadi nama file penyimpanan yang
+    aman (tanpa direktori), mirip secure_filename di app.py tapi tanpa
+    dependensi werkzeug."""
+    base = os.path.basename(filename or "")
+    base = re.sub(r"[^\w.\- ()\[\]]+", "_", base).strip("._") or "berkas"
+    return base
+
+
+@app.post("/api/v1/analisis/proposal")
+async def analisis_proposal(
+    proposal: List[UploadFile] = File(default=[]),
+    laporan: List[UploadFile] = File(default=[]),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+):
+    """
+    Multipart/form-data:
+      - proposal: 1..10 file PDF/.docx/.xlsx/.xlsm (Proposal Teknis yang
+                  akan diperiksa) -- field boleh diulang per berkas
+      - laporan : 0..10 file pembanding (Laporan Kondisi Eksisting /
+                  Hidro-Oseanografi); boleh kosong
+
+    Response 200:
+    {
+      "success": true,
+      "data": {
+        "hasil_markdown": "## Laporan Analisis ...",
+        "nama_proposal": "proposal_a.pdf, proposal_b.docx",
+        "nama_laporan": "laporan.pdf"
+      }
+    }
+
+    "hasil_markdown" bisa langsung dikirim ke POST /analisis/unduh (jadi
+    file Word) atau POST /analisis/simpan (disimpan permanen).
+    """
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    proposal_files = [f for f in (proposal or []) if f and f.filename]
+    laporan_files = [f for f in (laporan or []) if f and f.filename]
+
+    if not proposal_files:
+        return err("missing_files", "Mohon unggah dokumen Proposal Teknis PKKPRL lewat field 'proposal' (bisa lebih dari satu berkas).")
+    if len(proposal_files) > MAX_ANALISIS_FILES or len(laporan_files) > MAX_ANALISIS_FILES:
+        return err("too_many_files", f"Maksimum {MAX_ANALISIS_FILES} berkas per field ('proposal'/'laporan').")
+
+    for f in proposal_files + laporan_files:
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in ALLOWED_ANALISIS_EXT:
+            return err("invalid_file_type", f"Format berkas '{f.filename}' tidak didukung. Mohon unggah file PDF, .docx, atau .xlsx.")
+
+    tmp_dir = os.path.join(UPLOAD_DIR, f"analisis_{uuid.uuid4().hex[:12]}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        proposal_paths, laporan_paths = [], []
+        for i, f in enumerate(proposal_files):
+            path = os.path.join(tmp_dir, f"proposal_{i}_{_analisis_saved_name(f.filename)}")
+            with open(path, "wb") as out:
+                out.write(await f.read())
+            proposal_paths.append(path)
+        for i, f in enumerate(laporan_files):
+            path = os.path.join(tmp_dir, f"laporan_{i}_{_analisis_saved_name(f.filename)}")
+            with open(path, "wb") as out:
+                out.write(await f.read())
+            laporan_paths.append(path)
+
+        teks_proposal = await run_in_threadpool(extract_full_text_multi, proposal_paths)
+        teks_laporan = await run_in_threadpool(extract_full_text_multi, laporan_paths) if laporan_paths else ""
+        if not teks_proposal.strip():
+            return err("no_text", "Tidak ada teks yang berhasil dibaca dari dokumen Proposal. Pastikan filenya valid dan bukan hasil scan gambar mentah.")
+
+        hasil = await run_in_threadpool(analisis_konsistensi_proposal, teks_proposal, teks_laporan)
+        if isinstance(hasil, dict) and hasil.get("error"):
+            return err("analysis_failed", hasil["error"], 500)
+
+        return ok({
+            "hasil_markdown": hasil,
+            "nama_proposal": ", ".join(f.filename for f in proposal_files),
+            "nama_laporan": ", ".join(f.filename for f in laporan_files),
+        })
+    except Exception:
+        traceback.print_exc()
+        return err("analysis_failed", "Terjadi kesalahan saat menganalisis dokumen. Silakan coba lagi.", 500)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/v1/analisis/unduh")
+async def analisis_unduh(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """
+    Body JSON:
+    {
+      "hasil_markdown": "...",       (wajib, hasil dari /analisis/proposal)
+      "nama_proposal": "...",        (opsional, untuk judul & nama file)
+      "nama_laporan": "..."          (opsional)
+    }
+
+    Response 200: file .docx hasil analisis, siap diunduh.
+    """
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    hasil_markdown = str(payload.get("hasil_markdown") or "")
+    if not hasil_markdown.strip():
+        return err("invalid_input", "Field 'hasil_markdown' wajib diisi (hasil dari POST /analisis/proposal).")
+    nama_proposal = str(payload.get("nama_proposal") or "")
+    nama_laporan = str(payload.get("nama_laporan") or "")
+
+    return _analisis_docx_response(hasil_markdown, nama_proposal, nama_laporan)
+
+
+@app.post("/api/v1/analisis/simpan")
+async def analisis_simpan(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """
+    Body JSON:
+    {
+      "hasil_markdown": "...",       (wajib)
+      "nama_proposal": "...",        (opsional)
+      "nama_laporan": "...",         (opsional)
+      "disimpan_oleh": "budi"        (opsional -- penanda petugas/pengguna,
+                                     dipakai untuk filter riwayat; API tidak
+                                     punya sesi login, jadi isi manual)
+    }
+
+    Response 200: { "entry_id": "abc123..." } -- dipakai di endpoint riwayat.
+    """
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    hasil_markdown = str(payload.get("hasil_markdown") or "")
+    if not hasil_markdown.strip():
+        return err("invalid_input", "Field 'hasil_markdown' wajib diisi (hasil dari POST /analisis/proposal).")
+
+    try:
+        entry_id = await run_in_threadpool(
+            analisis_store.simpan_hasil_analisis,
+            ANALISIS_STORE_DIR,
+            hasil_markdown,
+            str(payload.get("nama_proposal") or ""),
+            str(payload.get("nama_laporan") or ""),
+            str(payload.get("disimpan_oleh") or ""),
+        )
+    except Exception:
+        traceback.print_exc()
+        return err("save_failed", "Gagal menyimpan hasil analisis di server.", 500)
+    return ok({"entry_id": entry_id})
+
+
+@app.get("/api/v1/analisis/riwayat")
+async def analisis_riwayat_list(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """
+    Query string (semua opsional):
+      - disimpan_oleh: hanya tampilkan hasil milik petugas tertentu
+      - limit         : jumlah maksimum entri yang dikembalikan (default 200,
+                        maks 500)
+
+    Tanpa 'disimpan_oleh', semua hasil tersimpan ikut dikembalikan (karena
+    API ini sudah dijaga API key, aksesnya dianggap setara admin).
+    """
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    qp = request.query_params
+    disimpan_oleh = qp.get("disimpan_oleh") or None
+    try:
+        limit = int(qp.get("limit") or 200)
+    except (TypeError, ValueError):
+        return err("invalid_limit", "Query 'limit' harus berupa angka.")
+    limit = max(1, min(limit, 500))
+
+    try:
+        items = await run_in_threadpool(
+            analisis_store.list_hasil_analisis, ANALISIS_STORE_DIR, disimpan_oleh=disimpan_oleh, limit=limit
+        )
+    except Exception:
+        traceback.print_exc()
+        return err("internal_error", "Gagal membaca daftar hasil analisis.", 500)
+    return ok({"items": items, "total": len(items)})
+
+
+@app.get("/api/v1/analisis/riwayat/{entry_id}")
+async def analisis_riwayat_get(entry_id: str, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """Response 200: { "meta": {...}, "hasil_markdown": "..." }"""
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+    if not _ID_RE.fullmatch(entry_id):
+        return err("invalid_entry_id", "entry_id tidak valid.", 400)
+    loaded = await run_in_threadpool(analisis_store.load_hasil_analisis, ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return err("entry_not_found", "Hasil analisis tidak ditemukan (mungkin sudah dihapus).", 404)
+    meta, hasil_markdown = loaded
+    return ok({"meta": meta, "hasil_markdown": hasil_markdown})
+
+
+@app.get("/api/v1/analisis/riwayat/{entry_id}/unduh")
+async def analisis_riwayat_unduh(entry_id: str, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """Response 200: file .docx dari hasil analisis tersimpan tersebut."""
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+    if not _ID_RE.fullmatch(entry_id):
+        return err("invalid_entry_id", "entry_id tidak valid.", 400)
+    loaded = await run_in_threadpool(analisis_store.load_hasil_analisis, ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return err("entry_not_found", "Hasil analisis tidak ditemukan (mungkin sudah dihapus).", 404)
+    meta, hasil_markdown = loaded
+    return _analisis_docx_response(hasil_markdown, meta.get("nama_proposal", ""), meta.get("nama_laporan", ""))
+
+
+@app.delete("/api/v1/analisis/riwayat/{entry_id}")
+async def analisis_riwayat_hapus(entry_id: str, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """Hapus permanen satu hasil analisis tersimpan."""
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+    if not _ID_RE.fullmatch(entry_id):
+        return err("invalid_entry_id", "entry_id tidak valid.", 400)
+    loaded = await run_in_threadpool(analisis_store.load_hasil_analisis, ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return err("entry_not_found", "Hasil analisis tidak ditemukan (mungkin sudah dihapus).", 404)
+    await run_in_threadpool(analisis_store.delete_hasil_analisis, ANALISIS_STORE_DIR, entry_id)
+    return ok({"deleted": True, "entry_id": entry_id})
+
+
+# ---------------------------------------------------------------------------
+# Route cadangan untuk path /api/v1/* yang tidak cocok route manapun di atas.
+# Di mode gabungan (main.py), mount Flask di root akan menangkap SEMUA path --
+# tanpa route ini, /api/v1/<salah> jatuh ke Flask dan membalas halaman HTML
+# 404 alih-alih envelope JSON. Ditaruh setelah route asli & sebelum mount.
+# ---------------------------------------------------------------------------
+@app.api_route(
+    "/api/v1/{unmatched_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+)
+async def api_v1_not_found(unmatched_path: str):
+    return err("not_found", "Endpoint tidak ditemukan.", 404)
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +752,16 @@ def dokumen_hapus_job(job_id: str, x_api_key: Optional[str] = Header(default=Non
 # supaya respons tetap berbentuk JSON konsisten { success, error } alih-alih
 # halaman error HTML bawaan.
 # ---------------------------------------------------------------------------
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    # Validasi bawaan FastAPI (mis. body multipart tidak sesuai skema) juga
+    # dibungkus ke bentuk envelope yang sama supaya klien cukup cek 'success'.
+    first = exc.errors()[0] if exc.errors() else {}
+    lokasi = ".".join(str(p) for p in first.get("loc", []) if p != "body")
+    detail = first.get("error") or first.get("msg") or "Data request tidak valid."
+    return err("validation_error", f"{lokasi}: {detail}".strip(": "), 400)
+
+
 @app.exception_handler(404)
 async def _not_found(request: Request, exc):
     return err("not_found", "Endpoint tidak ditemukan.", 404)
