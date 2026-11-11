@@ -1,0 +1,5256 @@
+"""
+Aplikasi Web Penggabung Proposal PKKPRL
+=========================================
+Alur: Upload 2 PDF -> halaman Review (preview dokumen penuh + form koreksi
+data) -> klik "Generate Dokumen Final" -> file Word diunduh.
+
+HTML ditanam langsung di dalam file ini (tidak pakai folder templates/)
+supaya tidak ada masalah TemplateNotFound di berbagai platform hosting.
+
+CARA MENJALANKAN (LOKAL / TES):
+    pip install -r requirements.txt --break-system-packages
+    export ANTHROPIC_API_KEY="sk-ant-..."   # opsional, untuk fallback ekstraksi
+    python3 app.py
+    -> buka http://localhost:5000 di browser
+"""
+import os
+import re
+import io
+import uuid
+import shutil
+import traceback
+import fitz  # PyMuPDF -- dipakai untuk merender halaman PDF dokumen dukung
+            # (mis. Surat Izin Lingkungan, Berita Acara) jadi gambar, supaya
+            # isinya ikut tampil di lampiran dokumen final, bukan cuma
+            # disebut nama filenya saja.
+
+# Muat file .env (kalau ada) supaya ANTHROPIC_API_KEY & variabel lain terbaca
+# otomatis saat dijalankan lokal (python3 app.py). Di hosting (Render/Railway),
+# environment variable biasanya sudah diset lewat dashboard platform, jadi
+# baris ini aman dilewati kalau library/​file .env tidak ada.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+from flask import Flask, request, render_template_string, send_file, after_this_request, session, redirect, url_for, jsonify
+import mammoth
+import asisten_kkprl
+
+# Login Google (authlib) bersifat OPSIONAL: kalau library ini gagal di-import
+# atau gagal diinisialisasi (misal karena versi Python di server belum kompatibel),
+# aplikasi tetap harus jalan normal -- cuma fitur Login yang otomatis nonaktif.
+try:
+    from authlib.integrations.flask_client import OAuth
+    AUTHLIB_AVAILABLE = True
+except Exception:
+    traceback.print_exc()
+    print("[startup] PERINGATAN: authlib gagal di-import, fitur Login Google dinonaktifkan.")
+    OAuth = None
+    AUTHLIB_AVAILABLE = False
+
+from extract import extract_proposal_with_fallback, extract_laporan_with_fallback, extract_full_text_any, extract_full_text_multi
+from werkzeug.utils import secure_filename
+import analisis_store
+from generate_docx import markdown_report_to_docx_bytes
+from llm_fallback import analisis_konsistensi_proposal, api_key_available as llm_api_key_available
+from generate_docx import build_document
+from review_fields import FIELD_GROUPS, form_field_name, get_value, apply_form_values
+import job_store
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR: folder untuk data yang perlu BERTAHAN lintas-redeploy (riwayat &
+# draft per-pengguna). Kalau env var DATA_DIR diisi (arahkan ke mount path
+# Railway Volume, mis. "/data"), riwayat tidak akan hilang saat redeploy.
+# Kalau tidak diisi, fallback ke folder aplikasi biasa (ephemeral -- hilang
+# tiap redeploy, sama seperti sebelumnya).
+DATA_DIR = os.environ.get("DATA_DIR") or BASE_DIR
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+JOBS_DIR = os.path.join(BASE_DIR, "jobs")
+ANALISIS_STORE_DIR = os.path.join(DATA_DIR, "analisis_tersimpan")
+HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
+DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
+DRAFT_MAX_AGE_DAYS = 30  # riwayat isian per-pengguna otomatis terhapus setelah sekian hari
+STAFF_SHEET_CSV_URL = os.environ.get("STAFF_SHEET_CSV_URL") or (
+    "https://docs.google.com/spreadsheets/d/1X7YS72vG6wF0XqxClfeZkc_zpeJxaGKfuB3Nw7M1QXM"
+    "/export?format=csv&gid=0"
+)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(JOBS_DIR, exist_ok=True)
+try:
+    os.makedirs(DRAFTS_DIR, exist_ok=True)
+except OSError as _e:
+    # Kalau DATA_DIR mengarah ke path Volume yang belum ter-mount/bermasalah,
+    # JANGAN sampai bikin seluruh aplikasi gagal start -- fallback ke folder
+    # lokal biasa (riwayat/draft jadi ephemeral, tapi APLIKASI TETAP JALAN)
+    # daripada mati total karena satu folder saja gagal dibuat.
+    print(f"[startup] PERINGATAN: gagal membuat DRAFTS_DIR di '{DRAFTS_DIR}' ({_e}). "
+          f"Fallback ke folder lokal biasa -- riwayat/draft TIDAK akan bertahan lintas redeploy "
+          f"sampai masalah path/Volume ini diperbaiki.")
+    DATA_DIR = BASE_DIR
+    HISTORY_FILE = os.path.join(DATA_DIR, "history.jsonl")
+    DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
+    os.makedirs(DRAFTS_DIR, exist_ok=True)
+print(f"[startup] DATA_DIR (riwayat/draft tersimpan di sini) = {DATA_DIR}")
+
+
+MAX_CONTENT_LENGTH = 30 * 1024 * 1024  # 30 MB batas unggah per file gabungan
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+# PENTING: SECRET_KEY wajib SAMA di semua worker proses (Procfile pakai -w 4,
+# artinya ada 4 proses gunicorn berbeda) supaya cookie sesi yang ditandatangani
+# oleh 1 worker bisa tetap dikenali/valid saat request berikutnya ditangani
+# worker LAIN -- kalau tidak, user akan dianggap "belum login" lagi setiap kali
+# request-nya kebetulan jatuh ke worker yang berbeda (bug: login muncul lagi
+# saat pindah halaman). Paling aman: set FLASK_SECRET_KEY di environment
+# variable Railway dengan nilai TETAP. Kalau belum diset, fallback di bawah ini
+# tetap KONSISTEN antar-worker (bukan acak per-proses) supaya tidak bug,
+# walaupun secara keamanan sebaiknya tetap diganti dengan nilai rahasia sendiri.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "e-gerai-kkprl-bprl-makassar-2026-ganti-dgn-secret-sendiri"
+# Sesi login dibuat bertahan SANGAT LAMA (10 tahun / praktis tanpa batas waktu)
+# supaya staf cukup login SEKALI di awal, lalu semua menu langsung bisa dipakai
+# terus-menerus tanpa diminta login ulang, sampai mereka klik "Keluar" sendiri.
+import datetime as _dt
+app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=3650)
+
+# ---- Konfigurasi OAuth Google (Sign in with Google) ----
+# GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET wajib diisi lewat environment variable
+# di Railway (dibuat lewat Google Cloud Console -> OAuth 2.0 Client IDs).
+google_oauth = None
+if AUTHLIB_AVAILABLE:
+    try:
+        oauth = OAuth(app)
+        google_oauth = oauth.register(
+            name="google",
+            client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+            client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+            server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+            client_kwargs={"scope": "openid email profile"},
+        )
+    except Exception:
+        traceback.print_exc()
+        print("[startup] PERINGATAN: inisialisasi OAuth Google gagal, fitur Login dinonaktifkan.")
+        google_oauth = None
+
+print(f"[startup] BASE_DIR = {BASE_DIR}")
+print(f"[startup] Isi BASE_DIR = {os.listdir(BASE_DIR)}")
+
+
+# ---------------------------------------------------------------------------
+# Riwayat penggunaan (history) -- catatan RINGAN saja (metadata: nama pemohon,
+# nama perusahaan, waktu, dan siapa yang memproses). TIDAK menyimpan file
+# dokumennya sama sekali, sesuai kebijakan privasi aplikasi ini.
+#
+# CATATAN PENTING: file history.jsonl ini disimpan di disk lokal container.
+# Di Railway, disk lokal bersifat SEMENTARA -- akan terhapus setiap kali
+# aplikasi di-redeploy/restart, KECUALI Anda memasang "Volume" (persistent
+# storage) di pengaturan Railway dan mengarahkannya ke folder BASE_DIR ini.
+# ---------------------------------------------------------------------------
+import json
+import datetime
+
+WITA = datetime.timezone(datetime.timedelta(hours=8))  # Waktu Indonesia Tengah (Makassar)
+
+
+def log_history_entry(nama_pemohon, nama_perusahaan, sumber):
+    entry = {
+        "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
+        "nama_pemohon": nama_pemohon or "-",
+        "nama_perusahaan": nama_perusahaan or "-",
+        "sumber": sumber,
+        "diproses_oleh": (session.get("user") or {}).get("name", "Belum Login"),
+        "email": (session.get("user") or {}).get("email", ""),
+    }
+    try:
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        traceback.print_exc()
+
+
+def read_history(limit=200):
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    entries = []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        traceback.print_exc()
+        return []
+    return list(reversed(entries))[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Riwayat pengisian PER-PENGGUNA ("Riwayat Saya") -- beda dari riwayat global
+# (history.jsonl) yang isinya cuma metadata ringkas dan permanen. Ini
+# menyimpan SELURUH data isian form (prop_data, tanpa gambar) supaya staf
+# bisa melanjutkan isian yang belum selesai tanpa mengulang dari awal.
+# Otomatis terhapus sendiri setelah DRAFT_MAX_AGE_DAYS hari supaya tidak
+# membebani penyimpanan server. Riwayat global (semua pengguna) TIDAK
+# terpengaruh oleh penghapusan ini.
+# ---------------------------------------------------------------------------
+def _safe_kode(kode_nama):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(kode_nama or "anon"))
+
+
+def _draft_images_dir(safe_kode, job_id):
+    return os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}_images")
+
+
+def _draft_laporan_path(safe_kode, job_id, ext):
+    return os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}_laporan{ext}")
+
+
+def _err_detail(e):
+    """String detail error singkat untuk ditampilkan ke pengguna (tool
+    internal berlogin, aman ditampilkan) -- supaya kalau ada error, bisa
+    langsung di-screenshot dan didiagnosis tanpa perlu akses log server."""
+    return f"{type(e).__name__}: {str(e)[:300]}"
+
+
+def save_draft(kode_nama, job_id, prop_data, prop_images=None,
+                laporan_bytes=None, laporan_ext=None, laporan_filename=None):
+    """Simpan seluruh isian form (prop_data) SEKALIGUS gambar yang sudah
+    diunggah (prop_images) supaya tidak hilang kalau pengguna menutup
+    halaman / melanjutkan isian di lain waktu. Gambar disimpan sebagai file
+    terpisah di folder <kode>__<job_id>_images/ (bukan di-embed ke JSON)
+    supaya file draft tetap ringan dan cepat dibaca.
+
+    File Laporan Kondisi Eksisting/Hidro-Oseanografi (PDF/Word) juga ikut
+    disimpan dengan cara yang sama -- kalau laporan_bytes diisi (ada file
+    BARU diunggah pada submit ini), file itu disimpan & metadatanya dicatat.
+    Kalau TIDAK ada file baru (laporan_bytes kosong), info Laporan yang
+    SUDAH tersimpan sebelumnya untuk job_id ini dipertahankan apa adanya --
+    supaya tidak hilang cuma karena pengguna tidak unggah ulang saat
+    melanjutkan isian di kesempatan berikutnya."""
+    try:
+        safe_kode = _safe_kode(kode_nama)
+
+        images_meta = []
+        if prop_images:
+            img_dir = _draft_images_dir(safe_kode, job_id)
+            os.makedirs(img_dir, exist_ok=True)
+            for i, im in enumerate(prop_images):
+                ext = im.get("ext") or "png"
+                fname = f"{i}_{im.get('tag', 'lainnya')}.{ext}"
+                with open(os.path.join(img_dir, fname), "wb") as imgf:
+                    imgf.write(im["bytes"])
+                images_meta.append({"tag": im.get("tag", "lainnya"), "filename": fname})
+
+        laporan_meta = None
+        if laporan_bytes and laporan_ext:
+            laporan_path = _draft_laporan_path(safe_kode, job_id, laporan_ext)
+            with open(laporan_path, "wb") as lf:
+                lf.write(laporan_bytes)
+            laporan_meta = {"filename": laporan_filename or ("laporan" + laporan_ext), "ext": laporan_ext}
+        else:
+            existing = load_draft(kode_nama, job_id)
+            if existing:
+                laporan_meta = existing.get("laporan_meta")
+
+        entry = {
+            "waktu": datetime.datetime.now(WITA).strftime("%Y-%m-%d %H:%M:%S"),
+            "job_id": job_id,
+            "kode_nama": kode_nama,
+            "nama_pemohon": prop_data.get("Nama Pemohon", ""),
+            "nama_perusahaan": prop_data.get("Nama Perusahaan/Instansi", ""),
+            "prop_data": prop_data,
+            "prop_images_meta": images_meta,
+            "laporan_meta": laporan_meta,
+        }
+        path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entry, f, ensure_ascii=False)
+    except Exception:
+        traceback.print_exc()
+
+
+def load_draft_images(kode_nama, job_id):
+    """Baca kembali gambar yang tersimpan untuk satu draft (hasil save_draft
+    sebelumnya) dalam format list [{'tag','bytes','ext'}] -- format yang
+    sama seperti prop_images biasa, siap dipakai langsung oleh
+    build_document()."""
+    safe_kode = _safe_kode(kode_nama)
+    draft = load_draft(kode_nama, job_id)
+    if not draft:
+        return []
+    images = []
+    img_dir = _draft_images_dir(safe_kode, job_id)
+    for meta in draft.get("prop_images_meta", []) or []:
+        fpath = os.path.join(img_dir, meta.get("filename", ""))
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath, "rb") as f:
+                data_bytes = f.read()
+            ext = os.path.splitext(meta["filename"])[1].lstrip(".").lower() or "png"
+            images.append({"tag": meta.get("tag", "lainnya"), "bytes": data_bytes, "ext": ext})
+        except Exception:
+            continue
+    return images
+
+
+def load_draft_laporan(kode_nama, job_id):
+    """Baca kembali file Laporan Kondisi Eksisting/Hidro-Oseanografi yang
+    tersimpan untuk satu draft (hasil save_draft sebelumnya). Mengembalikan
+    tuple (bytes, ext) siap dipakai langsung sebagai pengganti file upload,
+    atau None kalau draft ini belum pernah punya Laporan tersimpan."""
+    draft = load_draft(kode_nama, job_id)
+    if not draft:
+        return None
+    meta = draft.get("laporan_meta")
+    if not meta:
+        return None
+    safe_kode = _safe_kode(kode_nama)
+    ext = meta.get("ext") or ".pdf"
+    path = _draft_laporan_path(safe_kode, job_id, ext)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return f.read(), ext
+    except Exception:
+        return None
+
+
+def merge_draft_images(kode_nama, job_id, prop_images, hapus_tags=None):
+    """Gabungkan gambar yang BARU diunggah pada submit ini (prop_images)
+    dengan gambar yang sudah tersimpan sebelumnya lewat tombol \"Simpan\"
+    (job_id yang sama) -- supaya kalau pengguna sudah pernah mengunggah
+    gambar tapi lupa mengunggah ulang di sesi berikutnya, gambar lama tetap
+    dipakai (tidak hilang). Tag yang di-upload ulang pada submit ini akan
+    MENGGANTIKAN (bukan menumpuk) gambar lama dengan tag yang sama.
+
+    hapus_tags: set/list tag yang secara eksplisit ditandai untuk DIHAPUS
+    lewat tombol \u00d7 pada gambar tersimpan (lihat img-remove-saved di JS) --
+    tag-tag ini dikecualikan sepenuhnya dari hasil gabungan, walau tidak ada
+    upload baru yang menggantikannya."""
+    if not kode_nama or not job_id:
+        return prop_images
+    saved = load_draft_images(kode_nama, job_id)
+    if not saved:
+        return prop_images
+    hapus_set = set(hapus_tags or [])
+    new_tags = {im.get("tag") for im in prop_images}
+    merged = list(prop_images)
+    for im in saved:
+        tag = im.get("tag")
+        if tag not in new_tags and tag not in hapus_set:
+            merged.append(im)
+    return merged
+
+
+def cleanup_expired_drafts():
+    try:
+        cutoff = time.time() - (DRAFT_MAX_AGE_DAYS * 86400)
+        for fname in os.listdir(DRAFTS_DIR):
+            path = os.path.join(DRAFTS_DIR, fname)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    # folder gambar draft ini (kalau ada) ikut dihapus
+                    if fname.endswith(".json"):
+                        img_dir = path[:-len(".json")] + "_images"
+                        shutil.rmtree(img_dir, ignore_errors=True)
+            except OSError:
+                continue
+    except Exception:
+        traceback.print_exc()
+
+
+def list_staff_with_drafts():
+    """Kumpulkan daftar staf (kode_nama unik) yang punya minimal 1 draft
+    tersimpan, dengan jumlah draft & waktu draft terakhir -- dipakai di
+    halaman admin untuk memilih riwayat siapa yang mau dibuka."""
+    cleanup_expired_drafts()
+    staff_list = fetch_staff_list()
+    per_kode = {}
+    try:
+        for fname in os.listdir(DRAFTS_DIR):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(DRAFTS_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    entry = json.load(f)
+            except Exception:
+                continue
+            kode = entry.get("kode_nama") or ""
+            if not kode:
+                continue
+            rec = per_kode.setdefault(kode, {"kode": kode, "jumlah": 0, "terakhir": ""})
+            rec["jumlah"] += 1
+            if entry.get("waktu", "") > rec["terakhir"]:
+                rec["terakhir"] = entry.get("waktu", "")
+    except Exception:
+        traceback.print_exc()
+        return []
+    result = []
+    for kode, rec in per_kode.items():
+        rec["nama"] = (staff_list.get(kode) or {}).get("nama") or kode
+        result.append(rec)
+    result.sort(key=lambda r: r["terakhir"], reverse=True)
+    return result
+
+
+def read_user_drafts(kode_nama, limit=50):
+    cleanup_expired_drafts()
+    safe_kode = _safe_kode(kode_nama)
+    prefix = f"{safe_kode}__"
+    entries = []
+    try:
+        for fname in os.listdir(DRAFTS_DIR):
+            if not fname.startswith(prefix):
+                continue
+            path = os.path.join(DRAFTS_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    entries.append(json.load(f))
+            except Exception:
+                continue
+    except Exception:
+        traceback.print_exc()
+        return []
+    entries.sort(key=lambda e: e.get("waktu", ""), reverse=True)
+    return entries[:limit]
+
+
+def load_draft(kode_nama, job_id):
+    safe_kode = _safe_kode(kode_nama)
+    path = os.path.join(DRAFTS_DIR, f"{safe_kode}__{job_id}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+# Login sederhana pegawai -- kredensial diambil LANGSUNG dari Google Sheet
+# ("Kode Nama" = username, "Kode petugas" = password), di-cache sebentar
+# supaya tidak nge-fetch Google di setiap request. Kalau ada pegawai baru
+# ditambahkan di sheet, otomatis kepakai begitu cache kedaluwarsa (tanpa
+# perlu ubah kode / redeploy).
+# ---------------------------------------------------------------------------
+import csv
+import io as _io
+import time
+
+_staff_cache = {"data": {}, "fetched_at": 0}
+STAFF_CACHE_TTL = 60  # detik (1 menit) -- lebih pendek dari sebelumnya (5 menit) supaya
+# perubahan di Google Sheet (mis. menambahkan tanda "Ya" pada kolom Admin/Analisis
+# untuk seorang petugas) lebih cepat berlaku otomatis tanpa perlu tindakan apa pun.
+# Untuk kepastian LANGSUNG (tanpa menunggu), admin bisa pakai tombol "Refresh Data
+# Petugas" (lihat route /admin/refresh-staff di bawah) yang memaksa fetch ulang saat itu juga.
+
+# Kode Nama (username login, BUKAN kode petugas/password) yang SELALU
+# dianggap admin apa pun isi Google Sheet-nya -- jaring pengaman kalau
+# kolom "Admin" di sheet belum/lupa diisi. Tambahkan kode nama lain di sini
+# kalau perlu, atau (lebih fleksibel) tandai lewat kolom "Admin" di Google
+# Sheet -- isi "Ya"/"TRUE"/"1"/"Admin" pada baris pegawai yang bersangkutan,
+# tidak perlu redeploy.
+ADMIN_KODE_HARDCODED = {"01"}
+
+# Kode Nama yang SELALU dianggap petugas Analisis (boleh membuka menu
+# "Analisis Proposal") apa pun isi Google Sheet-nya -- jaring pengaman sama
+# seperti ADMIN_KODE_HARDCODED di atas. Analisis Proposal berisi hasil
+# koreksi/penilaian dokumen, jadi HANYA petugas yang ditunjuk (kolom
+# "Analis"/"Petugas Analisis" bernilai Ya/TRUE/1 di Google Sheet, atau kode
+# nama yang didaftarkan di sini, atau akun admin) yang boleh mengaksesnya.
+ANALIS_KODE_HARDCODED = {"101", "114"}
+
+# Kode Nama yang boleh membuka "Riwayat Analisis Semua Petugas" (melihat
+# hasil Analisis & Koreksi Proposal yang disimpan oleh SEMUA petugas
+# analisis, bukan cuma milik sendiri) -- akses ini SENGAJA dibatasi ketat
+# ke kode nama yang didaftarkan eksplisit di sini saja, TIDAK otomatis
+# untuk admin/petugas analisis lain, karena isinya adalah hasil kerja
+# petugas lain yang sifatnya lebih sensitif dibanding riwayat sendiri.
+RIWAYAT_ANALISIS_SEMUA_KODE = {"101", "114"}
+
+
+def _clean_cell(v):
+    """Bersihkan nilai sel Google Sheet dari karakter tak-kasatmata (zero-
+    width space \\u200b, BOM \\ufeff, dsb) yang sering ikut kebawa saat
+    copy-paste ke spreadsheet dari web/PDF/Word -- Python str.strip() TIDAK
+    otomatis membuang karakter semacam ini (beda dari spasi biasa/non-
+    breaking space yang memang sudah tertangani), sehingga cek semacam
+    "Ya" == "Ya" bisa diam-diam gagal cocok walau keduanya kelihatan sama
+    persis secara visual. Dipakai untuk SEMUA nilai sel penting dari sheet
+    staf (Kode Nama, Kode Petugas, Admin, Analisis, dst) supaya pencocokan
+    akses selalu andal."""
+    return (v or "").replace("\u200b", "").replace("\ufeff", "").strip()
+
+
+def _is_admin_value(v):
+    return _clean_cell(v).lower() in ("ya", "yes", "true", "1", "admin", "y")
+
+
+def _is_analis_value(v):
+    return _clean_cell(v).lower() in ("ya", "yes", "true", "1", "analis", "y")
+
+
+def parse_koordinat_file(file_storage):
+    """Baca titik koordinat otomatis dari file Excel (.xlsx), CSV, Word
+    (.docx), atau gambar (PNG/JPG) yang diupload -- 2 kolom pertama tiap
+    baris dianggap Longitude dan Latitude. Baris/sel yang bukan angka
+    otomatis dilewati (termasuk baris judul/header). Mengembalikan tuple
+    (list [nomor, longitude, latitude], pesan_status_atau_None)."""
+    filename = (file_storage.filename or "").lower()
+    data = file_storage.read()
+    hasil = []
+    pesan = None
+
+    def add_pair(a, b):
+        try:
+            float(str(a).replace(",", "."))
+            float(str(b).replace(",", "."))
+        except (TypeError, ValueError):
+            return
+        hasil.append([str(len(hasil) + 1), str(a).strip(), str(b).strip()])
+
+    try:
+        if filename.endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(_io.BytesIO(data), data_only=True)
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    vals = [v for v in row if v is not None and str(v).strip() != ""]
+                    if len(vals) >= 2:
+                        add_pair(vals[0], vals[1])
+        elif filename.endswith(".csv"):
+            text = data.decode("utf-8-sig", errors="ignore")
+            for line in text.splitlines():
+                parts = [p for p in re.split(r"[,;\t]", line.strip()) if p.strip()]
+                if len(parts) >= 2:
+                    add_pair(parts[0], parts[1])
+        elif filename.endswith(".docx"):
+            from docx import Document as _DocxDocument
+            doc = _DocxDocument(_io.BytesIO(data))
+            for table in doc.tables:
+                for row in table.rows:
+                    vals = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if len(vals) >= 2:
+                        add_pair(vals[0], vals[1])
+            if not hasil:
+                for para in doc.paragraphs:
+                    nums = re.findall(r"-?\d+[.,]\d+", para.text)
+                    if len(nums) >= 2:
+                        add_pair(nums[0], nums[1])
+        elif filename.endswith((".png", ".jpg", ".jpeg")):
+            hasil, pesan = parse_koordinat_dari_gambar(data, filename)
+    except Exception:
+        traceback.print_exc()
+        return [], "Terjadi kesalahan saat membaca file. Silakan isi koordinat manual."
+
+    return hasil, pesan
+
+
+def parse_koordinat_dari_gambar(image_bytes, filename):
+    """Baca titik koordinat dari gambar (mis. screenshot tabel koordinat atau
+    peta) memakai Claude Vision API. Kalau ANTHROPIC_API_KEY tidak diset,
+    otomatis dilewati (dikembalikan list kosong, tidak error) -- konsisten
+    dengan pola fallback LLM lain di aplikasi ini (lihat llm_fallback.py).
+    Mengembalikan tuple (list_titik, pesan_status) supaya pemanggil bisa
+    kasih tahu user kenapa gagal/berhasil, bukan cuma diam-diam kosong."""
+    from llm_fallback import api_key_available
+    if not api_key_available():
+        return [], "ANTHROPIC_API_KEY belum diset di server -- pembacaan otomatis dari gambar dilewati."
+
+    MAX_BYTES = 5 * 1024 * 1024  # 5 MB, batas aman untuk request Claude API
+    if len(image_bytes) > MAX_BYTES:
+        return [], "Ukuran gambar terlalu besar (maks 5 MB) untuk dibaca otomatis."
+
+    try:
+        import base64
+        from anthropic import Anthropic
+        client = Anthropic()
+        ext = "jpeg" if filename.lower().endswith((".jpg", ".jpeg")) else "png"
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": f"image/{ext}", "data": b64}},
+                    {"type": "text", "text": (
+                        "Gambar ini berisi daftar titik koordinat (longitude, latitude) batas area, "
+                        "bisa berupa tabel, daftar teks, atau anotasi pada peta/citra satelit. Baca "
+                        "semua titik koordinat yang terlihat dalam format desimal derajat (bukan "
+                        "derajat-menit-detik), urut sesuai urutan tampil di gambar (atas ke bawah, "
+                        "atau sesuai penomoran titik kalau ada). Kalau koordinat tertulis dalam format "
+                        "derajat-menit-detik (mis. 119°27'30\"E), konversi ke desimal derajat. "
+                        "Balas HANYA dengan JSON array polos (tanpa markdown/backtick/penjelasan "
+                        "apa pun), format persis: "
+                        '[["longitude1","latitude1"],["longitude2","latitude2"],...]. '
+                        "Kalau tidak ada titik koordinat yang terbaca sama sekali, balas: []"
+                    )},
+                ],
+            }],
+        )
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        # Kalau model tetap menyelipkan teks lain di luar instruksi, ambil
+        # bagian yang berbentuk array JSON saja (dari '[' pertama sampai ']' terakhir).
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        if m:
+            text = m.group(0)
+        pairs = json.loads(text)
+
+        hasil = []
+        for p in pairs:
+            if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+                continue
+            try:
+                lon = float(str(p[0]).replace(",", "."))
+                lat = float(str(p[1]).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            # Validasi kasar: koordinat wilayah Indonesia (longitude 90-142, latitude -12..8)
+            if not (90 <= lon <= 142 and -12 <= lat <= 8):
+                continue
+            hasil.append([str(len(hasil) + 1), str(p[0]).strip(), str(p[1]).strip()])
+
+        if not hasil:
+            return [], "Gambar berhasil dibaca AI, tapi tidak ditemukan titik koordinat yang valid di dalamnya."
+        return hasil, f"Berhasil membaca {len(hasil)} titik koordinat dari gambar."
+    except Exception:
+        traceback.print_exc()
+        return [], "Terjadi kesalahan saat membaca gambar lewat AI. Silakan isi koordinat manual."
+
+
+def fetch_staff_list(force=False):
+    now = time.time()
+    if not force and _staff_cache["data"] and (now - _staff_cache["fetched_at"]) < STAFF_CACHE_TTL:
+        return _staff_cache["data"]
+
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(STAFF_SHEET_CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8-sig")
+        reader = csv.DictReader(_io.StringIO(raw))
+        staff = {}
+        for row in reader:
+            nama = _clean_cell(row.get("Nama"))
+            kode_nama = _clean_cell(row.get("Kode Nama"))
+            kode_petugas = _clean_cell(row.get("Kode petugas"))
+            admin_raw = row.get("Admin") or row.get("admin") or row.get("Peran") or row.get("Role") or ""
+            is_admin = _is_admin_value(admin_raw) or kode_nama in ADMIN_KODE_HARDCODED
+            analis_raw = (row.get("Analis") or row.get("analis") or row.get("Petugas Analisis")
+                          or row.get("Analisis") or row.get("Peran Analisis") or "")
+            is_analis = _is_analis_value(analis_raw) or kode_nama in ANALIS_KODE_HARDCODED or is_admin
+            if nama and kode_nama and kode_petugas:
+                staff[kode_nama] = {
+                    "nama": nama, "password": kode_petugas,
+                    "is_admin": is_admin, "is_analis": is_analis,
+                }
+        if staff:
+            _staff_cache["data"] = staff
+            _staff_cache["fetched_at"] = now
+        return _staff_cache["data"]
+    except Exception:
+        traceback.print_exc()
+        # Kalau fetch gagal (mis. sedang tidak ada internet), tetap pakai
+        # cache lama yang masih ada di memori (kalau ada), daripada error total.
+        return _staff_cache["data"]
+
+BASE_CSS = """
+:root { --navy:#1F4E79; --bg:#f4f6f8; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: var(--bg); margin: 0; padding: 0; color: #222;
+}
+.wrap { max-width: 640px; margin: 0 auto; padding: 32px 20px 60px; }
+.wrap.wide { max-width: 900px; }
+h1 { color: var(--navy); font-size: 22px; margin-bottom: 4px; }
+p.sub { color: #555; margin-top: 0; font-size: 14px; }
+.card { background: #fff; border-radius: 12px; padding: 24px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin-top: 20px; }
+label { display:block; font-weight:600; margin-bottom:6px; margin-top:14px; font-size: 13px; color:#333; }
+input[type=file] { display:block; width:100%; padding: 10px; border: 1px dashed #aaa;
+                    border-radius: 8px; background:#fafafa; font-size: 13px; }
+input[type=text] { display:block; width:100%; padding: 9px 10px; border: 1px solid #ccc;
+                    border-radius: 6px; font-size: 13px; }
+button, .btn { margin-top: 20px; width: 100%; background: var(--navy); color:#fff;
+       border:none; padding: 14px; border-radius: 8px; font-size: 15px;
+       font-weight: 600; cursor:pointer; display:block; text-align:center; text-decoration:none; }
+button:hover, .btn:hover { background:#163a5c; }
+.note { font-size: 12px; color:#777; margin-top: 16px; line-height:1.5; }
+.flash { background:#fff3cd; border:1px solid #ffe08a; padding:12px 14px;
+         border-radius:8px; margin-top:16px; font-size:13px; color:#7a5b00; }
+.spinner { display:none; text-align:center; margin-top:18px; font-size:13px; color:var(--navy); }
+details { border:1px solid #e2e2e2; border-radius:8px; margin-top:12px; padding: 4px 14px 12px; background:#fbfbfd; }
+summary { cursor:pointer; font-weight:700; color:var(--navy); padding:10px 0; font-size:14px; }
+.preview-box { border:1px solid #ddd; border-radius:10px; background:#fff; padding: 30px 40px;
+               max-height: 720px; overflow-y: auto; font-size: 14px; line-height:1.5; }
+.preview-box table { border-collapse: collapse; width:100%; margin: 10px 0; }
+.preview-box td { border:1px solid #999; padding:5px 8px; vertical-align: top; }
+.preview-box img { max-width: 100%; height:auto; margin: 8px 0; }
+.preview-box p { margin: 6px 0; }
+.top-actions { position: sticky; top:0; background: var(--bg); padding: 10px 0; z-index:5; }
+"""
+
+LANDING_CSS = """
+:root {
+  --navy:#123A63; --blue:#1E63C7; --blue2:#2F7FE0; --bg:#eef3f8;
+  --line:#e3e9f0; --ink:#1c2b3a; --muted:#5b6b7c; --green:#1f9d55; --green-bg:#eafaf0;
+}
+* { box-sizing: border-box; }
+html, body { margin:0; padding:0; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--ink); }
+a { text-decoration:none; }
+
+/* ---- Header ---- */
+.site-header { background:#fff; border-bottom:1px solid var(--line); padding:18px 40px;
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:20px; }
+.brand { display:flex; align-items:center; gap:14px; }
+.brand-badge { width:44px; height:44px; border-radius:50%; flex:none;
+  background: conic-gradient(from 220deg, var(--blue2), var(--navy), var(--blue2));
+  display:flex; align-items:center; justify-content:center; }
+.brand-badge svg { width:22px; height:22px; }
+.brand-text .t1 { font-size:19px; font-weight:800; color:var(--navy); line-height:1.1; }
+.brand-text .t2 { font-size:11.5px; font-weight:700; color:var(--blue); letter-spacing:.03em; }
+.header-right { display:flex; align-items:center; gap:18px; }
+.gov-block { display:flex; align-items:center; gap:12px; }
+.gov-badge { width:52px; height:52px; border-radius:50%; flex:none; background:#f0f4f9;
+  border:1px solid var(--line); display:flex; align-items:center; justify-content:center; padding:6px; }
+.brand-logo-img { height:76px; width:auto; display:block; }
+.gov-badge img { max-width:100%; max-height:100%; object-fit:contain; }
+.gov-badge.rect { width:auto; height:48px; min-width:48px; border-radius:8px; padding:5px 10px;
+  background:#fff; border:1px solid var(--line); }
+.gov-badge.rect img { height:100%; width:auto; }
+.gov-text { font-size:12px; line-height:1.35; color:var(--navy); font-weight:700; max-width:170px; }
+.header-divider { width:1px; align-self:stretch; background:var(--line); }
+.brl-text .t1 { font-size:15px; font-weight:800; color:var(--navy); line-height:1.1; }
+.brl-text .t2 { font-size:10.5px; font-weight:700; color:var(--muted); letter-spacing:.05em; }
+
+.navbar { display:flex; align-items:center; gap:26px; flex-wrap:wrap; }
+.nav-link { display:flex; align-items:center; gap:6px; font-size:14px; font-weight:700;
+  color:#334862; padding:8px 2px; border-bottom:2px solid transparent; white-space:nowrap; }
+.nav-link svg { width:16px; height:16px; }
+.nav-link:hover { color:var(--blue); }
+.nav-link.active { color:var(--blue); border-bottom-color:var(--blue); }
+.login-btn { display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:700;
+  color:var(--blue); border:1.5px solid #cfe0f5; background:#f3f8ff; padding:9px 18px;
+  border-radius:999px; white-space:nowrap; }
+.login-btn svg { width:16px; height:16px; }
+.login-btn:hover { background:#e8f1fd; }
+.user-badge { display:flex; align-items:center; gap:10px; font-size:13.5px; }
+.user-avatar { width:32px; height:32px; border-radius:50%; border:2px solid #e8f1fd; flex:none; }
+.user-greet { font-weight:700; color:var(--navy); white-space:nowrap; }
+.logout-link { font-size:12px; font-weight:700; color:var(--blue); border:1.5px solid #cfe0f5;
+  background:#f3f8ff; padding:7px 14px; border-radius:999px; white-space:nowrap; }
+.logout-link:hover { background:#e8f1fd; }
+@media (max-width: 1180px) { .navbar { order:3; width:100%; justify-content:center; padding-top:10px;
+  border-top:1px solid var(--line); } }
+
+/* ---- Hero ---- */
+.hero { position:relative; overflow:hidden; background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%);
+  padding:36px 32px 50px; }
+.hero-image { padding:0; }
+.hero-image .hero-inner { display:block; max-width:1600px; margin:0 auto; }
+.hero-banner-img { width:100%; height:auto; display:block; }
+.hero-inner { max-width:1600px; margin:0 auto; display:flex; align-items:center; gap:36px; flex-wrap:wrap; }
+
+.hero-logo { flex:0 0 auto; }
+.hero-logo img { height:150px; width:auto; display:block; }
+@media (max-width: 1300px) { .hero-logo img { height:110px; } }
+@media (max-width: 700px) { .hero-logo { width:100%; text-align:center; } .hero-logo img { height:90px; } }
+
+.hero-copy { flex:1 1 380px; min-width:280px; border-left:3px solid #ffb020; padding-left:24px; }
+.hero-copy h1 { font-size:30px; font-weight:800; color:var(--navy); margin:0 0 10px; letter-spacing:-.01em; }
+.hero-copy p { font-size:14.5px; color:#33495e; max-width:560px; line-height:1.6; margin:0 0 22px; }
+.feature-row { display:flex; gap:22px; flex-wrap:wrap; }
+.feature { display:flex; align-items:center; gap:10px; }
+.feature .ic { width:38px; height:38px; border-radius:10px; background:#fff; flex:none;
+  display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(18,58,99,.12); }
+.feature .ic svg { width:19px; height:19px; color:var(--blue); }
+.feature span { font-size:12.5px; font-weight:700; color:var(--navy); line-height:1.25; display:block; max-width:110px; }
+
+.hero-art { flex:0 0 auto; display:flex; justify-content:center; }
+.illust-wrap { position:relative; width:300px; }
+.illust-screen { background:linear-gradient(160deg,#1c4faa,#0d2a5c); border-radius:16px;
+  aspect-ratio:4/3; display:flex; align-items:center; justify-content:center;
+  box-shadow:0 20px 40px rgba(10,30,60,.28); position:relative; overflow:hidden; }
+.illust-stand { width:110px; height:10px; background:#c3cad2; border-radius:0 0 8px 8px; margin:0 auto; }
+.illust-ai-badge { position:absolute; top:-14px; right:-10px; z-index:2;
+  background:linear-gradient(135deg,#ffc857,#ff8a00); color:#fff; font-weight:900; font-size:17px;
+  width:46px; height:46px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+  box-shadow:0 8px 16px rgba(255,140,0,.35); transform:rotate(-6deg); }
+.illust-mag { position:absolute; bottom:-10px; right:18px; width:44px; height:44px; border-radius:50%;
+  background:#fff; display:flex; align-items:center; justify-content:center; box-shadow:0 6px 14px rgba(18,58,99,.25); }
+.illust-mag svg { width:22px; height:22px; color:var(--blue); }
+@media (max-width: 700px) { .illust-wrap { width:220px; } }
+
+/* ---- Main grid ---- */
+.main-wrap { max-width:1600px; margin:-24px auto 0; padding:0 40px 40px; position:relative; z-index:2; }
+.grid { display:grid; grid-template-columns:1fr 1fr 340px; gap:26px; align-items:start; }
+@media (max-width: 980px) { .grid { grid-template-columns:1fr; } }
+
+.upload-card { background:#fff; border-radius:16px; padding:24px; box-shadow:0 6px 24px rgba(18,58,99,.08); }
+.step-head { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+.step-num { width:26px; height:26px; border-radius:50%; background:var(--blue); color:#fff;
+  font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center; flex:none; }
+.step-icon { width:44px; height:44px; border-radius:12px; background:#eaf1fc; flex:none;
+  display:flex; align-items:center; justify-content:center; }
+.step-icon svg { width:22px; height:22px; color:var(--blue); }
+.step-title { font-size:15.5px; font-weight:800; color:var(--navy); }
+.step-desc { font-size:12.5px; color:var(--muted); margin:2px 0 16px; }
+
+.dropzone { border:2px dashed #b9cbe0; border-radius:12px; background:#f7fafd; padding:26px 14px;
+  text-align:center; cursor:pointer; transition:.15s; }
+.dropzone:hover, .dropzone.dragover { border-color:var(--blue); background:#eef5fd; }
+.dropzone svg { width:30px; height:30px; color:var(--blue); margin-bottom:8px; }
+.dropzone .dz-title { font-size:13.5px; font-weight:700; color:var(--navy); }
+.dropzone .dz-sub { font-size:12px; color:var(--muted); margin-top:2px; }
+.dropzone .dz-max { font-size:11px; color:var(--muted); margin-top:8px; }
+.dropzone input[type=file] { display:none; }
+
+.file-list { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.file-list .file-chip { margin-top:0; }
+.file-chip { display:none; margin-top:12px; align-items:center; justify-content:space-between;
+  background:var(--green-bg); border:1px solid #cdeedb; border-radius:10px; padding:9px 12px; }
+.file-chip.show { display:flex; }
+.file-chip .fc-left { display:flex; align-items:center; gap:8px; min-width:0; }
+.file-chip .fc-left svg { width:16px; height:16px; color:var(--green); flex:none; }
+.file-chip .fc-name { font-size:12.5px; font-weight:600; color:#1c2b3a; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; max-width:160px; }
+.file-chip .fc-size { font-size:11.5px; color:var(--muted); flex:none; margin-left:8px; }
+.file-chip .fc-remove { background:none; border:none; cursor:pointer; color:var(--muted);
+  font-size:15px; line-height:1; padding:2px 4px; }
+
+.gen-btn { grid-column:1 / span 2; }
+@media (max-width: 980px) { .gen-btn { grid-column:1; } }
+.gen-btn button { width:100%; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:16px; border-radius:12px; font-size:15.5px; font-weight:800; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 6px 18px rgba(30,99,199,.3); }
+.gen-btn button svg { width:20px; height:20px; flex:none; }
+.gen-btn button:hover { filter:brightness(1.05); }
+.gen-btn button:disabled { opacity:.55; cursor:not-allowed; }
+.gen-btn .gen-note { text-align:center; font-size:11.5px; color:var(--muted); margin-top:10px; }
+.gen-btn .spinner { display:none; text-align:center; font-size:12.5px; color:var(--blue); margin-top:10px; font-weight:700; }
+
+.flow-card { background:#fff; border-radius:16px; padding:22px 20px; box-shadow:0 6px 24px rgba(18,58,99,.08); }
+.flow-card h3 { font-size:14px; font-weight:800; color:var(--blue); margin:0 0 16px; }
+.flow-step { display:flex; gap:12px; position:relative; padding-bottom:22px; }
+.flow-step:last-child { padding-bottom:0; }
+.flow-step::before { content:""; position:absolute; left:15px; top:34px; bottom:0; width:2px;
+  background:repeating-linear-gradient(to bottom, #c9d6e6 0 4px, transparent 4px 8px); }
+.flow-step:last-child::before { display:none; }
+.flow-dot { width:32px; height:32px; border-radius:50%; flex:none; display:flex; align-items:center;
+  justify-content:center; font-weight:800; font-size:13px; color:#fff; z-index:1; }
+.flow-dot svg { width:16px; height:16px; }
+.flow-step:nth-of-type(1) .flow-dot { background:var(--blue); }
+.flow-step:nth-of-type(2) .flow-dot { background:#3fa7d6; }
+.flow-step:nth-of-type(3) .flow-dot { background:#7e5bd6; }
+.flow-step:nth-of-type(4) .flow-dot { background:linear-gradient(135deg,#ffc857,#ff8a00); }
+.flow-body .ft { font-size:13px; font-weight:800; color:var(--navy); }
+.flow-body .fd { font-size:11.5px; color:var(--muted); margin-top:2px; line-height:1.4; }
+
+.error-banner { grid-column:1/-1; background:#fff3cd; border:1px solid #ffe08a; padding:12px 16px;
+  border-radius:10px; font-size:13px; color:#7a5b00; margin-bottom:2px; }
+
+/* ---- Trust strip ---- */
+.trust-strip { max-width:1600px; margin:0 auto 40px; padding:0 40px; }
+.trust-inner { background:#fff; border-radius:16px; padding:22px 26px; box-shadow:0 6px 24px rgba(18,58,99,.06);
+  display:flex; align-items:center; flex-wrap:wrap; gap:26px; justify-content:space-between; }
+.trust-item { display:flex; align-items:center; gap:10px; min-width:170px; }
+.trust-item .ic { width:38px; height:38px; border-radius:10px; background:#eaf1fc; flex:none;
+  display:flex; align-items:center; justify-content:center; }
+.trust-item .ic svg { width:18px; height:18px; color:var(--blue); }
+.trust-item .tt { font-size:12.5px; font-weight:800; color:var(--navy); }
+.trust-item .td { font-size:11px; color:var(--muted); }
+.trust-brand { display:flex; align-items:center; gap:10px; }
+.trust-brand .tt { font-size:14px; font-weight:800; color:var(--navy); }
+.trust-brand .td { font-size:11px; color:var(--muted); max-width:220px; }
+
+/* ---- Asisten promo card (Beranda) ---- */
+.asisten-promo-wrap { max-width:1600px; margin:0 auto 40px; padding:0 40px; }
+.asisten-promo-card { display:flex; align-items:center; gap:22px; text-decoration:none;
+  background:linear-gradient(120deg,#0A2557 0%,#12468C 45%,#1AA6E0 100%);
+  border-radius:18px; padding:24px 28px; box-shadow:0 14px 34px rgba(10,37,87,.24);
+  position:relative; overflow:hidden; transition:.18s; }
+.asisten-promo-card::after { content:""; position:absolute; right:-60px; top:-70px; width:220px; height:220px;
+  border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.38), transparent 70%); }
+.asisten-promo-card:hover { transform:translateY(-2px); box-shadow:0 18px 40px rgba(10,37,87,.3); }
+.asisten-promo-badge { flex:none; width:60px; height:60px; border-radius:14px; background:rgba(255,255,255,.96);
+  display:flex; align-items:center; justify-content:center; padding:7px; position:relative; z-index:1;
+  box-shadow:0 6px 16px rgba(0,0,0,.18); }
+.asisten-promo-badge img { width:100%; height:100%; object-fit:contain; }
+.asisten-promo-text { flex:1; min-width:0; position:relative; z-index:1; }
+.asisten-promo-eyebrow { font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase;
+  color:#F2A83B; margin-bottom:5px; }
+.asisten-promo-title { font-size:17px; font-weight:800; color:#fff; line-height:1.35; margin-bottom:4px; }
+.asisten-promo-desc { font-size:12.5px; color:rgba(255,255,255,.82); line-height:1.5; max-width:640px; }
+.asisten-promo-navi { flex:none; width:78px; height:78px; position:relative; z-index:1; filter:drop-shadow(0 6px 14px rgba(0,0,0,.28)); }
+.asisten-promo-navi img, .asisten-promo-navi video { width:100%; height:100%; object-fit:contain; display:block; }
+.asisten-promo-navi .navi-video-wrap { width:100%; height:100%; }
+.asisten-promo-cta { flex:none; display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#F2A83B,#D6821A);
+  color:#fff; font-size:13.5px; font-weight:800; padding:12px 20px; border-radius:11px; white-space:nowrap;
+  position:relative; z-index:1; box-shadow:0 6px 16px rgba(214,130,26,.35); transition:.15s; }
+.asisten-promo-card:hover .asisten-promo-cta { filter:brightness(1.06); }
+@media (max-width: 780px) {
+  .asisten-promo-card { flex-direction:column; align-items:flex-start; text-align:left; padding:22px; }
+  .asisten-promo-navi { align-self:center; }
+  .asisten-promo-cta { width:100%; justify-content:center; }
+}
+.asisten-promo-wrap { position:relative; }
+
+/* Video maskot Tanya Navi (autoplay-loop-muted, meniru perilaku GIF) --
+   dipakai baik di kartu promo beranda maupun di halaman Tanya Navi. Audio
+   TIDAK bisa autoplay dengan suara -- ini pembatasan baku semua browser
+   modern (Chrome/Firefox/Safari/Edge) demi mencegah suara mendadak yang
+   mengganggu pengguna, bukan keterbatasan implementasi di sini. Tombol
+   kecil speaker disediakan supaya pengguna bisa mengaktifkan suara sendiri
+   dengan satu klik/tap kalau mau. */
+.navi-video-wrap { position:relative; display:inline-block; line-height:0; }
+.navi-unmute-btn { position:absolute; bottom:6px; right:6px; width:26px; height:26px; border-radius:50%;
+  background:rgba(10,37,87,.78); color:#fff; border:1.5px solid rgba(255,255,255,.7); cursor:pointer;
+  display:flex; align-items:center; justify-content:center; font-size:12px; padding:0; z-index:2; }
+.navi-unmute-btn:hover { background:rgba(10,37,87,.95); }
+.navi-unmute-btn svg { width:13px; height:13px; }
+.asisten-promo-navi .navi-unmute-btn, .chat-head-navi .navi-unmute-btn { width:18px; height:18px; bottom:0; right:0; border-width:1px; }
+.asisten-promo-navi .navi-unmute-btn svg, .chat-head-navi .navi-unmute-btn svg { width:9px; height:9px; }
+"""
+
+NAVI_UNMUTE_JS = """
+// Tombol unmute video maskot Tanya Navi -- browser TIDAK mengizinkan video
+// autoplay dengan suara (kebijakan baku semua browser modern), jadi video
+// diputar otomatis dalam kondisi bisu (seperti GIF), dan pengguna bisa
+// mengaktifkan suaranya sendiri lewat tombol kecil ini kalau mau.
+document.querySelectorAll('.navi-video-wrap').forEach(function(wrap) {
+  var video = wrap.querySelector('video');
+  var btn = wrap.querySelector('.navi-unmute-btn');
+  if (!video || !btn) return;
+  btn.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    video.muted = !video.muted;
+    btn.classList.toggle('is-unmuted', !video.muted);
+    if (!video.muted) { video.play().catch(function() {}); }
+  });
+});
+"""
+
+ICONS = {
+  "doc": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+  "wave": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/><path d="M2 18c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/></svg>',
+  "upload": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
+  "bolt": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg>',
+  "shield": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  "shield-check": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
+  "lock": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  "check-circle": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m22 4-10 10-3-3"/></svg>',
+  "x": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  "cloud": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>',
+  "gear": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.35.4.65.73.83.3.17.65.26 1 .26H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  "download": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 20h16"/></svg>',
+  "boat": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h20l-2 4H4z"/><path d="M4 18V9l8-6 8 6v9"/><path d="M12 3v15"/></svg>',
+  "home": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>',
+  "chevron-down": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+  "chart-bar": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>',
+  "user": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>',
+  "search": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
+  "book": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  "life-buoy": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="m4.9 4.9 4.24 4.24m5.72 5.72 4.24 4.24m0-14.2-4.24 4.24m-5.72 5.72L4.9 19.1"/></svg>',
+}
+
+HEADER_HTML = """
+<header class="site-header">
+  <div class="brand">
+    <div class="gov-badge"><img src="/static/logo-kkp.png" alt="Kementerian Kelautan dan Perikanan"></div>
+    <div class="header-divider"></div>
+    <div class="gov-badge rect"><img src="/static/logo-djprl.png" alt="DJPRL"></div>
+    <div class="header-divider"></div>
+    <div class="gov-text">BALAI PENATAAN<br>RUANG LAUT (BPRL)<br>MAKASSAR</div>
+  </div>
+
+  <nav class="navbar">
+    <a href="/" class="nav-link active">""" + ICONS["home"] + """ Beranda</a>
+    <a href="#" class="nav-link" onclick="return false;">Layanan """ + ICONS["chevron-down"] + """</a>
+    <a href="#" class="nav-link" onclick="return false;">Informasi """ + ICONS["chevron-down"] + """</a>
+    <a href="#" class="nav-link" onclick="return false;">""" + ICONS["book"] + """ Panduan</a>
+    <a href="/asisten" class="nav-link">""" + ICONS["life-buoy"] + """ Bantuan</a>
+    {% if session.user and (session.user.is_analis or session.user.is_admin) %}
+    <a href="/analisis-proposal" class="nav-link">""" + ICONS["chart-bar"] + """ Analisis Proposal</a>
+    {% endif %}
+    {% if session.user and session.user.is_admin %}
+    <a href="/history" class="nav-link">""" + ICONS["chart-bar"] + """ Laporan</a>
+    {% endif %}
+  </nav>
+
+  {% if session.user %}
+  <div class="user-badge">
+    <a href="/riwayat-saya" class="logout-link" style="color:var(--navy);background:#fff;">Riwayat Saya</a>
+    {% if session.user.picture %}<img src="{{ session.user.picture }}" class="user-avatar" alt="">{% endif %}
+    <span class="user-greet">Halo, {{ session.user.name }}</span>
+    <a href="/logout" class="logout-link">Keluar</a>
+  </div>
+  {% else %}
+  <a href="/login-pegawai" class="login-btn">""" + ICONS["user"] + """ Login</a>
+  {% endif %}
+</header>
+"""
+
+
+ASISTEN_CSS = """
+.chat-shell {
+  --deep:#0A2557; --sea:#12468C; --tide:#1AA6E0; --gold:#F2A83B; --gold-deep:#D6821A;
+  --foam:#EAF6FC; --sand:#F3F7FB; --cink:#0A2557; --cline:rgba(10,37,87,0.13); --cwhite:#FFFFFF;
+  max-width:720px; margin:0 auto;
+  font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+}
+.chat-card {
+  display:flex; flex-direction:column; height:min(680px, 78vh);
+  background:var(--cwhite); border-radius:18px; overflow:hidden;
+  box-shadow:0 10px 34px rgba(10,37,87,.16); border:1px solid var(--cline);
+}
+.chat-head {
+  background:linear-gradient(135deg,var(--deep) 0%, var(--sea) 45%, var(--tide) 100%);
+  color:#fff; padding:18px 96px 16px 20px; position:relative; overflow:hidden;
+  display:flex; align-items:flex-start; gap:13px;
+}
+.chat-head::after { content:""; position:absolute; right:-40px; bottom:-60px; width:180px; height:180px;
+  border-radius:50%; background:radial-gradient(circle, rgba(242,168,59,.4), transparent 70%); }
+.chat-logo-badge { flex-shrink:0; width:88px; height:88px; border-radius:20px; background:rgba(255,255,255,.96);
+  display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(0,0,0,.18);
+  position:relative; z-index:1; padding:9px; }
+.chat-logo-badge img { width:100%; height:100%; object-fit:contain; }
+.chat-head-navi { position:absolute; top:10px; right:14px; width:78px; height:78px; z-index:2;
+  filter:drop-shadow(0 6px 14px rgba(0,0,0,.3)); }
+.chat-head-navi img, .chat-head-navi video { width:100%; height:100%; object-fit:contain; display:block; }
+@media (max-width: 480px) { .chat-head-navi { width:60px; height:60px; top:10px; right:10px; } .chat-head { padding-right:76px; } }
+.chat-head-text { position:relative; z-index:1; flex:1; min-width:0; }
+.chat-eyebrow { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; opacity:.78; font-weight:700; }
+.chat-head h2 { margin:3px 0 3px; font-size:18px; font-weight:800; letter-spacing:-.01em; }
+.chat-sub { font-size:12px; opacity:.85; max-width:440px; line-height:1.5; }
+.chat-status { display:inline-flex; align-items:center; gap:14px; margin-top:10px; font-size:26.25px;
+  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); padding:7px 20px 7px 15px; border-radius:999px; }
+.chat-dot { width:14px; height:14px; border-radius:50%; background:var(--gold); box-shadow:0 0 0 3px rgba(242,168,59,.3); flex:none; }
+
+.chat-chips { display:flex; gap:8px; padding:12px 14px; overflow-x:auto; background:var(--foam);
+  border-bottom:1px solid var(--cline); scrollbar-width:none; }
+.chat-chips::-webkit-scrollbar { display:none; }
+.chat-chip { flex:0 0 auto; font-size:12px; font-weight:600; color:var(--sea); background:#fff;
+  border:1px solid var(--cline); padding:6px 12px; border-radius:999px; cursor:pointer; white-space:nowrap; transition:.15s; }
+.chat-chip:hover { border-color:var(--gold); color:var(--gold-deep); background:#FFF9EF; transform:translateY(-1px);
+  box-shadow:0 4px 10px rgba(242,168,59,.22); }
+
+.chat-thread { flex:1; overflow-y:auto; padding:16px 14px; display:flex; flex-direction:column; gap:12px; background:#fff; }
+.chat-msg { max-width:86%; font-size:13.3px; line-height:1.55; padding:9px 12px; border-radius:12px; white-space:pre-wrap; }
+.chat-msg.bot { align-self:flex-start; background:var(--foam); border:1px solid var(--cline); border-left:3px solid var(--tide);
+  border-top-left-radius:3px; color:var(--cink); }
+.chat-msg.user { align-self:flex-end; background:linear-gradient(135deg,var(--deep),var(--sea)); color:#fff;
+  border-top-right-radius:3px; box-shadow:0 4px 12px rgba(10,37,87,.22); }
+.chat-msg.bot b { color:var(--sea); }
+.chat-msg-label { font-size:9.5px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; margin-bottom:4px;
+  color:var(--gold-deep); opacity:.85; }
+.chat-typing { align-self:flex-start; display:flex; gap:4px; padding:11px 13px; background:var(--foam);
+  border:1px solid var(--cline); border-left:3px solid var(--tide); border-radius:12px; border-top-left-radius:3px; }
+.chat-typing span { width:6px; height:6px; border-radius:50%; background:var(--tide); animation:chatblink 1.2s infinite ease-in-out; }
+.chat-typing span:nth-child(2) { animation-delay:.2s; }
+.chat-typing span:nth-child(3) { animation-delay:.4s; }
+@keyframes chatblink { 0%,80%,100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-2px); } }
+
+.chat-form { display:flex; gap:8px; padding:11px 13px; border-top:1px solid var(--cline); background:#fff; }
+.chat-form textarea { flex:1; resize:none; border:1px solid var(--cline); border-radius:10px; padding:9px 11px;
+  font-size:13px; font-family:inherit; line-height:1.4; max-height:86px; outline:none; background:var(--sand); color:var(--cink); }
+.chat-form textarea:focus { border-color:var(--tide); background:#fff; }
+.chat-send { border:none; background:linear-gradient(135deg,var(--gold),var(--gold-deep)); color:#fff; width:42px;
+  border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:.15s;
+  flex-shrink:0; box-shadow:0 4px 10px rgba(214,130,26,.35); }
+.chat-send:hover { filter:brightness(1.06); transform:translateY(-1px); }
+.chat-send:disabled { opacity:.5; cursor:default; transform:none; }
+.chat-foot { text-align:center; font-size:10px; color:#8a97a3; padding:5px 10px 0; }
+@media (max-width: 640px) { .chat-shell { max-width:100%; } .chat-card { height:min(640px, 82vh); border-radius:14px; } }
+"""
+
+def render_asisten_page():
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Asisten e-GerAI &mdash; Tanya KKPRL | BPRL Makassar</title>
+<meta name="description" content="Asisten tanya-jawab otomatis seputar KKPRL (Kesesuaian Kegiatan Pemanfaatan Ruang Laut) oleh BPRL Makassar.">
+<style>""" + LANDING_CSS + ASISTEN_CSS + """
+.asisten-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%); padding:26px 32px 30px; }
+.asisten-hero-inner { max-width:1600px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap; }
+.asisten-hero h1 { font-size:24px; font-weight:800; color:var(--navy); margin:0 0 6px; }
+.asisten-hero p { font-size:13.5px; color:#33495e; margin:0; max-width:560px; line-height:1.5; }
+.asisten-wrap { max-width:1600px; margin:-10px auto 40px; padding:24px 40px 0; position:relative; z-index:2; }
+.asisten-back { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700; color:var(--blue); margin-bottom:18px; }
+@media (max-width: 640px) { .asisten-wrap { padding:20px 16px 0; } .asisten-hero { padding:22px 18px 26px; } }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="asisten-hero">
+  <div class="asisten-hero-inner">
+    <div>
+      <h1>Asisten e-GerAI &mdash; Tanya KKPRL</h1>
+      <p>Tanyakan apa pun seputar persyaratan, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan KKPRL. Dijawab singkat dan jelas oleh asisten BPRL Makassar.</p>
+    </div>
+    <img src="/static/logo-egerai-v2.png" alt="e-GerAI BPRL Makassar" style="height:56px; width:auto; object-fit:contain;">
+  </div>
+</section>
+
+<div class="asisten-wrap">
+  <a href="/" class="asisten-back">&larr; Kembali ke Beranda</a>
+
+  <div class="chat-shell">
+    <div class="chat-card">
+      <div class="chat-head">
+        <div class="chat-head-navi">
+          <div class="navi-video-wrap">
+            <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+              <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+            </video>
+            <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+          </div>
+        </div>
+        <div class="chat-logo-badge"><img src="/static/logo-egerai-icon.png" alt="Logo e-GerAI"></div>
+        <div class="chat-head-text">
+          <div class="chat-eyebrow">Balai Penataan Ruang Laut Makassar &middot; Ditjen Penataan Ruang Laut, KKP</div>
+          <h2>Halo e-GerAI BPRL Makassar</h2>
+          <div class="chat-sub">Jawaban singkat &amp; jelas seputar Kesesuaian Kegiatan Pemanfaatan Ruang Laut.</div>
+          <div class="chat-status"><span class="chat-dot"></span> Asisten Navi Siap Menjawab</div>
+        </div>
+      </div>
+
+      <div class="chat-chips" id="chatChips">
+        <div class="chat-chip" data-q="Apa itu KKPRL?">Apa itu KKPRL?</div>
+        <div class="chat-chip" data-q="Apa saja dokumen persyaratan KKPRL?">Dokumen persyaratan</div>
+        <div class="chat-chip" data-q="Bagaimana cara mendaftar KKPRL di OSS?">Cara daftar OSS</div>
+        <div class="chat-chip" data-q="Berapa biaya PNBP KKPRL?">Biaya PNBP</div>
+        <div class="chat-chip" data-q="Bagaimana cara melacak status permohonan KKPRL?">Lacak status</div>
+        <div class="chat-chip" data-q="Berapa lama proses (SLA) penerbitan KKPRL?">SLA proses</div>
+        <div class="chat-chip" data-q="Apa saja mitos yang salah tentang KKPRL?">Cek fakta KKPRL</div>
+      </div>
+
+      <div class="chat-thread" id="chatThread">
+        <div class="chat-msg bot">
+          <div class="chat-msg-label">e-GerAI BPRL Makassar</div>
+          Selamat datang. Silakan tanyakan hal seputar <b>KKPRL</b> &mdash; persyaratan, prosedur OSS, reklamasi, biaya, atau tracking permohonan. Jawaban akan diberikan singkat dan jelas.
+        </div>
+      </div>
+
+      <form id="chatForm" class="chat-form">
+        <textarea id="chatInput" rows="1" placeholder="Tulis pertanyaan seputar KKPRL..."></textarea>
+        <button class="chat-send" id="chatSendBtn" type="submit" aria-label="Kirim">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+        </button>
+      </form>
+    </div>
+    <div class="chat-foot">Jawaban bersifat informatif, bukan pengganti dokumen resmi peraturan KKP.</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var thread = document.getElementById('chatThread');
+  var form = document.getElementById('chatForm');
+  var input = document.getElementById('chatInput');
+  var sendBtn = document.getElementById('chatSendBtn');
+  var chips = document.getElementById('chatChips');
+  var history = [];
+
+  function escapeHtml(t){ return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function formatText(t){ return escapeHtml(t).replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\\n/g,'<br>'); }
+
+  function addMessage(role, text){
+    var div = document.createElement('div');
+    div.className = 'chat-msg ' + (role === 'user' ? 'user' : 'bot');
+    if(role === 'bot'){
+      var label = document.createElement('div');
+      label.className = 'chat-msg-label';
+      label.textContent = 'e-GerAI BPRL Makassar';
+      div.appendChild(label);
+      var body = document.createElement('div');
+      body.innerHTML = formatText(text);
+      div.appendChild(body);
+    } else {
+      div.textContent = text;
+    }
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function showTyping(){
+    var div = document.createElement('div');
+    div.className = 'chat-typing';
+    div.id = 'chatTypingIndicator';
+    div.innerHTML = '<span></span><span></span><span></span>';
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+  function hideTyping(){
+    var t = document.getElementById('chatTypingIndicator');
+    if(t) t.remove();
+  }
+
+  function askAsisten(question){
+    history.push({role:'user', content: question});
+    showTyping();
+    sendBtn.disabled = true;
+
+    fetch('/api/asisten-chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: history})
+    }).then(function(r){ return r.json(); }).then(function(data){
+      hideTyping();
+      var text = (data && data.reply) ? data.reply : 'Maaf, terjadi kendala saat memproses pertanyaan. Silakan coba lagi.';
+      history.push({role:'assistant', content: text});
+      addMessage('bot', text);
+    }).catch(function(){
+      hideTyping();
+      addMessage('bot', 'Maaf, terjadi kesalahan koneksi. Silakan coba lagi sesaat lagi.');
+    }).finally(function(){
+      sendBtn.disabled = false;
+    });
+  }
+
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var q = input.value.trim();
+    if(!q) return;
+    addMessage('user', q);
+    input.value = '';
+    input.style.height = 'auto';
+    askAsisten(q);
+  });
+
+  input.addEventListener('input', function(){
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 86) + 'px';
+  });
+  input.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  chips.addEventListener('click', function(e){
+    var chip = e.target.closest('.chat-chip');
+    if(!chip) return;
+    var q = chip.dataset.q;
+    addMessage('user', q);
+    askAsisten(q);
+  });
+})();
+""" + NAVI_UNMUTE_JS + """
+</script>
+</body></html>"""
+
+
+UPLOAD_HTML = """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>e-GerAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL</title>
+<meta name="description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
+<meta property="og:title" content="e-GerAI KKPRL &mdash; Generate &amp; Asistensi Dokumen KKPRL">
+<meta property="og:description" content="Platform layanan digital terintegrasi untuk Konsultasi, Asistensi, Pendampingan, Informasi &amp; Generate Dokumen KKPRL secara cepat, tepat, efisien dan efektif.">
+<meta property="og:type" content="website">
+<style>""" + LANDING_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="hero hero-image">
+  <div class="hero-inner">
+    <img src="/static/hero-banner.png" alt="Generate &amp; Asistensi Dokumen KKPRL" class="hero-banner-img">
+  </div>
+</section>
+
+<div class="main-wrap">
+  <form method="POST" action="/review" enctype="multipart/form-data" id="genForm">
+    <div class="grid">
+      {% if error %}<div class="error-banner">\u26A0 {{ error }}</div>{% endif %}
+
+      <div class="upload-card">
+        <div class="step-head">
+          <div class="step-num">1</div>
+          <div class="step-icon">""" + ICONS["doc"] + """</div>
+        </div>
+        <div class="step-title">Draft Proposal PKKPRL (PDF/Word)</div>
+        <div class="step-desc">Unggah file PDF atau Word proposal yang akan digabungkan. Belum punya file-nya?
+        <a href="/proposal-manual" style="color:var(--blue); font-weight:700;">Isi Formulir di sini</a>.
+        {% if session.user and (session.user.is_analis or session.user.is_admin) %}Sudah
+        punya proposal jadi dan mau dicek/dikoreksi datanya? <a href="/analisis-proposal" style="color:var(--blue); font-weight:700;">Analisis di sini</a>.{% endif %}</div>
+        <div class="dropzone" id="dz1">
+          """ + ICONS["cloud"] + """
+          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file</div>
+          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+          <input type="file" name="proposal" id="proposal" accept="application/pdf,.docx" required>
+        </div>
+        <div class="file-chip" id="chip1">
+          <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="name1"></span></div>
+          <span class="fc-size" id="size1"></span>
+          <button type="button" class="fc-remove" data-target="1">""" + ICONS["x"] + """</button>
+        </div>
+      </div>
+
+      <div class="upload-card">
+        <div class="step-head">
+          <div class="step-num">2</div>
+          <div class="step-icon">""" + ICONS["wave"] + """</div>
+        </div>
+        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word)</div>
+        <div class="step-desc">Unggah file PDF atau Word laporan hidro-oseanografi.</div>
+        <div class="dropzone" id="dz2">
+          """ + ICONS["cloud"] + """
+          <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file</div>
+          <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+          <input type="file" name="laporan" id="laporan" accept="application/pdf,.docx" required>
+        </div>
+        <div class="file-chip" id="chip2">
+          <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="name2"></span></div>
+          <span class="fc-size" id="size2"></span>
+          <button type="button" class="fc-remove" data-target="2">""" + ICONS["x"] + """</button>
+        </div>
+      </div>
+
+      <div class="flow-card">
+        <h3>Alur Proses</h3>
+        <div class="flow-step">
+          <div class="flow-dot">""" + ICONS["cloud"] + """</div>
+          <div class="flow-body"><div class="ft">Upload Proposal</div><div class="fd">Unggah file PDF Proposal PKKPRL</div></div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-dot">""" + ICONS["wave"] + """</div>
+          <div class="flow-body"><div class="ft">Upload Laporan</div><div class="fd">Unggah file PDF Laporan Hidro-Oseanografi</div></div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-dot">""" + ICONS["gear"] + """</div>
+          <div class="flow-body"><div class="ft">Generate Dokumen</div><div class="fd">Sistem menggabungkan dokumen secara otomatis</div></div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-dot">""" + ICONS["download"] + """</div>
+          <div class="flow-body"><div class="ft">Download Dokumen</div><div class="fd">Dokumen Word siap diunduh dan diedit</div></div>
+        </div>
+      </div>
+
+      <div class="gen-btn">
+        <button type="submit">""" + ICONS["bolt"] + """ Generate &amp; Preview Dokumen Word</button>
+        <div class="gen-note">Sistem akan memproses dan membuat dokumen Word final secara otomatis</div>
+        <div class="spinner" id="spinner">\u23F3 Memproses dokumen, mohon tunggu...</div>
+      </div>
+    </div>
+  </form>
+</div>
+
+<div class="asisten-promo-wrap">
+  <a href="/asisten" class="asisten-promo-card">
+    <div class="asisten-promo-badge">
+      <img src="/static/logo-egerai-icon.png" alt="Asisten e-GerAI">
+    </div>
+    <div class="asisten-promo-text">
+      <div class="asisten-promo-eyebrow">Asisten e-GerAI &middot; Tanya Jawab Otomatis</div>
+      <div class="asisten-promo-title">Punya pertanyaan seputar KKPRL? Tanya langsung ke asisten kami</div>
+      <div class="asisten-promo-desc">Persyaratan dokumen, alur permohonan OSS/e-SEA, biaya PNBP, reklamasi, hingga cara tracking permohonan &mdash; dijawab singkat dan jelas, 24 jam.</div>
+    </div>
+    <div class="asisten-promo-navi">
+      <div class="navi-video-wrap">
+        <video autoplay muted loop playsinline poster="/static/navi-mascot-full.jpg">
+          <source src="/static/navi-mascot-video.mp4" type="video/mp4">
+        </video>
+        <button type="button" class="navi-unmute-btn" aria-label="Aktifkan suara"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+      </div>
+    </div>
+    <div class="asisten-promo-cta">
+      <span>Tanya Navi Sekarang</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </div>
+  </a>
+</div>
+
+<script>
+function fmtSize(bytes) {
+  if (bytes >= 1024*1024) return (bytes/(1024*1024)).toFixed(2) + " MB";
+  return Math.ceil(bytes/1024) + " KB";
+}
+function setupDropzone(n) {
+  var dz = document.getElementById('dz' + n);
+  var input = dz.querySelector('input[type=file]');
+  var chip = document.getElementById('chip' + n);
+  var nameEl = document.getElementById('name' + n);
+  var sizeEl = document.getElementById('size' + n);
+
+  function showFile(file) {
+    if (!file) { chip.classList.remove('show'); dz.style.display = 'block'; return; }
+    nameEl.textContent = file.name;
+    nameEl.title = file.name;
+    sizeEl.textContent = fmtSize(file.size);
+    chip.classList.add('show');
+    dz.style.display = 'none';
+  }
+
+  dz.addEventListener('click', function(e) {
+    if (e.target.closest('.file-chip')) return;
+    input.click();
+  });
+  input.addEventListener('change', function() {
+    if (input.files && input.files[0]) showFile(input.files[0]);
+  });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      input.files = e.dataTransfer.files;
+      showFile(input.files[0]);
+    }
+  });
+  document.querySelector('.fc-remove[data-target="' + n + '"]').addEventListener('click', function() {
+    input.value = '';
+    dz.style.display = 'block';
+    chip.classList.remove('show');
+  });
+}
+setupDropzone(1);
+setupDropzone(2);
+
+document.getElementById('genForm').addEventListener('submit', function() {
+  document.getElementById('spinner').style.display = 'block';
+});
+""" + NAVI_UNMUTE_JS + """
+</script>
+</body></html>"""
+
+
+REVIEW_CSS = """
+.review-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%);
+  padding:26px 32px 34px; }
+.review-hero h1 { font-size:24px; font-weight:800; color:var(--navy); margin:0 0 6px; }
+.review-hero p { font-size:13.5px; color:#33495e; margin:0; max-width:640px; line-height:1.5; }
+.review-wrap { max-width:1600px; margin:-16px auto 40px; padding:0 40px; position:relative; z-index:2; }
+.review-grid { display:grid; grid-template-columns:1.15fr .85fr; gap:22px; align-items:start; }
+@media (max-width: 980px) { .review-grid { grid-template-columns:1fr; } }
+
+.sticky-bar { position:sticky; top:0; z-index:6; background:var(--bg); padding:14px 0 10px; }
+.sticky-bar-row { display:flex; gap:10px; }
+.sticky-bar button { width:100%; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:15px; border-radius:12px; font-size:14.5px; font-weight:800; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 6px 18px rgba(30,99,199,.28); }
+.sticky-bar button svg { width:19px; height:19px; flex:none; }
+.sticky-bar button:hover { filter:brightness(1.05); }
+.sticky-bar button.btn-draft { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
+  box-shadow:none; flex:none; width:auto; white-space:nowrap; padding:15px 20px; }
+.sticky-bar button.btn-draft:hover { background:#f3f8ff; filter:none; }
+
+/* Kartu aksi utama form manual (Simpan / Proses & Lanjut / Unduh Draft) --
+   TIDAK sticky (sengaja terpisah dari .sticky-bar di atas, yang masih
+   dipakai halaman Tinjau & Koreksi Data) supaya duduk normal di alur
+   halaman, di antara kartu upload dan "Data Draft Proposal", dengan
+   tampilan kartu tersendiri yang lebih menonjol & mudah ditemukan --
+   tombol utama "Proses & Lanjut" dibuat lebih besar & jadi pusat perhatian,
+   dua tombol lain jadi aksi sekunder di sampingnya.*/
+.manual-action-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+.manual-action-row .btn-primary-big { flex:1; background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  border:none; padding:16px; border-radius:12px; font-size:14.5px; font-weight:800; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  box-shadow:0 6px 18px rgba(30,99,199,.28); }
+.manual-action-row .btn-primary-big:hover { filter:brightness(1.06); }
+.manual-action-row .btn-primary-big svg { width:19px; height:19px; flex:none; }
+.manual-action-row .btn-secondary-sm { flex:none; background:#fff; color:var(--navy); border:1.5px solid #cfe0f5;
+  padding:16px 20px; border-radius:12px; font-size:14px; font-weight:700; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap; }
+.manual-action-row .btn-secondary-sm:hover { background:#f3f8ff; }
+.manual-action-row .btn-secondary-sm svg { width:19px; height:19px; flex:none; }
+@media (max-width: 560px) {
+  .manual-action-row { flex-wrap:wrap; }
+  .manual-action-row .btn-primary-big { flex:1 1 100%; order:-1; }
+  .manual-action-row .btn-secondary-sm { flex:1; }
+}
+
+/* Kartu pilihan Jenis Permohonan KKPRL (Persetujuan/Konfirmasi) -- didesain
+   sebagai "toggle card" besar yang jelas terlihat, bukan radio bulat kecil
+   biasa, supaya menarik perhatian sebagai keputusan penting sebelum mengisi
+   Data Draft Proposal di bawahnya. */
+.jenis-permohonan-card { background:#fff; border-radius:16px; padding:22px 24px; margin-bottom:18px;
+  box-shadow:0 8px 26px rgba(18,58,99,.10); border:1px solid #e7eef6; }
+.jp-toggle-row { display:flex; gap:14px; flex-wrap:wrap; margin-top:14px; }
+.jp-toggle { flex:1 1 220px; position:relative; }
+.jp-toggle input[type=radio] { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+.jp-toggle-face { display:flex; align-items:center; gap:12px; border:2px solid #d7e2ee; border-radius:14px;
+  padding:16px 18px; background:#fafcfe; transition:.15s; cursor:pointer; position:relative; }
+.jp-toggle-icon { flex:none; width:38px; height:38px; border-radius:50%; background:#eaf1fc; color:var(--blue);
+  display:flex; align-items:center; justify-content:center; }
+.jp-toggle-icon svg { width:20px; height:20px; }
+.jp-toggle-text { flex:1; }
+.jp-toggle-title { font-size:14.5px; font-weight:800; color:var(--navy); }
+.jp-toggle-sub { font-size:11.5px; color:var(--muted); margin-top:2px; }
+.jp-toggle-badge { position:absolute; top:-8px; right:-8px; width:24px; height:24px; border-radius:50%;
+  background:#1e9e5a; color:#fff; display:none; align-items:center; justify-content:center;
+  box-shadow:0 2px 6px rgba(30,158,90,.4); border:2px solid #fff; }
+.jp-toggle-badge svg { width:13px; height:13px; }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face { border-color:var(--blue); background:#eaf3fd;
+  box-shadow:0 4px 14px rgba(47,127,224,.18); }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face .jp-toggle-icon { background:var(--blue); color:#fff; }
+.jp-toggle input[type=radio]:checked ~ .jp-toggle-face .jp-toggle-badge { display:flex; }
+.jp-toggle input[type=radio]:focus-visible ~ .jp-toggle-face { outline:2px solid var(--blue); outline-offset:2px; }
+.jp-toggle-face:hover { border-color:#aac6e8; }
+
+.back-link { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700;
+  color:var(--blue); margin-top:14px; }
+
+.review-card { background:#fff; border-radius:16px; padding:22px 24px; box-shadow:0 6px 24px rgba(18,58,99,.08);
+  margin-bottom:18px; }
+.review-card h3 { font-size:14.5px; font-weight:800; color:var(--navy); margin:0 0 14px;
+  display:flex; align-items:center; gap:8px; }
+.review-card h3 svg { width:18px; height:18px; color:var(--blue); }
+
+.acc-item { border:1px solid var(--line); border-radius:12px; margin-bottom:10px; overflow:hidden; }
+.acc-item:last-child { margin-bottom:0; }
+.acc-item summary { cursor:pointer; list-style:none; padding:13px 16px; font-size:13.5px; font-weight:700;
+  color:var(--navy); background:#f7fafd; display:flex; align-items:center; justify-content:space-between; }
+.acc-item summary::-webkit-details-marker { display:none; }
+.acc-item summary::after { content:"\\25BE"; color:var(--blue); font-size:12px; transition:.15s; }
+.acc-item[open] summary::after { transform:rotate(180deg); }
+.acc-body { padding:14px 16px 4px; }
+.field-row { margin-bottom:12px; }
+.field-row label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin-bottom:5px; }
+.field-row input[type=text] { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:18px; color:var(--ink); background:#fff; }
+.field-row input[type=text]:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+
+.preview-panel { position:sticky; top:80px; }
+.preview-box { border:1px solid var(--line); border-radius:12px; background:#fff; padding:24px 28px;
+  max-height:70vh; overflow-y:auto; font-size:13.5px; line-height:1.55; }
+.preview-box table { border-collapse:collapse; width:100%; margin:10px 0; }
+.preview-box td { border:1px solid #c7d1db; padding:5px 8px; vertical-align:top; }
+.preview-box img { max-width:100%; height:auto; margin:8px 0; }
+.preview-box p { margin:6px 0; }
+
+.checkbox-row { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.checkbox-row input[type=checkbox] { width:18px; height:18px; accent-color:var(--blue); flex:none; }
+.checkbox-row label { font-size:13px; font-weight:600; color:var(--ink); }
+.manual-hero { background:linear-gradient(135deg,#eaf2fb 0%,#cfe1f6 55%,#a9cdec 100%); padding:26px 32px 34px; }
+.manual-hero h1 { font-size:24px; font-weight:800; color:var(--navy); margin:0 0 6px; }
+.manual-hero p { font-size:13.5px; color:#33495e; margin:0; max-width:640px; line-height:1.5; }
+.manual-upload-card { background:#fff; border-radius:16px; padding:22px 24px; box-shadow:0 6px 24px rgba(18,58,99,.08); margin-bottom:18px; }
+
+.file-field-row { margin-bottom:16px; }
+.file-field-row label { display:block; font-size:12.5px; font-weight:700; color:var(--navy); margin-bottom:3px; }
+.file-field-row .ff-hint { font-size:11px; color:var(--muted); margin-bottom:6px; }
+.file-field-row input[type=file] { width:100%; font-size:12.5px; padding:8px; border:1px solid #d3dde7;
+  border-radius:8px; background:#f7fafd; }
+.field-row textarea { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:18px; font-family:monospace; color:var(--ink); background:#fff; resize:vertical; min-height:96px; }
+.field-row textarea:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.field-example { font-size:17px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.4; }
+.field-example .ex-text { font-style:italic; }
+.field-example .ex-fill { font-size:14px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  border:1px solid #cfe0f5; border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
+.field-example .ex-fill:hover { background:#dcebfa; }
+
+.tbl-btn { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  border:1px solid #cfe0f5; border-radius:8px; padding:7px 13px; cursor:pointer; white-space:nowrap; }
+.tbl-btn:hover { background:#dcebfa; }
+.tbl-btn.tbl-btn-danger { color:#b3261e; background:#fdecea; border-color:#f6c8c4; padding:5px 9px; }
+.tbl-btn.tbl-btn-danger:hover { background:#fbd9d5; }
+.jt-table-wrap { overflow-x:auto; border:1px solid #e3ecf5; border-radius:10px; }
+.jt-table { width:100%; border-collapse:collapse; min-width:560px; font-size:12.5px; }
+.jt-table th { background:#f3f8ff; color:var(--navy); font-weight:800; text-align:left;
+  padding:8px 8px; border-bottom:2px solid #e3ecf5; white-space:nowrap; }
+.jt-table td { padding:5px 6px; border-bottom:1px solid #eef3f9; vertical-align:middle; }
+.jt-table tbody tr:last-child td { border-bottom:none; }
+.jt-table input[type=text], .jt-table input[type=number], .jt-table select {
+  width:100%; box-sizing:border-box; padding:6px 7px; font-size:12.5px; border:1px solid #d7e2ee;
+  border-radius:7px; background:#fff; }
+.jt-table input:focus, .jt-table select:focus { outline:none; border-color:var(--blue); }
+.jt-row-num { text-align:center; font-weight:700; color:var(--muted); font-size:12px; }
+#jadwalTable .jt-minggu-col { display:none; }
+#jadwalTable.jt-minggu-visible .jt-minggu-col { display:table-cell; }
+
+.img-paste-zone { border:2px dashed #b9cbe0; border-radius:10px; background:#f7fafd; padding:14px;
+  cursor:pointer; transition:.15s; outline:none; }
+.img-paste-zone:hover, .img-paste-zone:focus, .img-paste-zone.dragover { border-color:var(--blue); background:#eef5fd; }
+.img-paste-placeholder { font-size:11.5px; color:var(--muted); text-align:center; }
+.img-paste-placeholder svg { width:18px; height:18px; display:block; margin:0 auto 4px; color:var(--blue); }
+.img-preview-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.img-preview-list:empty { margin-top:0; }
+.img-thumb { position:relative; width:64px; height:64px; border-radius:8px; overflow:hidden;
+  border:1px solid var(--line); flex:none; }
+.img-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.img-thumb .img-remove { position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%;
+  background:rgba(0,0,0,.55); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; }
+.img-thumb-saved { border-color:#8fd19e; }
+.img-thumb-badge { position:absolute; bottom:0; left:0; right:0; background:rgba(30,120,60,.85); color:#fff;
+  font-size:8.5px; font-weight:700; text-align:center; padding:2px 0; }
+.img-preview-saved:empty { display:none; margin:0; }
+
+.img-input-row { display:flex; gap:8px; align-items:stretch; justify-content:center; max-width:30%; margin:0 auto; }
+.img-upload-btn { flex:none; width:110px; display:flex; align-items:center; justify-content:center; gap:6px; background:#fff;
+  border:1.5px solid var(--line); border-radius:10px; padding:0 10px; height:40px;
+  font-size:12.5px; font-weight:700; color:var(--navy); cursor:pointer; white-space:nowrap; }
+.img-upload-btn:hover { background:#f3f8ff; border-color:#cfe0f5; }
+.img-upload-btn svg { width:16px; height:16px; color:var(--blue); flex:none; }
+.img-paste-target { flex:none; width:90px; height:40px; border:2px dashed #b9cbe0; border-radius:10px;
+  background:#f7fafd; padding:0 10px; cursor:text; outline:none; transition:.15s;
+  display:flex; align-items:center; justify-content:center; gap:5px; }
+.img-paste-target:hover, .img-paste-target:focus, .img-paste-target.dragover { border-color:var(--blue); background:#eef5fd; }
+.img-paste-target svg { width:15px; height:15px; color:var(--blue); flex:none; }
+.img-paste-target .ipt-text { font-size:11px; color:var(--muted); line-height:1.25; white-space:nowrap; }
+.img-paste-target .ipt-text b { color:var(--navy); }
+
+@media (max-width: 700px) { .img-input-row { max-width:80%; } }
+
+.select-field { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px;
+  font-size:18px; color:var(--ink); background:#fff; }
+.select-field:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.select-other-input { margin-top:8px; display:none; }
+.select-other-input.show { display:block; }
+.eco-children { padding-left:16px; border-left:3px solid var(--line); margin:-4px 0 14px; transition:.2s; }
+.eco-children.locked { opacity:.5; }
+.eco-children.locked input, .eco-children.locked select { background:#f3f5f7; cursor:not-allowed; }
+.eco-lock-note { font-size:11px; color:var(--muted); font-style:italic; margin:2px 0 10px; }
+
+.dukung-item { margin-bottom:6px; }
+.species-picker { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fbfcfd; }
+.species-search { width:100%; box-sizing:border-box; padding:8px 10px; margin-bottom:10px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+.species-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:2px 14px; max-height:260px; overflow-y:auto; padding-right:4px; }
+.species-row { margin-bottom:6px; }
+.species-row label i { font-style:italic; }
+.species-row.species-hide { display:none; }
+.dukung-detail { padding:10px 0 6px 26px; border-left:2px solid #e0e8f0; margin:2px 0 8px 8px; }
+.dukung-detail .field-row { margin-bottom:8px; }
+.dukung-custom-row { display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; }
+.dukung-custom-row input[type=text] { flex:1; }
+.dukung-custom-row .dukung-remove { flex:none; background:#fff0f0; border:1px solid #f3c6c6; color:#c0392b;
+  border-radius:8px; padding:9px 12px; cursor:pointer; font-size:12px; font-weight:700; }
+
+.money-field { display:flex; align-items:stretch; border:1px solid #d3dde7; border-radius:8px; overflow:hidden; }
+.money-field .money-prefix { background:#f0f4f9; color:var(--navy); font-weight:700; font-size:18px;
+  padding:11px 12px; border-right:1px solid #d3dde7; display:flex; align-items:center; }
+.money-field .money-input { border:none; border-radius:0; flex:1; padding:11px 13px; font-size:18px; }
+.money-field .money-input:focus { outline:none; }
+.money-field:focus-within { border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.date-picker-input { width:100%; padding:11px 13px; border:1px solid #d3dde7; border-radius:8px; font-size:18px; color:var(--ink); background:#fff; }
+.date-picker-input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(47,127,224,.15); }
+.field-note { font-size:11px; color:var(--muted); margin-top:4px; }
+
+.history-table { width:100%; border-collapse:collapse; font-size:13px; }
+.history-table th, .history-table td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; }
+.history-table th { color:var(--muted); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+.history-table tr:hover td { background:#f7fafd; }
+.history-empty { text-align:center; padding:40px 20px; color:var(--muted); font-size:13.5px; }
+.history-login-gate { text-align:center; padding:60px 20px; }
+.history-login-gate p { color:var(--muted); font-size:14px; margin:10px 0 20px; }
+"""
+
+
+FIELD_HELP = {
+    ("prop", "Nama Pemohon"): "Mohon isi nama perwakilan perusahaan/instansi (Kepala) sebagai PIC yang bertanggung jawab dalam permohonan KKPRL.",
+    ("prop", "Jabatan Pemohon"): "Jabatan dari perwakilan perusahaan/instansi (Kepala) yang bertanggung jawab dalam permohonan KKPRL.",
+    ("prop", "Nama Perusahaan/Instansi"): "Ditulis dengan benar, tanpa disingkat.",
+    ("prop", "NIB"): "Jika tidak ada, isi dengan tanda -",
+    ("prop", "NPWP"): "NPWP milik perusahaan/Instansi, atau milik pemohon jika perseorangan.",
+    ("prop", "Nomor Telepon Selular"): "Nomor yang dapat dihubungi untuk informasi lebih lanjut.",
+    ("prop", "Surat Elektronik"): "Email aktif — akan dipakai untuk mengirim Draft Proposal yang telah selesai.",
+    ("prop", "Luas Kebutuhan Ruang"): "Isi berupa angka (dalam hektar).",
+    ("prop_loc", "0"): "Nama Desa/Kelurahan dari lokasi yang dimohonkan.",
+    ("prop_loc", "1"): "Nama Kecamatan dari lokasi yang dimohonkan.",
+    ("prop_loc", "2"): "Nama Kabupaten/Kota dari lokasi yang dimohonkan.",
+    ("prop", "mangrove_persen"): "Dilampirkan dalam bentuk persentase (%).",
+    ("prop", "desa_luas_ha"): "Luas penduduk desa atau desa terdekat dari lokasi yang dimohonkan.",
+    ("prop", "desa_penduduk"): "Jumlah penduduk desa atau desa terdekat dari lokasi yang dimohonkan.",
+    ("prop", "tenaga_kerja_asing"): "Jika tidak ada, isi dengan 0.",
+}
+
+EXAMPLE_HINTS = {
+    ("prop", "Nama Pemohon"): "Andi Wijaya, S.T., M.M.",
+    ("prop", "Jabatan Pemohon"): "Direktur Utama",
+    ("prop", "Nama Perusahaan/Instansi"): "PT. Bahari Sejahtera Makassar",
+    ("prop", "NIB"): "-",
+    ("prop", "NPWP"): "01.234.567.8-901.000",
+    ("prop", "Nomor Telepon Selular"): "081234567890",
+    ("prop", "Surat Elektronik"): "info@baharisejahteramks.co.id",
+    ("prop", "Jenis Kegiatan"): "Keramba Jaring Apung",
+    ("prop", "Nama Perairan"): "Selat Makassar",
+    ("prop", "Luas Kebutuhan Ruang"): "0.59 Ha",
+    ("prop", "KBLI"): "50121 - Angkutan Laut Wisata Dalam Negeri",
+    ("prop", "Tanggal Penyusunan"): "02 Agustus 2026",
+    ("prop_loc", "0"): "Desa Bontolebang",
+    ("prop_loc", "1"): "Kecamatan Ujung Tanah",
+    ("prop_loc", "2"): "Kabupaten Pangkajene dan Kepulauan",
+    ("prop_loc", "3"): "Sulawesi Selatan",
+    ("prop", "investasi"): "200.000.0000",
+    ("prop", "tenaga_kerja"): "15 Orang",
+    ("prop", "tenaga_kerja_asing"): "2 Orang",
+    ("prop", "mangrove_spesies"): "Rhizophora mucronata",
+    ("prop", "mangrove_persen"): "65",
+    ("prop", "mangrove_kondisi"): "Sangat Padat",
+    ("prop", "desa_luas_ha"): "250",
+    ("prop", "desa_penduduk"): "3400",
+}
+
+# Field yang dirender sebagai dropdown (select) alih-alih input teks bebas.
+# allow_other=True -> menampilkan input teks tambahan saat "Other" dipilih.
+KBLI_OPTIONS = [
+    "93295 - Wisata Pantai",
+    "93296 - Wisata Agro",
+    "93297 - Wisata Tirta",
+    "93299 - Aktivitas Hiburan dan Rekreasi Lainnya YTDL",
+    "55101 - Aktivitas Hotel Bintang Lima",
+    "55102 - Aktivitas Hotel Bintang Empat",
+    "55103 - Aktivitas Hotel Bintang Tiga",
+    "55104 - Aktivitas Hotel Bintang Dua",
+    "55105 - Aktivitas Hotel Bintang Satu",
+    "50113 - Angkutan Laut Dalam Negeri untuk Wisata",
+    "03110 - Penangkapan Ikan dan Biota Air Lainnya di Laut",
+    "03120 - Penangkapan Ikan dan Biota Air Lainnya di Perairan Air Tawar",
+    "03211 - Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Laut Lainnya yang Tidak Dilindungi",
+    "03212 - Pembudidayaan Ikan Hias Air Laut yang Tidak Dilindungi",
+    "03213 - Pembudidayaan Tumbuhan Air Laut yang Tidak Dilindungi",
+    "03214 - Pengembangbiakan Ikan dan Biota Air Laut yang Dilindungi",
+    "03231 - Pembudidayaan Ikan Bersirip (Selain Ikan Hias) dan Biota Air Payau Lainnya yang Tidak Dilindungi",
+    "03232 - Pembudidayaan Ikan Hias Air Payau yang Tidak Dilindungi",
+    "03233 - Pembudidayaan Tumbuhan Air Payau yang Tidak Dilindungi",
+    "03234 - Pengembangbiakan Biota Air Payau yang Dilindungi",
+]
+
+SELECT_FIELDS = {
+    ("prop", "Nama Perairan"): {
+        "options": ["Laut Banda", "Laut Sulawesi", "Laut Bali", "Laut Sawu", "Laut Flores",
+                     "Selat Makassar", "Teluk Bone", "Teluk Tomini"],
+        "allow_other": True,
+    },
+    ("prop_loc", "3"): {
+        "options": ["Sulawesi Selatan", "Sulawesi Barat", "Sulawesi Utara", "Sulawesi Tengah",
+                     "Sulawesi Tenggara", "Gorontalo", "Bali", "Nusa Tenggara Barat", "Nusa Tenggara Timur"],
+        "allow_other": False,
+    },
+    ("prop", "Jenis Kegiatan"): {
+        "options": ["Pemanfaatan Air Laut untuk Budi Daya", "Keramba Jaring Apung", "Dermaga"],
+        "allow_other": True,
+    },
+    ("prop", "KBLI"): {
+        "options": KBLI_OPTIONS,
+        "allow_other": True,
+    },
+    ("prop", "mangrove_kondisi"): {
+        "options": ["Sangat Padat", "Sedang", "Jarang"],
+        "allow_other": False,
+    },
+    ("prop", "instalasi_posisi"): {
+        "options": ["Permukaan Laut", "Kolom Laut", "Dasar Laut"],
+        "allow_other": False,
+    },
+    ("prop", "mangrove_ada"): {
+        "options": ["Terdapat ekosistem mangrove", "Tidak terdapat ekosistem mangrove"],
+        "allow_other": False,
+    },
+    ("prop", "lamun_ada_manual"): {
+        "options": ["Terdapat ekosistem lamun", "Tidak terdapat ekosistem lamun"],
+        "allow_other": False,
+    },
+    ("prop", "lamun_kondisi"): {
+        "options": ["Baik (Kaya/Sehat)", "Rusak (Kurang Kaya/Kurang Sehat)", "Rusak (Miskin)"],
+        "allow_other": False,
+    },
+    ("prop", "karang_ada"): {
+        "options": ["Terdapat ekosistem terumbu karang", "Tidak terdapat ekosistem terumbu karang"],
+        "allow_other": False,
+    },
+    ("prop", "karang_kondisi"): {
+        "options": ["Baik Sekali", "Baik", "Sedang", "Buruk"],
+        "allow_other": False,
+    },
+}
+
+# Kriteria baku kondisi ekosistem (sesuai dokumen resmi KRITERIA_KONDISI) --
+# dipakai untuk menentukan otomatis label kondisi berdasarkan persentase
+# tutupan yang diinput, supaya user tidak perlu pilih manual satu-satu.
+# Format: list of (batas_bawah_persen, batas_atas_persen, label_kondisi).
+KRITERIA_MANGROVE = [
+    (75, 100.001, "Sangat Padat"),
+    (50, 75, "Sedang"),
+    (0, 50, "Jarang"),
+]
+KRITERIA_LAMUN = [
+    (60, 100.001, "Baik (Kaya/Sehat)"),
+    (30, 60, "Rusak (Kurang Kaya/Kurang Sehat)"),
+    (0, 30, "Rusak (Miskin)"),
+]
+KRITERIA_KARANG = [
+    (75, 100.001, "Baik Sekali"),
+    (50, 75, "Baik"),
+    (25, 50, "Sedang"),
+    (0, 25, "Buruk"),
+]
+
+
+# Daftar spesies acuan (SIP Jenis Mangrove/Lamun/Terumbu Karang) -- dipakai
+# untuk menampilkan pilihan spesies (checkbox) pada form isian ekosistem,
+# menggantikan isian teks bebas. Boleh pilih lebih dari satu spesies
+# sekaligus (mis. mangrove sering dijumpai lebih dari satu jenis dominan).
+DAFTAR_SPESIES_MANGROVE = [
+    "Bruguiera parviflora", "Bruguiera cylindrica", "Bruguiera gymnorrhiza",
+    "Rhizophora mucronata", "Rhizophora apiculata", "Rhizophora stylosa",
+    "Sonneratia caseolaris", "Sonneratia alba",
+    "Avicennia officinalis", "Avicennia alba", "Avicennia marina",
+    "Avicennia lanata", "Avicennia germinans",
+    "Lumnitzera racemosa", "Lumnitzera littorea",
+    "Ceriops tagal", "Ceriops decandra",
+    "Kandelia candel",
+    "Aegiceras floridum", "Aegiceras corniculatum",
+    "Xylocarpus granatum", "Xylocarpus moluccensis",
+    "Excoecaria agallocha",
+]
+DAFTAR_SPESIES_LAMUN = [
+    "Enhalus acoroides", "Thalassia hemprichii",
+    "Cymodocea rotundata", "Cymodocea serrulata",
+    "Halodule pinifolia", "Halodule uninervis",
+    "Halophila decipiens", "Halophila ovalis", "Halophila minor",
+    "Halophila spinulosa", "Halophila sulawesii", "Halophila major",
+    "Syringodium isoetifolium", "Thalassodendron ciliatum",
+]
+DAFTAR_SPESIES_KARANG = [
+    "Acropora cervicornis", "Acropora elegantula", "Acropora microphthalma",
+    "Acropora millepora", "Acropora humilis", "Acropora hyacinthus",
+    "Acropora grandis",
+    "Siderastrea siderea",
+    "Montipora danae", "Montipora aequituberculata",
+]
+
+
+def render_species_picker_html(field_name, species_list):
+    """Render kelompok checkbox pilihan spesies (mis. mangrove/lamun/karang)
+    lengkap dengan kotak pencarian (filter) dan opsi "Spesies Lainnya" untuk
+    menambahkan spesies di luar daftar acuan. Nama tiap checkbox pakai
+    format "{field_name}[]" supaya bisa dibaca lewat form.getlist() dan
+    boleh pilih lebih dari satu -- hasilnya akan digabung otomatis (mis.
+    "Rhizophora mucronata, Avicennia alba dan Sonneratia alba") dan langsung
+    dipakai sebagai kalimat deskripsi ekosistem di draft maupun dokumen
+    proposal final."""
+    rows = []
+    for i, sp in enumerate(species_list):
+        cb_id = f"{field_name}_{i}"
+        rows.append(
+            f'<div class="checkbox-row species-row"><input type="checkbox" name="{field_name}[]" '
+            f'value="{sp}" id="{cb_id}" disabled><label for="{cb_id}"><i>{sp}</i></label></div>'
+        )
+    return (
+        f'<div class="species-picker" data-species-for="{field_name}">'
+        f'<input type="text" class="species-search" placeholder="Cari nama spesies..." disabled '
+        f'data-filter-for="{field_name}">'
+        f'<div class="species-grid" id="{field_name}_grid">{"".join(rows)}</div>'
+        f'<div class="field-row" style="margin-top:8px;">'
+        f'<label style="font-weight:600;font-size:12.5px;">Spesies Lainnya (di luar daftar, opsional)</label>'
+        f'<input type="text" name="{field_name}_lainnya" id="{field_name}_lainnya" disabled '
+        f'placeholder="Pisahkan dengan koma kalau lebih dari satu, mis. Nypa fruticans, Acanthus ilicifolius">'
+        f'</div></div>'
+    )
+
+
+def klasifikasi_kondisi(persen_str, kriteria):
+    """Cari label kondisi yang sesuai dari daftar kriteria berdasarkan nilai
+    persentase (string, boleh pakai koma atau titik). Kembalikan '' kalau
+    nilainya tidak valid/tidak bisa diparse."""
+    try:
+        v = float(str(persen_str).replace(",", ".").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return ""
+    for lo, hi, label in kriteria:
+        if lo <= v < hi:
+            return label
+    return ""
+
+# Kode wilayah BPS untuk tiap provinsi (dipakai untuk fetch data Kabupaten/Kecamatan/Desa
+# secara berjenjang dari API publik https://emsifa.github.io/api-wilayah-indonesia).
+PROVINCE_BPS_IDS = {
+    "Sulawesi Selatan": "73",
+    "Sulawesi Barat": "76",
+    "Sulawesi Utara": "71",
+    "Sulawesi Tengah": "72",
+    "Sulawesi Tenggara": "74",
+    "Gorontalo": "75",
+    "Bali": "51",
+    "Nusa Tenggara Barat": "52",
+    "Nusa Tenggara Timur": "53",
+}
+
+
+def render_select_html(fname, options, allow_other=False):
+    opts_html = ['<option value="">-- Pilih --</option>']
+    for opt in options:
+        opts_html.append(f'<option value="{opt}">{opt}</option>')
+    other_html = ""
+    if allow_other:
+        opts_html.append('<option value="__other__">Lainnya...</option>')
+        other_html = f'<input type="text" class="select-other-input" id="{fname}_other" placeholder="Isi lainnya" data-for="{fname}">'
+    return (
+        f'<select class="select-field" name="{fname}" id="{fname}" data-allow-other="{str(allow_other).lower()}">'
+        f'{"".join(opts_html)}</select>{other_html}'
+    )
+
+
+def dukung_item_html(idx, checkbox_name, label):
+    """Satu baris item Dokumen Data Dukung: checkbox + (kalau dicentang)
+    muncul otomatis kolom Link Google Drive (opsional). Sengaja TIDAK ada
+    upload file langsung ke server di sini -- demi keamanan data Pengguna
+    Jasa, dokumen pendukung cukup ditautkan lewat Google Drive milik
+    mereka sendiri, bukan diunggah ke server aplikasi."""
+    cb_id = f"dd{idx}"
+    return (
+        f'<div class="dukung-item">'
+        f'<div class="checkbox-row"><input type="checkbox" name="{checkbox_name}" id="{cb_id}" class="dukung-cb" data-target="dukung_detail_{cb_id}">'
+        f'<label for="{cb_id}">{label}</label></div>'
+        f'<div class="dukung-detail" id="dukung_detail_{cb_id}" style="display:none;">'
+        f'<div class="field-row"><label>Link Google Drive Dokumen <span style="font-weight:400;color:var(--muted);">(opsional)</span></label>'
+        f'<input type="text" name="{checkbox_name}_drive" placeholder="Tempel link Google Drive di sini (opsional)"></div>'
+        f'</div></div>'
+    )
+
+
+def spesies_terpilih(form, field_name):
+    """Gabungkan spesies yang dicentang (checkbox "{field_name}[]") dengan
+    isian bebas "{field_name}_lainnya" (dipisah koma) jadi satu kalimat
+    natural, mis. "Rhizophora mucronata, Avicennia alba dan Nypa fruticans".
+    Dipakai untuk field spesies mangrove/lamun/karang di form ekosistem."""
+    dipilih = list(form.getlist(f"{field_name}[]"))
+    lainnya = form.get(f"{field_name}_lainnya", "")
+    for extra in lainnya.split(","):
+        extra = extra.strip()
+        if extra:
+            dipilih.append(extra)
+    return join_dan(dipilih)
+
+
+def render_pdf_pages_to_images(pdf_bytes, dpi=150, max_pages=15):
+    """Render tiap halaman PDF jadi gambar PNG (bytes), supaya isi dokumen
+    PDF yang diunggah pemohon (mis. Surat Izin Lingkungan, Berita Acara
+    Sosialisasi, dsb.) bisa langsung disusun sebagai lampiran gambar di
+    dokumen final -- bukan cuma disebut nama filenya saja. Dibatasi
+    max_pages supaya dokumen PDF yang sangat tebal tidak membuat dokumen
+    Word hasil akhir jadi terlalu besar/lambat."""
+    hasil = []
+    try:
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return hasil
+    try:
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        n = min(len(pdf), max_pages)
+        for i in range(n):
+            page = pdf[i]
+            pix = page.get_pixmap(matrix=mat)
+            hasil.append(pix.tobytes("png"))
+    finally:
+        pdf.close()
+    return hasil
+
+
+def join_dan(items):
+    """Gabungkan list string jadi satu kalimat natural pakai kata 'dan' untuk
+    item terakhir (mis. ['Permukaan Laut','Dasar Laut'] -> 'Permukaan Laut
+    dan Dasar Laut'). Dipakai untuk field checklist yang boleh pilih lebih
+    dari satu (mis. Instalasi Bangunan Laut Berada Pada)."""
+    items = [i.strip() for i in items if i and i.strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " dan " + items[-1]
+
+
+# Pemetaan nama field upload (form) -> tag gambar internal, dipakai baik
+# untuk membaca file upload (build_prop_data_from_manual_form) maupun untuk
+# menampilkan kembali thumbnail gambar yang sudah tersimpan (render_manual_form_page).
+IMAGE_FIELD_TAGS = [
+    ("img_siteplan", "siteplan"),
+    ("img_peta_lokasi", "peta_lokasi"),
+    ("img_foto_mangrove", "foto_mangrove"),
+    ("img_foto_karang_insitu", "foto_karang_insitu"),
+    ("img_dok_kegiatan", "dok_kegiatan_eksisting"),
+    ("img_dok_pemanfaatan_sekitar", "dok_pemanfaatan_sekitar"),
+    ("img_foto_lamun", "foto_lamun"),
+    ("img_aksesibilitas", "gambar_aksesibilitas"),
+    ("img_sertifikat_lahan", "sertifikat_lahan"),
+    ("img_dok_sosialisasi", "dok_sosialisasi"),
+    ("img_dok_pendukung_lainnya", "dok_pendukung_lainnya"),
+]
+_IMAGE_FIELD_TO_TAG = dict(IMAGE_FIELD_TAGS)
+
+
+def _hapus_field_names_to_tags(field_names):
+    """Ubah daftar NAMA FIELD form (mis. 'img_foto_mangrove', dikirim tombol
+    hapus pada thumbnail gambar tersimpan) menjadi TAG internal gambar (mis.
+    'foto_mangrove') yang dipakai merge_draft_images -- keduanya berbeda
+    penamaan (lihat IMAGE_FIELD_TAGS), jadi harus diterjemahkan dulu supaya
+    penghapusan benar-benar cocok dengan tag gambar yang tersimpan."""
+    return [_IMAGE_FIELD_TO_TAG.get(fn, fn) for fn in (field_names or [])]
+
+
+def img_field_html(field_name, label, desc="", multiple=False, note="", saved_previews=None):
+    desc_html = f'<div class="ff-hint" style="margin-bottom:6px;">{desc}</div>' if desc else ""
+    note_html = f'<span style="font-weight:400;color:var(--muted);"> {note}</span>' if note else ""
+    saved_html = ""
+    if saved_previews:
+        thumbs = "".join(
+            f'<div class="img-thumb img-thumb-saved" data-field="{field_name}" title="Tersimpan dari isian sebelumnya &mdash; '
+            f'tidak perlu diunggah ulang, kecuali ingin menggantinya">'
+            f'<img src="{p["url"]}" alt="{label}">'
+            f'<span class="img-thumb-badge">\u2713 Tersimpan</span>'
+            f'<button type="button" class="img-remove img-remove-saved" data-field="{field_name}" title="Hapus gambar tersimpan ini">&times;</button>'
+            f'</div>'
+            for p in saved_previews
+        )
+        saved_html = f'<div class="img-preview-list img-preview-saved" id="{field_name}_saved_preview">{thumbs}</div>'
+    return (
+        f'<div class="file-field-row">'
+        f'<label>{label}{note_html}</label>{desc_html}'
+        f'<div class="img-input-row">'
+        f'<button type="button" class="img-upload-btn" data-field="{field_name}">{ICONS["doc"]} Upload File</button>'
+        f'<div class="img-paste-target" tabindex="0" data-field="{field_name}">{ICONS["upload"]}'
+        f'<span class="ipt-text"><b>Klik / Ctrl+V</b><br>tempel gambar</span></div>'
+        f'</div>'
+        f'<input type="file" name="{field_name}" id="{field_name}" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple style="display:none">'
+        f'{saved_html}'
+        f'<div class="img-preview-list" id="{field_name}_preview"></div>'
+        f'</div>'
+    )
+
+
+def render_login_pegawai_page(error=None):
+    # Render homepage SUNGGUHAN (sudah lewat Jinja) sebagai backdrop, lalu
+    # sisipkan overlay + kartu login di atasnya tepat sebelum tag </body>.
+    # CSS ditulis mandiri (inline) di sini karena halaman backdrop (UPLOAD_HTML)
+    # cuma memuat LANDING_CSS, bukan REVIEW_CSS.
+    home_rendered = render_template_string(UPLOAD_HTML, error=None)
+
+    error_html = (
+        f'<div class="lgo-error">\u26A0 {error}</div>' if error else ""
+    )
+    overlay = """
+<style>
+  .login-overlay { position:fixed; inset:0; z-index:9999; background:rgba(10,25,45,.62);
+    backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:20px; }
+  .login-modal-card { background:#fff; border-radius:16px; padding:28px 26px; box-shadow:0 20px 50px rgba(0,0,0,.35);
+    max-width:400px; width:100%; }
+  .login-modal-card h3 { display:flex; align-items:center; justify-content:center; gap:8px;
+    font-size:16px; font-weight:800; color:#123A63; margin:0 0 6px; }
+  .login-modal-card h3 svg { width:20px; height:20px; }
+  .login-modal-sub { text-align:center; font-size:12.5px; color:#5b6b7c; margin:0 0 18px; }
+  .lgo-error { background:#fff3cd; border:1px solid #ffe08a; color:#7a5b00; padding:10px 14px;
+    border-radius:8px; font-size:12.5px; margin-bottom:14px; }
+  .login-modal-card .field-row { margin-bottom:14px; }
+  .login-modal-card label { display:block; font-size:12px; font-weight:700; color:#5b6b7c; margin-bottom:5px; }
+  .login-modal-card input[type=text], .login-modal-card input[type=password] {
+    width:100%; padding:10px 12px; border:1px solid #d3dde7; border-radius:8px; font-size:14px;
+    color:#1c2b3a; background:#fff; box-sizing:border-box; }
+  .login-modal-card input:focus { outline:none; border-color:#1E63C7; box-shadow:0 0 0 3px rgba(30,99,199,.15); }
+  .login-modal-btn { width:100%; background:linear-gradient(90deg,#2F7FE0,#123A63); color:#fff;
+    border:none; padding:13px; border-radius:10px; font-size:14.5px; font-weight:800; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:8px; margin-top:4px; box-sizing:border-box; }
+  .login-modal-btn:hover { filter:brightness(1.08); }
+  .login-modal-btn svg { width:18px; height:18px; flex:none; }
+  body { overflow:hidden !important; }
+</style>
+<div class="login-overlay">
+  <div class="login-modal-card">
+    """ + error_html + """
+    <h3>""" + ICONS["user"] + """ Login Pegawai BPRL Makassar</h3>
+    <p class="login-modal-sub">Masuk terlebih dahulu untuk menggunakan aplikasi e-GerAI KKPRL.</p>
+    <form method="POST" action="/login-pegawai">
+      <div class="field-row">
+        <label>Kode Nama</label>
+        <input type="text" name="kode_nama" placeholder="Contoh: BPRL01" required autofocus autocapitalize="none" autocomplete="username">
+        <div style="margin-top:4px;font-size:11px;color:var(--muted);">Bisa kombinasi huruf dan angka, tidak terbatas 2 karakter.</div>
+      </div>
+      <div class="field-row">
+        <label>Kode Petugas (Password)</label>
+        <input type="password" name="kode_petugas" placeholder="Contoh: 123" required inputmode="numeric">
+      </div>
+      <button type="submit" class="login-modal-btn">""" + ICONS["user"] + """ Masuk</button>
+    </form>
+  </div>
+</div>
+"""
+    return home_rendered.replace("</body>", overlay + "</body>")
+
+
+def render_riwayat_saya_page():
+    user = session.get("user")
+    if not user:
+        return render_login_pegawai_page()
+
+    kode = user.get("kode", "")
+    drafts = read_user_drafts(kode) if kode else []
+
+    if drafts:
+        rows = "".join(
+            f'<tr><td>{d.get("waktu","-")}</td>'
+            f'<td>{d.get("nama_pemohon") or "-"}</td>'
+            f'<td>{d.get("nama_perusahaan") or "-"}</td>'
+            f'<td><a href="/riwayat-saya/lanjutkan/{d.get("job_id")}" class="ex-fill" style="text-decoration:none;display:inline-block;">Lanjutkan Isi</a></td></tr>'
+            for d in drafts
+        )
+        table_html = (
+            '<table class="history-table"><thead><tr>'
+            "<th>Waktu</th><th>Nama Pemohon</th><th>Nama Perusahaan/Instansi</th><th>Aksi</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    else:
+        table_html = '<div class="history-empty">Belum ada riwayat isian form yang tersimpan. Riwayat akan muncul di sini setiap kali Anda mengisi form manual, dan otomatis terhapus sendiri setelah ' + str(DRAFT_MAX_AGE_DAYS) + ' hari.</div>'
+
+    admin_link = ""
+    if user.get("is_admin"):
+        admin_link = '<p style="margin-top:10px;"><a href="/admin/riwayat" class="ex-fill" style="text-decoration:none;display:inline-block;">' + ICONS["chart-bar"] + " Lihat Riwayat Semua Petugas (Admin)</a></p>"
+
+    body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Isian Saya <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(drafts)} tersimpan &middot; otomatis terhapus setelah {DRAFT_MAX_AGE_DAYS} hari)</span></h3>
+    {table_html}
+    {admin_link}
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Isian Saya &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Isian Saya</h1>
+  <p>Daftar isian form manual yang pernah Anda mulai. Klik "Lanjutkan Isi" untuk mengisi ulang form secara otomatis dari data yang tersimpan (lampiran gambar/laporan perlu diunggah ulang).</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
+def render_admin_riwayat_list_page():
+    """Halaman admin: daftar semua petugas yang punya draft tersimpan, jadi
+    admin bisa memilih mau buka riwayat siapa."""
+    staff_rows = list_staff_with_drafts()
+    if staff_rows:
+        rows = "".join(
+            f'<tr><td>{s["nama"]}</td><td>{s["kode"]}</td><td>{s["jumlah"]}</td>'
+            f'<td>{s["terakhir"] or "-"}</td>'
+            f'<td><a href="/admin/riwayat/{s["kode"]}" class="ex-fill" style="text-decoration:none;display:inline-block;">Lihat Riwayat</a></td></tr>'
+            for s in staff_rows
+        )
+        table_html = (
+            '<table class="history-table"><thead><tr>'
+            "<th>Nama Petugas</th><th>Kode Nama</th><th>Jumlah Draft</th><th>Draft Terakhir</th><th>Aksi</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    else:
+        table_html = '<div class="history-empty">Belum ada petugas yang punya draft tersimpan.</div>'
+
+    body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <h3 style="margin:0;">""" + ICONS["chart-bar"] + f""" Riwayat Semua Petugas <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(staff_rows)} petugas)</span></h3>
+      <form method="POST" action="/admin/refresh-staff" style="margin:0;">
+        <input type="hidden" name="next" value="/admin/riwayat">
+        <button type="submit" class="ex-fill" style="cursor:pointer;">\U0001F504 Refresh Data Petugas</button>
+      </form>
+    </div>
+    <p class="ff-hint" style="margin:6px 0 0;">Baru mengubah kolom Admin/Analisis di Google Sheet? Data petugas otomatis diperbarui tiap 1 menit -- kalau butuh langsung berlaku sekarang, tekan tombol di atas.</p>
+    {table_html}
+    <p style="margin-top:10px;"><a href="/riwayat-saya" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Riwayat Isian Saya</a></p>
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Semua Petugas &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Semua Petugas</h1>
+  <p>Khusus admin. Pilih petugas untuk melihat & melanjutkan draft isian mereka.</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
+def render_admin_riwayat_staff_page(kode):
+    """Halaman admin: daftar draft milik SATU petugas tertentu (dipilih dari
+    render_admin_riwayat_list_page), dengan tautan lanjutkan isi yang tetap
+    menyimpan ke kode petugas tsb (bukan ke kode admin yang sedang login)."""
+    staff_list = fetch_staff_list()
+    nama = (staff_list.get(kode) or {}).get("nama") or kode
+    drafts = read_user_drafts(kode)
+
+    if drafts:
+        rows = "".join(
+            f'<tr><td>{d.get("waktu","-")}</td>'
+            f'<td>{d.get("nama_pemohon") or "-"}</td>'
+            f'<td>{d.get("nama_perusahaan") or "-"}</td>'
+            f'<td><a href="/admin/riwayat/{kode}/lanjutkan/{d.get("job_id")}" class="ex-fill" style="text-decoration:none;display:inline-block;">Lanjutkan Isi</a></td></tr>'
+            for d in drafts
+        )
+        table_html = (
+            '<table class="history-table"><thead><tr>'
+            "<th>Waktu</th><th>Nama Pemohon</th><th>Nama Perusahaan/Instansi</th><th>Aksi</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    else:
+        table_html = '<div class="history-empty">Petugas ini belum punya draft tersimpan.</div>'
+
+    body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Isian &mdash; {nama} <span style="font-weight:400;color:var(--muted);font-size:12px;">(kode: {kode})</span></h3>
+    {table_html}
+    <p style="margin-top:10px;"><a href="/admin/riwayat" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Daftar Petugas</a></p>
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Isian &mdash; """ + nama + """ &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + f""" Riwayat Isian &mdash; {nama}</h1>
+  <p>Klik "Lanjutkan Isi" untuk membuka & melengkapi draft ini. Perubahan yang disimpan akan tetap tercatat sebagai milik petugas ini.</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
+def render_analisis_proposal_page(error=None):
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    api_note = "" if llm_api_key_available() else (
+        '<div class="error-banner" style="margin-bottom:16px;background:#fff4e5;border-color:#ffd9a0;">'
+        '\u26A0 ANTHROPIC_API_KEY belum diset di server -- fitur ini butuh akses Claude API untuk berjalan. '
+        'Hubungi admin untuk mengaktifkannya.</div>'
+    )
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analisis &amp; Koreksi Proposal &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.analisis-dropzone { border:2px dashed #cfe0f5; border-radius:12px; padding:28px; text-align:center; cursor:pointer;
+  transition:.15s; background:#fbfdff; }
+.analisis-dropzone:hover { border-color:var(--blue); background:#f3f8ff; }
+.analisis-dropzone svg { width:34px; height:34px; color:var(--blue); margin-bottom:8px; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Analisis &amp; Koreksi Proposal</h1>
+  <p>Unggah Proposal Teknis PKKPRL yang sudah jadi untuk diperiksa otomatis -- sistem akan membandingkan data yang
+  disebutkan di dalamnya dengan Laporan Kondisi Eksisting/Hidro-Oseanografi sebagai sumber data pembanding, lalu
+  memberi rekomendasi perbaikan.</p>
+</section>
+
+<div class="main-wrap">
+""" + error_html + api_note + """
+  <form method="POST" action="/analisis-proposal" enctype="multipart/form-data" id="analisisForm">
+    <div class="grid">
+      <div class="upload-card">
+        <div class="step-head">
+          <div class="step-num">1</div>
+          <div class="step-icon">""" + ICONS["doc"] + """</div>
+        </div>
+        <div class="step-title">Proposal Teknis PKKPRL yang Sudah Jadi (PDF/Word/Excel)</div>
+        <div class="step-desc">Dokumen yang ingin diperiksa/dikoreksi. Wajib diunggah -- boleh lebih dari satu
+        berkas kalau proposalnya terdiri dari beberapa file (mis. dokumen utama + lampiran koordinat/data),
+        semua akan digabung & dianalisis sekaligus dalam satu kali klik.</div>
+        <div class="dropzone analisis-dropzone" id="adz1">
+          """ + ICONS["cloud"] + """
+          <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file (bisa pilih lebih dari satu)</div>
+          <div class="dz-max">Maksimum 10 MB per berkas &middot; PDF, .docx, atau .xlsx</div>
+          <input type="file" name="proposal" id="aproposal" accept="application/pdf,.docx,.xlsx,.xlsm" multiple required>
+        </div>
+        <div class="file-list" id="alist1"></div>
+      </div>
+
+      <div class="upload-card">
+        <div class="step-head">
+          <div class="step-num">2</div>
+          <div class="step-icon">""" + ICONS["wave"] + """</div>
+        </div>
+        <div class="step-title">Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word/Excel)</div>
+        <div class="step-desc">Sumber data pembanding. Opsional, tapi tanpa ini sistem hanya bisa mengecek
+        kelengkapan Proposal, tidak bisa mengecek konsistensi datanya. Juga boleh lebih dari satu berkas.</div>
+        <div class="dropzone analisis-dropzone" id="adz2">
+          """ + ICONS["cloud"] + """
+          <div class="dz-title">Drag &amp; Drop PDF/Word/Excel di sini</div>
+          <div class="dz-sub">atau klik untuk memilih file (opsional, bisa lebih dari satu)</div>
+          <div class="dz-max">Maksimum 10 MB per berkas &middot; PDF, .docx, atau .xlsx</div>
+          <input type="file" name="laporan" id="alaporan" accept="application/pdf,.docx,.xlsx,.xlsm" multiple>
+        </div>
+        <div class="file-list" id="alist2"></div>
+      </div>
+
+      <div class="gen-btn">
+        <button type="submit">""" + ICONS["bolt"] + """ Analisis Dokumen</button>
+        <div class="gen-note">Proses bisa memakan waktu sampai 1 menit tergantung panjang dokumen.</div>
+        <div class="spinner" id="aspinner">\u23F3 Menganalisis dokumen, mohon tunggu...</div>
+      </div>
+    </div>
+  </form>
+  <p style="margin-top:16px;text-align:center;"><a href="/analisis-riwayat" style="color:var(--blue);font-weight:700;font-size:13.5px;">""" + ICONS["chart-bar"] + """ Lihat Riwayat Analisis Tersimpan &rarr;</a></p>
+</div>
+
+<script>
+function fmtSize(bytes) {
+  var kb = bytes / 1024;
+  return kb >= 1024 ? (kb/1024).toFixed(2) + ' MB' : Math.round(kb) + ' KB';
+}
+function setupMultiDropzone(dzId, inputId, listId) {
+  var dz = document.getElementById(dzId);
+  var input = document.getElementById(inputId);
+  var list = document.getElementById(listId);
+  var files = []; // akumulasi File objects yang dipilih pengguna
+
+  function sync() {
+    var dt = new DataTransfer();
+    files.forEach(function(f) { dt.items.add(f); });
+    input.files = dt.files;
+    dz.classList.toggle('has-file', files.length > 0);
+    renderList();
+  }
+  function renderList() {
+    list.innerHTML = '';
+    files.forEach(function(f, idx) {
+      var chip = document.createElement('div');
+      chip.className = 'file-chip show';
+      chip.innerHTML = '<div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name"></span></div>'
+        + '<span class="fc-size"></span>'
+        + '<button type="button" class="fc-remove">""" + ICONS["x"] + """</button>';
+      chip.querySelector('.fc-name').textContent = f.name;
+      chip.querySelector('.fc-size').textContent = fmtSize(f.size);
+      chip.querySelector('.fc-remove').addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        files.splice(idx, 1);
+        sync();
+      });
+      list.appendChild(chip);
+    });
+  }
+  function addFiles(fileListLike) {
+    Array.prototype.forEach.call(fileListLike, function(f) {
+      // hindari duplikat nama+ukuran yang sama persis
+      if (!files.some(function(existing) { return existing.name === f.name && existing.size === f.size; })) {
+        files.push(f);
+      }
+    });
+    sync();
+  }
+  dz.addEventListener('click', function(e) { if (e.target.tagName !== 'INPUT' && !e.target.closest('.file-chip')) input.click(); });
+  input.addEventListener('change', function() { if (input.files.length) addFiles(input.files); });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  });
+}
+setupMultiDropzone('adz1','aproposal','alist1');
+setupMultiDropzone('adz2','alaporan','alist2');
+document.getElementById('analisisForm').addEventListener('submit', function() {
+  document.getElementById('aspinner').classList.add('show');
+});
+</script>
+</body></html>"""
+
+
+def render_analisis_hasil_page(hasil_markdown, nama_file_proposal, nama_file_laporan,
+                                entry_id=None, saved_notice=None):
+    import markdown as _md
+    import html as _html
+    html_body = _md.markdown(hasil_markdown, extensions=["tables"])
+    laporan_txt = (" &middot; Laporan pembanding: <b>" + nama_file_laporan + "</b>") if nama_file_laporan else " &middot; <i>(tanpa Laporan pembanding -- hanya cek kelengkapan)</i>"
+
+    notice_html = f'<div class="error-banner" style="margin-bottom:16px;background:#eafaf0;border-color:#b7e9c9;color:#1a6b3c;">\u2705 {saved_notice}</div>' if saved_notice else ""
+
+    md_escaped = _html.escape(hasil_markdown or "")
+    prop_escaped = _html.escape(nama_file_proposal or "")
+    lap_escaped = _html.escape(nama_file_laporan or "")
+
+    if entry_id:
+        # Hasil sedang dilihat dari Riwayat Tersimpan -- sudah tersimpan,
+        # jadi cukup tampilkan tombol Unduh & Hapus.
+        actions_html = ("""
+<div class="hasil-actions">
+  <a href="/analisis-riwayat/""" + entry_id + """/unduh" class="hasil-btn hasil-btn-primary">""" + ICONS["download"] + """ Unduh Dokumen (.docx)</a>
+  <form method="POST" action="/analisis-riwayat/""" + entry_id + """/hapus" onsubmit="return confirm('Hapus hasil analisis ini dari Riwayat Tersimpan?');" style="display:inline;">
+    <button type="submit" class="hasil-btn hasil-btn-danger">""" + ICONS["x"] + """ Hapus dari Riwayat</button>
+  </form>
+</div>""")
+    else:
+        # Hasil baru saja dianalisis -- tawarkan Simpan & Unduh.
+        actions_html = ("""
+<div class="hasil-actions">
+  <form method="POST" action="/analisis-proposal/simpan" style="display:inline;">
+    <textarea name="hasil_markdown" style="display:none;">""" + md_escaped + """</textarea>
+    <input type="hidden" name="nama_proposal" value=\"""" + prop_escaped + """\">
+    <input type="hidden" name="nama_laporan" value=\"""" + lap_escaped + """\">
+    <button type="submit" class="hasil-btn hasil-btn-primary">""" + ICONS["check-circle"] + """ Simpan Hasil Analisis</button>
+  </form>
+  <form method="POST" action="/analisis-proposal/unduh" style="display:inline;">
+    <textarea name="hasil_markdown" style="display:none;">""" + md_escaped + """</textarea>
+    <input type="hidden" name="nama_proposal" value=\"""" + prop_escaped + """\">
+    <input type="hidden" name="nama_laporan" value=\"""" + lap_escaped + """\">
+    <button type="submit" class="hasil-btn hasil-btn-outline">""" + ICONS["download"] + """ Unduh Dokumen (.docx)</button>
+  </form>
+</div>""")
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hasil Analisis Proposal &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.analisis-report h2 { color:var(--navy); font-size:19px; margin:26px 0 10px; border-bottom:2px solid #e5edf5; padding-bottom:6px; }
+.analisis-report table { width:100%; border-collapse:collapse; margin:12px 0; font-size:14px; }
+.analisis-report th { background:var(--navy); color:#fff; text-align:left; padding:8px 10px; }
+.analisis-report td { padding:8px 10px; border-bottom:1px solid #e5edf5; }
+.analisis-report tr:nth-child(even) td { background:#f8fafc; }
+.analisis-report ul, .analisis-report ol { padding-left:22px; line-height:1.7; }
+.analisis-report p { line-height:1.7; }
+.hasil-actions { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0 6px; }
+.hasil-btn { display:inline-flex; align-items:center; gap:8px; font-size:13.5px; font-weight:800;
+  padding:12px 20px; border-radius:12px; cursor:pointer; border:none; text-decoration:none; }
+.hasil-btn svg { width:18px; height:18px; flex:none; }
+.hasil-btn-primary { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff;
+  box-shadow:0 6px 18px rgba(30,99,199,.28); }
+.hasil-btn-primary:hover { filter:brightness(1.05); }
+.hasil-btn-outline { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5; }
+.hasil-btn-outline:hover { background:#f3f8ff; }
+.hasil-btn-danger { background:#fff; color:#b3261e; border:1.5px solid #f3c6c2; }
+.hasil-btn-danger:hover { background:#fdf1f0; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Hasil Analisis &amp; Koreksi Proposal</h1>
+  <p>Proposal: <b>""" + nama_file_proposal + """</b>""" + laporan_txt + """</p>
+</section>
+
+<div class="review-wrap">
+  """ + notice_html + """
+  """ + actions_html + """
+  <div class="review-card analisis-report">
+    """ + html_body + """
+  </div>
+  """ + actions_html + """
+  <p style="margin-top:6px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Analisis dokumen lain</a>
+  &middot; <a href="/analisis-riwayat" style="color:var(--muted);font-size:13px;">Lihat Riwayat Tersimpan</a></p>
+</div>
+</body></html>"""
+
+
+def render_history_page():
+    user = session.get("user")
+    logged_in = bool(user)
+    is_admin = bool(user and user.get("is_admin"))
+
+    if not logged_in:
+        body = """
+<div class="review-wrap">
+  <div class="review-card history-login-gate">
+    <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
+    <p>Riwayat hanya bisa dilihat oleh staf yang sudah login menggunakan akun Google BPRL.</p>
+    <a href="/login-pegawai" class="login-btn" style="display:inline-flex;">""" + ICONS["user"] + """ Login untuk Melihat Riwayat</a>
+  </div>
+</div>"""
+    elif not is_admin:
+        body = """
+<div class="review-wrap">
+  <div class="review-card history-login-gate">
+    <h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h3>
+    <p>Halaman ini hanya bisa diakses oleh akun admin. Hubungi admin BPRL kalau Anda perlu melihat riwayat ini.</p>
+  </div>
+</div>"""
+    else:
+        entries = read_history()
+        if entries:
+            rows = "".join(
+                f"<tr><td>{e.get('waktu','-')}</td><td>{e.get('nama_pemohon','-')}</td>"
+                f"<td>{e.get('nama_perusahaan','-')}</td><td>{e.get('diproses_oleh','-')}</td></tr>"
+                for e in entries
+            )
+            table_html = (
+                '<table class="history-table"><thead><tr>'
+                "<th>Waktu</th><th>Nama Pemohon</th><th>Nama Perusahaan/Instansi</th><th>Diproses Oleh</th>"
+                f"</tr></thead><tbody>{rows}</tbody></table>"
+            )
+        else:
+            table_html = '<div class="history-empty">Belum ada riwayat dokumen yang di-generate.</div>'
+
+        body = """
+<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + f""" Riwayat Penggunaan <span style="font-weight:400;color:var(--muted);font-size:12px;">({len(entries)} entri terakhir)</span></h3>
+    {table_html}
+  </div>
+</div>"""
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Penggunaan &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Penggunaan</h1>
+  <p>Catatan dokumen PKKPRL yang sudah di-generate melalui aplikasi ini (nama pemohon, waktu, dan siapa yang memproses). Dokumen itu sendiri tidak disimpan.</p>
+</section>
+""" + body + """
+</body></html>"""
+
+
+MANUAL_STEPPER_CSS = """
+.step-nav { display:flex; gap:8px; overflow-x:auto; padding:2px 2px 12px; margin-bottom:6px; scrollbar-width:thin; }
+.step-tab { flex:1 0 168px; display:flex; align-items:center; gap:10px; background:#fff; border:1.5px solid #cfe0f5;
+  border-radius:14px; padding:10px 12px; cursor:pointer; text-align:left; font-family:inherit; color:var(--navy); transition:.15s; }
+.step-tab:hover { background:#f3f8ff; }
+.step-tab .st-num { flex:none; width:28px; height:28px; border-radius:50%; background:#eaf2fc; color:var(--blue);
+  font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; }
+.step-tab .st-title { font-size:12.5px; font-weight:800; line-height:1.2; }
+.step-tab .st-sub { font-size:11px; color:var(--muted); line-height:1.25; margin-top:2px; font-weight:500; }
+.step-tab.active { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff; border-color:transparent; }
+.step-tab.active:hover { background:linear-gradient(90deg,var(--blue2),var(--navy)); }
+.step-tab.active .st-num { background:rgba(255,255,255,.22); color:#fff; }
+.step-tab.active .st-sub { color:rgba(255,255,255,.82); }
+.step-tab.has-data:not(.active) .st-num { background:#1d9a5b; color:#fff; }
+.step-panel { display:none; }
+.step-panel.active { display:block; }
+.step-head { background:#f3f8ff; border:1px solid #d6e6fa; border-radius:14px; padding:14px 18px; margin-bottom:16px; }
+.step-head .sh-title { font-size:15px; font-weight:800; color:var(--navy); margin-bottom:6px; }
+.step-head ul { margin:0; padding-left:18px; color:var(--muted); font-size:12.5px; line-height:1.55; }
+.step-footer { display:flex; justify-content:space-between; gap:10px; margin:2px 0 18px; }
+.step-btn { background:#fff; color:var(--navy); border:1.5px solid #cfe0f5; border-radius:12px; padding:10px 18px;
+  font-weight:700; font-size:13.5px; cursor:pointer; font-family:inherit; }
+.step-btn:hover { background:#f3f8ff; }
+.step-btn-next { background:linear-gradient(90deg,var(--blue2),var(--navy)); color:#fff; border-color:transparent; }
+.step-btn-next:hover { filter:brightness(1.06); background:linear-gradient(90deg,var(--blue2),var(--navy)); }
+.manual-action-sticky { position:sticky; bottom:0; z-index:30; background:rgba(255,255,255,.96); backdrop-filter:blur(6px);
+  border-top:1px solid #dbe7f6; padding:10px 12px; margin:0 -4px 18px; border-radius:12px 12px 0 0; }
+@media (max-width:640px) { .step-tab { flex-basis:150px; } .step-footer .step-btn { flex:1; } }
+"""
+
+
+def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_images_meta=None, saved_msg=None,
+                             draft_owner_kode=None, draft_owner_nama=None, saved_laporan_meta=None):
+    prop_groups = []
+    for group_title, fields in FIELD_GROUPS:
+        prop_fields = [f for f in fields if f[0] in ("prop", "prop_loc")]
+        if prop_fields:
+            prop_groups.append((group_title, prop_fields))
+
+    row_by_key = {}
+    for i, (group_title, fields) in enumerate(prop_groups):
+        for source, key, label in fields:
+            fname = form_field_name(source, key)
+            help_text = FIELD_HELP.get((source, key), "")
+            help_html = f'<div class="ff-hint" style="margin:2px 0 6px;">{help_text}</div>' if help_text else ""
+            example = EXAMPLE_HINTS.get((source, key), "") if not SELECT_FIELDS.get((source, key)) else ""
+            example_html = ""
+            if example:
+                example_html = (
+                    f'<div class="field-example">Contoh: <span class="ex-text">{example}</span>'
+                    f'<button type="button" class="ex-fill" data-target="{fname}">Pakai contoh ini</button></div>'
+                )
+            select_cfg = SELECT_FIELDS.get((source, key))
+            if select_cfg:
+                opts_html = ['<option value="">-- Pilih --</option>']
+                for opt in select_cfg["options"]:
+                    if source == "prop_loc" and key == "3":
+                        bps_id = PROVINCE_BPS_IDS.get(opt, "")
+                        opts_html.append(f'<option value="{opt}" data-bps-id="{bps_id}">{opt}</option>')
+                    else:
+                        opts_html.append(f'<option value="{opt}">{opt}</option>')
+                other_html = ""
+                if select_cfg["allow_other"]:
+                    opts_html.append('<option value="__other__">Lainnya...</option>')
+                    other_html = (
+                        f'<input type="text" class="select-other-input" '
+                        f'id="{fname}_other" placeholder="Isi nama lainnya" '
+                        f'data-for="{fname}">'
+                    )
+                field_html = (
+                    f'<select class="select-field" name="{fname}" id="{fname}" data-allow-other="{str(select_cfg["allow_other"]).lower()}">'
+                    f'{"".join(opts_html)}</select>{other_html}'
+                )
+            elif source == "prop_loc" and key == "2":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_kabupaten" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_kabupaten"></datalist>'
+                )
+            elif source == "prop_loc" and key == "1":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_kecamatan" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_kecamatan"></datalist>'
+                )
+            elif source == "prop_loc" and key == "0":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" list="dl_desa" '
+                    f'placeholder="Isi {label.lower()}" autocomplete="off">'
+                    f'<datalist id="dl_desa"></datalist>'
+                )
+            elif source == "prop" and key == "investasi":
+                field_html = (
+                    f'<div class="money-field"><span class="money-prefix">Rp</span>'
+                    f'<input type="text" name="{fname}" id="{fname}" class="money-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}"></div>'
+                )
+            elif source == "prop" and key == "NPWP":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="npwp-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key == "Nomor Telepon Selular":
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="digits-only-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key in ("NIB", "tenaga_kerja", "tenaga_kerja_asing"):
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="digits-only-input" '
+                    f'inputmode="numeric" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key in ("Luas Kebutuhan Ruang", "desa_luas_ha", "desa_penduduk"):
+                field_html = (
+                    f'<input type="text" name="{fname}" id="{fname}" class="decimal-only-input" '
+                    f'inputmode="decimal" placeholder="Isi {label.lower()}">'
+                )
+            elif source == "prop" and key == "Tanggal Penyusunan":
+                field_html = (
+                    f'<input type="date" id="{fname}_picker" class="date-picker-input">'
+                    f'<input type="hidden" name="{fname}" id="{fname}">'
+                )
+            else:
+                field_html = f'<input type="text" name="{fname}" id="{fname}" placeholder="Isi {label.lower()}">'
+            row_by_key[(source, key)] = (
+                f'<div class="field-row"><label>{label}</label>{help_html}'
+                f'{field_html}'
+                f'{example_html}</div>'
+            )
+
+    # --- Pengelompokan field "prop" ke bagian Informasi Pemohon / Dokumen 1 / Dokumen 3 ---
+    def _rows_html(keys):
+        return "".join(row_by_key.pop(k) for k in keys if k in row_by_key)
+
+    def _acc_html(title, rows):
+        if not rows:
+            return ""
+        return (f'<details class="acc-item" open><summary>{title}</summary>'
+                f'<div class="acc-body">{rows}</div></details>\n')
+
+    acc_pemohon = _acc_html("Identitas Pemohon", _rows_html([
+        ("prop", "Nama Pemohon"), ("prop", "Jabatan Pemohon"), ("prop", "Nama Perusahaan/Instansi"),
+        ("prop", "NIB"), ("prop", "NPWP"), ("prop", "Nomor Telepon Selular"),
+        ("prop", "Surat Elektronik"), ("prop", "Tanggal Penyusunan")]))
+    acc_invest = _acc_html("Investasi &amp; Tenaga Kerja", _rows_html([
+        ("prop", "investasi"), ("prop", "tenaga_kerja"), ("prop", "tenaga_kerja_asing")]))
+    acc_lokasi = _acc_html("Lokasi &amp; Deskripsi Luas/Panjang Kegiatan", _rows_html([
+        ("prop", "Jenis Kegiatan"), ("prop", "Nama Perairan"), ("prop", "KBLI"), ("prop", "Luas Kebutuhan Ruang"),
+        ("prop_loc", "3"), ("prop_loc", "2"), ("prop_loc", "1"), ("prop_loc", "0")]))
+    rows_sosek = _rows_html([("prop", "desa_luas_ha"), ("prop", "desa_penduduk")])
+    # Field prop apa pun yang belum terpetakan di atas (mis. field baru) tetap tampil, di Dokumen 1.
+    acc_lain = _acc_html("Data Lainnya", _rows_html(list(row_by_key.keys())))
+
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+
+    _own_kode = (session.get("user") or {}).get("kode", "")
+    if draft_owner_kode and draft_owner_kode != _own_kode:
+        error_html += (
+            '<div class="error-banner" style="margin-bottom:16px;background:#fff4e5;border-color:#ffd9a0;">'
+            f"\U0001F6E0\uFE0F Anda (admin) sedang membuka & melanjutkan draft milik "
+            f"<b>{draft_owner_nama or draft_owner_kode}</b>. Perubahan yang disimpan/di-generate dari sini akan "
+            "tersimpan sebagai draft milik petugas tersebut, bukan draft Anda sendiri."
+            "</div>"
+        )
+
+    if saved_msg:
+        error_html += f'<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">\u2705 {saved_msg}</div>'
+
+    if saved_images_meta:
+        tags_txt = ", ".join(m.get("tag", "") for m in saved_images_meta)
+        error_html += (
+            '<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">'
+            f"\U0001F4CE {len(saved_images_meta)} gambar tersimpan dari isian sebelumnya ({tags_txt}) &mdash; "
+            "tetap akan dipakai walau tidak diunggah ulang. Unggah ulang di kolom terkait kalau ingin menggantinya."
+            "</div>"
+        )
+
+    if saved_laporan_meta:
+        laporan_fname = saved_laporan_meta.get("filename", "Laporan")
+        error_html += (
+            '<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">'
+            f"\U0001F4CE File Laporan Kondisi Eksisting/Hidro-Oseanografi tersimpan dari isian sebelumnya "
+            f"(<b>{laporan_fname}</b>) &mdash; tetap akan dipakai walau tidak diunggah ulang. "
+            "Unggah file baru di kolom Laporan kalau ingin menggantinya."
+            "</div>"
+        )
+
+    # Peta tag gambar -> daftar preview (URL thumbnail) untuk gambar yang
+    # sudah tersimpan lewat tombol "Simpan" sebelumnya, dikelompokkan per
+    # NAMA FIELD form (bukan per tag) supaya gampang disisipkan ke tiap
+    # pemanggilan img_field_html() di bawah.
+    by_tag = {}
+    for m in (saved_images_meta or []):
+        by_tag.setdefault(m.get("tag"), []).append(m)
+    saved_previews_map = {}
+    _preview_owner_kode = draft_owner_kode or (session.get("user") or {}).get("kode", "")
+    if job_id and _preview_owner_kode:
+        for field_name, tag in IMAGE_FIELD_TAGS:
+            metas = by_tag.get(tag)
+            if metas:
+                saved_previews_map[field_name] = [
+                    {"url": f"/proposal-manual/draft-image/{_preview_owner_kode}/{job_id}/{m['filename']}"} for m in metas
+                ]
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Isi Formulir Draft Proposal &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + MANUAL_STEPPER_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="manual-hero">
+  <h1>\U0001F4DD Isi Formulir Draft Proposal PKKPRL</h1>
+  <p>Belum punya file Draft Proposal PKKPRL siap pakai? Isi data secara bertahap mengikuti format dokumen (Informasi Pemohon, lalu Dokumen 1 s/d 4), lalu unggah
+  Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF). Sistem akan menggabungkan otomatis menjadi
+  1 dokumen Word final &mdash; sama seperti alur upload 2 PDF.</p>
+</section>
+
+<div class="review-wrap">
+  """ + error_html + """
+  <form method="POST" action="/proposal-manual" enctype="multipart/form-data" id="manualForm">
+    <input type="hidden" name="existing_job_id" value=\"""" + (job_id or "") + """\">
+    <input type="hidden" name="draft_owner_kode" value=\"""" + (draft_owner_kode or "") + """\">
+
+    <div class="step-nav" id="stepNav">
+      <button type="button" class="step-tab active" data-step-go="0"><span class="st-num">&#9679;</span><span><div class="st-title">Informasi Pemohon</div><div class="st-sub">Identitas &amp; jenis permohonan</div></span></button>
+      <button type="button" class="step-tab" data-step-go="1"><span class="st-num">1</span><span><div class="st-title">Dokumen 1</div><div class="st-sub">Rencana Bangunan &amp; Instalasi di Laut</div></span></button>
+      <button type="button" class="step-tab" data-step-go="2"><span class="st-num">2</span><span><div class="st-title">Dokumen 2</div><div class="st-sub">Informasi Pemanfaatan Ruang Laut</div></span></button>
+      <button type="button" class="step-tab" data-step-go="3"><span class="st-num">3</span><span><div class="st-title">Dokumen 3</div><div class="st-sub">Data Kondisi Terkini Lokasi</div></span></button>
+      <button type="button" class="step-tab" data-step-go="4"><span class="st-num">4</span><span><div class="st-title">Dokumen 4</div><div class="st-sub">Persyaratan Lainnya</div></span></button>
+    </div>
+
+    <div class="step-panel active" data-step="0">
+    <div class="step-head"><div class="sh-title">Informasi Pemohon</div><ul><li>Identitas pemohon / perusahaan, kontak, dan tanggal penyusunan</li><li>Jenis permohonan: Persetujuan atau Konfirmasi KKPRL</li></ul></div>
+    <div class="jenis-permohonan-card">
+      <h3>""" + ICONS["doc"] + """ Jenis Permohonan KKPRL</h3>
+      <div class="ff-hint" style="margin-bottom:0;">Pilih salah satu -- otomatis menyesuaikan judul dan isi Dokumen Draft Proposal yang dihasilkan. <b>Persetujuan KKPRL</b> umumnya untuk Pelaku Usaha (kegiatan Berusaha). <b>Konfirmasi KKPRL</b> umumnya untuk Pemerintah Pusat/Daerah dengan kegiatan Non Berusaha yang bersifat Strategis Nasional.</div>
+      <div class="jp-toggle-row">
+        <label class="jp-toggle">
+          <input type="radio" name="jenis_permohonan" value="Persetujuan" checked>
+          <div class="jp-toggle-face">
+            <div class="jp-toggle-icon">""" + ICONS["check-circle"] + """</div>
+            <div class="jp-toggle-text">
+              <div class="jp-toggle-title">Persetujuan KKPRL</div>
+              <div class="jp-toggle-sub">Untuk Pelaku Usaha (kegiatan Berusaha)</div>
+            </div>
+            <div class="jp-toggle-badge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          </div>
+        </label>
+        <label class="jp-toggle">
+          <input type="radio" name="jenis_permohonan" value="Konfirmasi">
+          <div class="jp-toggle-face">
+            <div class="jp-toggle-icon">""" + ICONS["doc"] + """</div>
+            <div class="jp-toggle-text">
+              <div class="jp-toggle-title">Konfirmasi KKPRL</div>
+              <div class="jp-toggle-sub">Untuk Pemerintah Pusat/Daerah, Non Berusaha</div>
+            </div>
+            <div class="jp-toggle-badge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Informasi Pemohon</h3>
+      """ + acc_pemohon + """
+    </div>
+    <div class="step-footer"><span></span><button type="button" class="step-btn step-btn-next" data-step-go="1">Dokumen 1 &rarr;</button></div>
+    </div>
+
+    <div class="step-panel" data-step="1">
+    <div class="step-head"><div class="sh-title">Dokumen 1 &mdash; Rencana Bangunan dan Instalasi di Laut</div><ul><li>Uraian latar belakang, tujuan, dan manfaat usaha</li><li>Deskripsi kegiatan eksisting &amp; yang akan dimohonkan</li><li>Rencana jadwal pelaksanaan kegiatan</li><li>Rencana tapak/site plan (bangunan, instalasi, fasilitas penunjang)</li><li>Deskripsi luas/panjang lokasi per kegiatan</li><li>Peta lokasi beserta titik koordinat geografis (N/E)</li></ul></div>
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Rencana Bangunan dan Instalasi di Laut</h3>
+      <details class="acc-item" open>
+        <summary>Uraian Latar Belakang, Tujuan &amp; Manfaat Usaha</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Deskripsi Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi kegiatan yang akan dilakukan.</div>
+            <textarea name="deskripsi_kegiatan" id="deskripsi_kegiatan" rows="4" placeholder="Isi deskripsi kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Kegiatan usaha yang diusulkan adalah pembesaran biota laut budidaya, melalui pengoperasian keramba jaring apung (KJA) sebagai sarana penampungan dan pemeliharaan sementara ikan hidup sebelum dipasarkan. Biota Laut memiliki nilai ekonomi tinggi dengan peluang pasar yang masih terbuka, sehingga kegiatan ini berpotensi memberikan nilai tambah hasil perikanan serta menjadi alternatif diversifikasi usaha bagi nelayan setempat. Pelaksanaan kegiatan diharapkan dapat meningkatkan pendapatan dan kesejahteraan masyarakat pesisir serta mengurangi ketergantungan terhadap jenis ikan lainnya.</span>
+            <button type="button" class="ex-fill" data-target="deskripsi_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Manfaat Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi manfaat dari kegiatan yang akan dilakukan.</div>
+            <textarea name="manfaat_kegiatan" id="manfaat_kegiatan" rows="4" placeholder="Isi manfaat kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Kegiatan pembangunan dan operasional fasilitas budidaya udang vannamei bertujuan untuk mendukung peningkatan produksi perikanan budidaya secara berkelanjutan melalui pemanfaatan ruang laut yang optimal dan sesuai dengan ketentuan yang berlaku. Selain memberikan nilai tambah bagi sektor perikanan, kegiatan ini juga diharapkan dapat mendorong pertumbuhan ekonomi daerah, membuka peluang kerja bagi masyarakat sekitar, serta mendukung penerapan budidaya yang produktif dan berwawasan lingkungan.</span>
+            <button type="button" class="ex-fill" data-target="manfaat_kegiatan">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Tujuan Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mengisi dengan deskripsi tujuan dari kegiatan yang akan dilakukan.</div>
+            <textarea name="tujuan_kegiatan" id="tujuan_kegiatan" rows="4" placeholder="Isi tujuan kegiatan"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Tujuan pemanfaatan ruang laut yang diajukan adalah untuk pembangunan fasilitas pemanfaatan air laut bagi kegiatan budidaya, yang berfungsi sebagai sarana penunjang usaha pembudidayaan ikan bersirip (selain ikan hias) serta biota air payau lainnya yang tidak dilindungi. Kegiatan utama perusahaan adalah budidaya udang vannamei. Dalam mendukung pelaksanaan kegiatan utama tersebut, direncanakan pembangunan fasilitas pendukung yang meliputi Instalasi Pengolahan Air Limbah (IPAL), instalasi penyediaan air bersih, dan instalasi kelistrikan.</span>
+            <button type="button" class="ex-fill" data-target="tujuan_kegiatan">Pakai contoh ini</button></div>
+          </div>
+        </div>
+      </details>
+
+      """ + acc_invest + """
+      <details class="acc-item" open>
+        <summary>Kegiatan Eksisting / yang Akan Dimohonkan</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Kegiatan Eksisting/Rencana</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Apakah kegiatan yang dimohonkan merupakan kegiatan eksisting atau baru akan direncanakan</div>
+            <select class="select-field" name="kegiatan_status" id="kegiatan_status">
+              <option value="">-- Pilih --</option>
+              <option value="Eksisting">Eksisting</option>
+              <option value="Rencana">Rencana</option>
+              <option value="Eksisting dan Pengembangan">Eksisting dan Pengembangan</option>
+            </select>
+          </div>
+          <div class="ff-hint" style="margin:0 0 8px;">Centang salah satu dari tiap pasangan berikut sesuai kondisi kegiatan yang dimohonkan. Kalau tidak dicentang sama sekali, bagian terkait di draft akan ditandai perlu dilengkapi manual (tidak ditebak otomatis).</div>
+          <div class="checkbox-row"><input type="checkbox" name="non_reklamasi" id="cb1"><label for="cb1">Kegiatan Tanpa Reklamasi</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="reklamasi" id="cb1b"><label for="cb1b">Kegiatan Reklamasi</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="kegiatan_berusaha" id="cb2"><label for="cb2">Termasuk Kegiatan Berusaha</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="non_berusaha" id="cb2b"><label for="cb2b">Kegiatan Non Berusaha</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="strategis" id="cb3"><label for="cb3">Termasuk kegiatan strategis nasional</label></div>
+          <div class="checkbox-row"><input type="checkbox" name="non_strategis" id="cb3b"><label for="cb3b">Termasuk kegiatan non-strategis nasional</label></div>
+        </div>
+      </details>
+
+      <details class="acc-item" open>
+        <summary>Rencana Jadwal Pelaksanaan Kegiatan</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Deskripsi Jadwal Kegiatan</label>
+            <div class="ff-hint" style="margin-bottom:8px;">Isi tiap kegiatan sebagai satu baris di tabel: nama kegiatan, tahun &amp; bulan mulai, tahun &amp; bulan selesai. Bisa lebih dari 1 tahun -- tabel Gantt di dokumen akan otomatis menyesuaikan. Kolom "Minggu ke-" opsional kalau perlu lebih detail dari sekadar bulan.</div>
+            <div class="jt-table-wrap">
+              <table class="jt-table" id="jadwalTable">
+                <thead><tr>
+                  <th style="width:30px;">No</th>
+                  <th>Nama Kegiatan</th>
+                  <th style="width:90px;">Tahun Mulai</th>
+                  <th style="width:120px;">Bulan Mulai</th>
+                  <th class="jt-minggu-col" style="width:90px;">Minggu Mulai</th>
+                  <th style="width:90px;">Tahun Selesai</th>
+                  <th style="width:120px;">Bulan Selesai</th>
+                  <th class="jt-minggu-col" style="width:90px;">Minggu Selesai</th>
+                  <th style="width:36px;"></th>
+                </tr></thead>
+                <tbody id="jadwalTableBody"></tbody>
+              </table>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" class="tbl-btn" id="jadwalAddRow">+ Tambah Kegiatan</button>
+              <button type="button" class="tbl-btn" id="jadwalToggleMinggu">+ Detail Minggu</button>
+              <button type="button" class="tbl-btn" id="jadwalUseExample">Pakai contoh ini</button>
+            </div>
+            <input type="hidden" name="jadwal_table_json" id="jadwal_table_json">
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item" open>
+        <summary>Rencana Tapak (Site Plan) &amp; Instalasi Bangunan di Laut</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Instalasi Bangunan Menetap Di Laut</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Contoh: Saluran Inlet atau Outlet</div>
+            <input type="text" name="instalasi_bangunan" id="instalasi_bangunan" placeholder="Isi instalasi bangunan menetap di laut">
+          </div>
+
+          <div class="field-row">
+            <label>Instalasi Bangunan Laut Berada Pada</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa pilih lebih dari satu kalau instalasi berada di beberapa posisi sekaligus.</div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Permukaan Laut" id="instpos_permukaan"><label for="instpos_permukaan">Permukaan Laut</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Kolom Laut" id="instpos_kolom"><label for="instpos_kolom">Kolom Laut</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="instalasi_posisi[]" value="Dasar Laut" id="instpos_dasar"><label for="instpos_dasar">Dasar Laut</label></div>
+          </div>
+
+          <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
+
+          """ + img_field_html("img_siteplan", "Gambaran Rencana Tapak Site",
+                                "Unggah gambaran rencana tapak site dari kegiatan yang dimohonkan. Maks. 10 MB.",
+                                note="(bisa lebih dari 1)", saved_previews=saved_previews_map.get("img_siteplan")) + """
+
+          """ + img_field_html("img_dok_kegiatan", "Dokumentasi Kegiatan Eksisting/Rencana",
+                                "Unggah gambar eksisting atau rencana dari kegiatan yang dimohonkan.",
+                                saved_previews=saved_previews_map.get("img_dok_kegiatan")) + """
+        </div>
+      </details>
+
+      """ + acc_lokasi + """
+      <details class="acc-item" open>
+        <summary>Peta Lokasi &amp; Titik Koordinat Geografis (N/E)</summary>
+        <div class="acc-body">
+          """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
+                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.",
+                                saved_previews=saved_previews_map.get("img_peta_lokasi")) + """
+
+          <div class="field-row">
+            <label>Sumber Peta</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mencantumkan sumber peta yang diambil</div>
+            <input type="text" name="sumber_peta" id="sumber_peta" placeholder="Isi sumber peta">
+            <div class="field-example">Contoh: <span class="ex-text">Layar Pinisi, Arcgis, Google Earth dll</span>
+            <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
+          </div>
+
+          <div class="field-row">
+            <label>Upload File Koordinat (Excel/CSV/Word/Gambar)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Kalau sudah punya file/screenshot berisi daftar titik koordinat, unggah di sini -- akan otomatis dibaca dan dianalisis, tidak perlu ketik ulang manual. Untuk format gambar (PNG/JPG), pembacaan otomatis pakai AI dan butuh beberapa detik.</div>
+            <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx,.png,.jpg,.jpeg">
+          </div>
+          <div class="field-row">
+            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris sesuai kebutuhan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis.</div>
+            <div class="jt-table-wrap">
+              <table class="jt-table" id="koordTable">
+                <thead><tr id="koordTableHeadRow">
+                  <th style="width:30px;">No</th>
+                  <th>Longitude (X)</th>
+                  <th>Latitude (Y)</th>
+                  <th>Keterangan</th>
+                  <th style="width:36px;"></th>
+                </tr></thead>
+                <tbody id="koordTableBody"></tbody>
+              </table>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="tbl-btn" id="koordAddRow">+ Tambah Baris</button>
+              <button type="button" class="tbl-btn" id="koordUseExample">Pakai contoh ini</button>
+            </div>
+            <input type="hidden" name="koordinat_table_json" id="koordinat_table_json">
+          </div>
+        </div>
+      </details>
+
+      """ + acc_lain + """
+    </div>
+    <div class="step-footer"><button type="button" class="step-btn" data-step-go="0">&larr; Informasi Pemohon</button><button type="button" class="step-btn step-btn-next" data-step-go="2">Dokumen 2 &rarr;</button></div>
+    </div>
+
+    <div class="step-panel" data-step="2">
+    <div class="step-head"><div class="sh-title">Dokumen 2 &mdash; Informasi Pemanfaatan Ruang Laut</div><ul><li>Deskripsi penggunaan ruang laut di sekitar lokasi permohonan (mis. kegiatan pariwisata berjarak 200 m dari lokasi)</li></ul></div>
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Informasi Pemanfaatan Ruang Laut</h3>
+      <details class="acc-item" open>
+        <summary>Deskripsi Penggunaan Ruang Laut di Sekitar Lokasi Permohonan</summary>
+        <div class="acc-body">
+          <div class="ff-hint" style="margin-bottom:12px;">Isi kondisi di 4 penjuru arah mata angin di sekitar lokasi kegiatan. Akan otomatis tersusun jadi kalimat deskripsi di dokumen final.</div>
+          <div class="field-row">
+            <label>Sebelah Utara</label>
+            <input type="text" name="batas_utara" id="batas_utara" placeholder="Isi kondisi di sebelah utara lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil dan kawasan pemukiman nelayan berjarak sekitar 1 km</span>
+            <button type="button" class="ex-fill" data-target="batas_utara">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Sebelah Timur</label>
+            <input type="text" name="batas_timur" id="batas_timur" placeholder="Isi kondisi di sebelah timur lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil dan kawasan pelabuhan lokal berjarak sekitar 1.2 km</span>
+            <button type="button" class="ex-fill" data-target="batas_timur">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Sebelah Selatan</label>
+            <input type="text" name="batas_selatan" id="batas_selatan" placeholder="Isi kondisi di sebelah selatan lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil serta koridor kabel/pipa bawah laut berjarak sekitar 1.4 km</span>
+            <button type="button" class="ex-fill" data-target="batas_selatan">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Sebelah Barat</label>
+            <input type="text" name="batas_barat" id="batas_barat" placeholder="Isi kondisi di sebelah barat lokasi">
+            <div class="field-example">Contoh: <span class="ex-text">area penangkapan ikan skala kecil serta kegiatan Keramba Jaring Apung (KJA) berjarak sekitar 1.1 km</span>
+            <button type="button" class="ex-fill" data-target="batas_barat">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Deskripsi Tambahan (Opsional)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Kalau ada info tambahan di luar 4 arah mata angin di atas, isi di sini -- akan ditambahkan setelah kalimat otomatis.</div>
+            <textarea name="deskripsi_pemanfaatan_sekitar" id="deskripsi_pemanfaatan_sekitar" rows="3" placeholder="Isi deskripsi tambahan (opsional)"></textarea>
+          </div>
+
+          <div class="ff-hint" style="margin:10px 0 10px;">Dokumentasi pendukung (opsional) -- Upload File atau Ctrl+V.</div>
+          """ + img_field_html("img_dok_pemanfaatan_sekitar", "Dokumentasi Pemanfaatan Ruang Laut Sekitar",
+                                "Maksimal 3 dokumentasi.", note="(bisa lebih dari 1)",
+                                saved_previews=saved_previews_map.get("img_dok_pemanfaatan_sekitar")) + """
+        </div>
+      </details>
+    </div>
+    <div class="step-footer"><button type="button" class="step-btn" data-step-go="1">&larr; Dokumen 1</button><button type="button" class="step-btn step-btn-next" data-step-go="3">Dokumen 3 &rarr;</button></div>
+    </div>
+
+    <div class="step-panel" data-step="3">
+    <div class="step-head"><div class="sh-title">Dokumen 3 &mdash; Data Kondisi Terkini Lokasi &amp; Sekitarnya</div><ul><li>Ekosistem pesisir: mangrove, lamun, terumbu karang (jenis, kerapatan, luasan, dokumentasi)</li><li>Hidro-oseanografi: arus, gelombang, pasang surut, batimetri (unggah laporan)</li><li>Profil dasar laut: penampang melintang morfologi dasar laut (dari laporan)</li><li>Kondisi sosial ekonomi: jumlah penduduk, perekonomian (disertai sumber data)</li><li>Aksesibilitas lokasi</li></ul></div>
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Ekosistem Pesisir</h3>
+      <details class="acc-item" open>
+        <summary>Ekosistem Pesisir: Mangrove, Lamun &amp; Terumbu Karang</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Mangrove</label>
+            """ + render_select_html("mangrove_ada", SELECT_FIELDS[("prop", "mangrove_ada")]["options"]).replace('id="mangrove_ada"', 'id="mangrove_ada" data-eco-trigger="1"') + """
+          </div>
+          <div class="eco-children locked" data-for="mangrove_ada">
+            <div class="field-row">
+              <label>Spesies Mangrove Dominan</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem mangrove di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("prop__mangrove_spesies", DAFTAR_SPESIES_MANGROVE) + """
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Mangrove (%)</label>
+              <input type="text" name="prop__mangrove_persen" id="prop__mangrove_persen" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan mangrove" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Tutupan Mangrove</label>
+              """ + render_select_html("prop__mangrove_kondisi", SELECT_FIELDS[("prop", "mangrove_kondisi")]["options"]).replace('id="prop__mangrove_kondisi"', 'id="prop__mangrove_kondisi" disabled') + """
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Lamun</label>
+            """ + render_select_html("lamun_ada_manual", SELECT_FIELDS[("prop", "lamun_ada_manual")]["options"]).replace('id="lamun_ada_manual"', 'id="lamun_ada_manual" data-eco-trigger="1"') + """
+          </div>
+          <div class="eco-children locked" data-for="lamun_ada_manual">
+            <div class="field-row">
+              <label>Spesies Lamun</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem lamun di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("lamun_spesies", DAFTAR_SPESIES_LAMUN) + """
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Lamun</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Dilampirkan dalam bentuk persentase (%)</div>
+              <input type="text" name="lamun_persen" id="lamun_persen" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan lamun" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Lamun</label>
+              """ + render_select_html("lamun_kondisi", SELECT_FIELDS[("prop", "lamun_kondisi")]["options"]).replace('id="lamun_kondisi"', 'id="lamun_kondisi" disabled') + """
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label>Keberadaan Ekosistem Terumbu Karang</label>
+            """ + render_select_html("karang_ada", SELECT_FIELDS[("prop", "karang_ada")]["options"]).replace('id="karang_ada"', 'id="karang_ada" data-eco-trigger="1"') + """
+          </div>
+          <div class="eco-children locked" data-for="karang_ada">
+            <div class="field-row">
+              <label>Spesies Terumbu Karang</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Centang satu atau lebih spesies yang dijumpai/dominan di lokasi. Pilihan ini akan otomatis dirangkai jadi kalimat deskripsi ekosistem terumbu karang di draft dan dokumen proposal final.</div>
+              """ + render_species_picker_html("karang_spesies", DAFTAR_SPESIES_KARANG) + """
+            </div>
+            <div class="field-row">
+              <label>Persentase Tutupan Terumbu Karang</label>
+              <div class="ff-hint" style="margin-bottom:6px;">Dicantumkan dalam bentuk %</div>
+              <input type="text" name="karang_persen_manual" id="karang_persen_manual" class="decimal-only-input" inputmode="decimal" placeholder="Isi persentase tutupan terumbu karang" disabled>
+            </div>
+            <div class="field-row">
+              <label>Kondisi Terumbu Karang</label>
+              """ + render_select_html("karang_kondisi", SELECT_FIELDS[("prop", "karang_kondisi")]["options"]).replace('id="karang_kondisi"', 'id="karang_kondisi" disabled') + """
+            </div>
+          </div>
+          <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
+
+          """ + img_field_html("img_foto_mangrove", "Foto Kondisi Mangrove",
+                                saved_previews=saved_previews_map.get("img_foto_mangrove")) + """
+
+          """ + img_field_html("img_foto_karang_insitu", "Foto Survei Terumbu Karang",
+                                saved_previews=saved_previews_map.get("img_foto_karang_insitu")) + """
+
+          """ + img_field_html("img_foto_lamun", "Dokumentasi Ekosistem Lamun",
+                                saved_previews=saved_previews_map.get("img_foto_lamun")) + """
+
+        </div>
+      </details>
+    </div>
+
+    <div class="manual-upload-card">
+      <h3>""" + ICONS["wave"] + """ Laporan Kondisi Eksisting / Hidro-Oseanografi (PDF/Word) <span style="font-weight:400;color:var(--muted);font-size:12px;">&mdash; Opsional</span></h3>
+      <div class="ff-hint" style="margin-bottom:10px;">Belum punya dokumennya? Peroleh data Hidro-Oseanografi melalui portal
+      <a href="https://fadly2002-gerai-pelayanan-bprl.hf.space/" target="_blank" style="color:var(--blue);font-weight:700;">Gerai Pelayanan Balai Penataan Ruang Laut Makassar</a>,
+      unduh hasilnya (PDF atau Word), lalu unggah di bawah ini. Belum sempat siap? Boleh dikosongkan dulu &mdash; pakai tombol <b>"Unduh Draft"</b> di bawah untuk mengunduh draft Proposal saja terlebih dulu, lengkapi Laporannya nanti.</div>
+      """ + (f'<div class="ff-hint" style="margin-bottom:10px;background:#eaf6ec;border:1px solid #b7e4c7;border-radius:8px;padding:8px 12px;color:#1d5a35;">\U0001F4CE File tersimpan: <b>{saved_laporan_meta.get("filename","Laporan")}</b> &mdash; tetap dipakai kalau tidak diunggah ulang.</div>' if saved_laporan_meta else "") + """
+      <div class="dropzone" id="dzManual">
+        """ + ICONS["cloud"] + """
+        <div class="dz-title">Drag &amp; Drop PDF/Word di sini</div>
+        <div class="dz-sub">atau klik untuk memilih file</div>
+        <div class="dz-max">Maksimum 10 MB &middot; PDF atau .docx</div>
+        <input type="file" name="laporan" id="laporanManual" accept="application/pdf,.docx">
+      </div>
+      <div class="file-chip" id="chipManual">
+        <div class="fc-left">""" + ICONS["check-circle"] + """<span class="fc-name" id="nameManual"></span></div>
+        <span class="fc-size" id="sizeManual"></span>
+        <button type="button" class="fc-remove" data-target="Manual">""" + ICONS["x"] + """</button>
+      </div>
+    </div>
+
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Sosial Ekonomi &amp; Aksesibilitas</h3>
+      <details class="acc-item" open>
+        <summary>Kondisi Sosial Ekonomi Masyarakat</summary>
+        <div class="acc-body">
+""" + rows_sosek + """          <div class="field-row">
+            <label>Mata Pencaharian Masyarakat Desa</label>
+            <textarea name="mata_pencaharian" id="mata_pencaharian" rows="4" placeholder="Isi mata pencaharian masyarakat desa"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Mata pencaharian masyarakat desa didominasi oleh aktivitas yang berkaitan dengan karakter pesisir. Nelayan menjadi salah satu pekerjaan utama, didukung oleh potensi perairan yang memiliki sumber daya ikan, biota laut, padang lamun, mangrove, dan terumbu karang.</span>
+            <button type="button" class="ex-fill" data-target="mata_pencaharian">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Sumber Data Sosek</label>
+            <input type="text" name="sumber_data_sosek" id="sumber_data_sosek" placeholder="Isi sumber data sosial ekonomi">
+            <div class="field-example">Contoh: <span class="ex-text">Badan Pusat Statistik</span>
+            <button type="button" class="ex-fill" data-target="sumber_data_sosek">Pakai contoh ini</button></div>
+          </div>
+          <div class="field-row">
+            <label>Tahun Data Sosek</label>
+            <input type="text" name="tahun_data_sosek" id="tahun_data_sosek" class="digits-only-input" inputmode="numeric" placeholder="Isi tahun data">
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item" open>
+        <summary>Aksesibilitas Lokasi dan Sekitarnya</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Aksesibilitas Lokasi</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Deskripsi aksesibilitas dari titik poin lokasi yang mudah dikenali ke lokasi area yang dimohonkan, termasuk jarak dan waktu tempuh.</div>
+            <textarea name="aksesibilitas_lokasi" id="aksesibilitas_lokasi" rows="4" placeholder="Isi aksesibilitas lokasi"></textarea>
+            <div class="field-example">Contoh: <span class="ex-text">Aksesibilitas menuju Desa Tapulaga, Kecamatan Soropia, Kabupaten Konawe, dari Bandara Haluoleo Kendari dapat ditempuh melalui jalur darat. Titik awal perjalanan adalah Bandara Haluoleo yang berada di Desa Ambaipua, Kecamatan Ranomeeto, Kabupaten Konawe Selatan, dengan akses utama melalui Jalan Wolter Monginsidi/poros bandara menuju Kota Kendari. Dari kawasan bandara, perjalanan dilanjutkan menuju pusat Kota Kendari melalui koridor Ranomeeto&ndash;Baruga&ndash;Kendari. Setelah memasuki Kota Kendari, perjalanan diarahkan ke kawasan Kota Lama/Kecamatan Kendari, kemudian berlanjut menuju jalur Kendari&ndash;Toronipa yang menjadi akses utama ke wilayah pesisir Kecamatan Soropia.</span>
+            <button type="button" class="ex-fill" data-target="aksesibilitas_lokasi">Pakai contoh ini</button></div>
+          </div>
+
+          """ + img_field_html("img_aksesibilitas", "Gambar Peta Aksesibilitas Menuju Lokasi",
+                                saved_previews=saved_previews_map.get("img_aksesibilitas")) + """
+        </div>
+      </details>
+
+    </div>
+    <div class="step-footer"><button type="button" class="step-btn" data-step-go="2">&larr; Dokumen 2</button><button type="button" class="step-btn step-btn-next" data-step-go="4">Dokumen 4 &rarr;</button></div>
+    </div>
+
+    <div class="step-panel" data-step="4">
+    <div class="step-head"><div class="sh-title">Dokumen 4 &mdash; Persyaratan Lainnya</div><ul><li>Informasi izin lain yang sudah dimiliki pemohon</li><li>Dokumen pendukung teknis lain sesuai kebutuhan</li></ul></div>
+    <div class="review-card">
+      <h3>""" + ICONS["doc"] + """ Persyaratan Lainnya</h3>
+      <details class="acc-item" open>
+        <summary>Informasi Izin Lain &amp; Dokumen Data Dukung yang Dimiliki Pemohon</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Dokumen Data Dukung</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Dokumen data dukung yang dimiliki oleh pelaku usaha (centang yang sesuai -- akan otomatis masuk ke bagian "IV. Dokumen Persyaratan Lainnya" di draft dokumen)</div>
+            """ + dukung_item_html(1, "dukung_nib", "NIB") + """
+            """ + dukung_item_html(2, "dukung_sertifikat", "Sertifikat Kepemilikan Lahan Darat") + """
+            """ + dukung_item_html(3, "dukung_izin_lingkungan", "Surat Izin Lingkungan") + """
+            """ + dukung_item_html(4, "dukung_ba_sosialisasi", "Berita Acara Sosialisasi") + """
+            """ + dukung_item_html(5, "dukung_identitas", "Dokumen Identitas dan Legalitas Pemohon/Perusahaan") + """
+            """ + dukung_item_html(6, "dukung_survei", "Dokumentasi Survei Lapangan Kondisi Eksisting Lokasi") + """
+            """ + dukung_item_html(7, "dukung_peta", "Peta Pendukung (Peta Lokasi, Site Plan, Pola Ruang Wilayah)") + """
+            """ + dukung_item_html(8, "dukung_dipa", "DIPA/RKAKL (Sumber Anggaran APBD/APBN) / Lainnya") + """
+            """ + dukung_item_html(9, "dukung_sk_kkprl", "SK Penetapan KNMP") + """
+            <div id="dukungLainnyaWrap"></div>
+            <button type="button" id="btnTambahDukung" class="ex-fill" style="margin-top:8px;">+ Tambah Dokumen Lainnya</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc-item" open>
+        <summary>Dokumen Pendukung Teknis Lainnya</summary>
+        <div class="acc-body">
+          <div class="ff-hint" style="margin-bottom:14px;">Ada 2 cara mengisi tiap gambar &mdash; <b>Upload File</b> untuk pilih dari komputer, atau kotak <b>Ctrl+V</b> untuk paste dari clipboard (misal screenshot). Keduanya bisa dipakai berkali-kali secara bergantian; file akan terus bertambah, tidak saling mengganti.</div>
+
+          """ + img_field_html("img_sertifikat_lahan", "Sertifikat Kepemilikan Lahan Darat",
+                                saved_previews=saved_previews_map.get("img_sertifikat_lahan")) + """
+
+          """ + img_field_html("img_dok_sosialisasi", "Dokumen Hasil Sosialisasi",
+                                "Berita acara atau surat pernyataan tidak keberatan dari masyarakat.",
+                                saved_previews=saved_previews_map.get("img_dok_sosialisasi")) + """
+
+          """ + img_field_html("img_dok_pendukung_lainnya", "Dokumen Pendukung Lainnya", note="(bisa lebih dari 1)",
+                                saved_previews=saved_previews_map.get("img_dok_pendukung_lainnya")) + """
+        </div>
+      </details>
+
+    </div>
+    <div class="step-footer"><button type="button" class="step-btn" data-step-go="3">&larr; Dokumen 3</button><span></span></div>
+    </div>
+
+    <div class="manual-action-row manual-action-sticky">
+      <button type="submit" formaction="/proposal-manual/simpan" formnovalidate class="btn-secondary-sm">""" + ICONS["check-circle"] + """ Simpan</button>
+      <button type="submit" class="btn-primary-big">""" + ICONS["bolt"] + """ Proses &amp; Lanjut ke Tinjau Data</button>
+      <button type="submit" formaction="/proposal-manual/draft" formnovalidate class="btn-secondary-sm">""" + ICONS["download"] + """ Unduh Draft</button>
+    </div>
+  </form>
+
+  <a href="/" class="back-link">&larr; Kembali ke halaman utama (unggah 2 PDF)</a>
+</div>
+
+<script>
+function fmtSize(bytes) {
+  if (bytes >= 1024*1024) return (bytes/(1024*1024)).toFixed(2) + " MB";
+  return Math.ceil(bytes/1024) + " KB";
+}
+(function() {
+  var dz = document.getElementById('dzManual');
+  var input = document.getElementById('laporanManual');
+  var chip = document.getElementById('chipManual');
+  var nameEl = document.getElementById('nameManual');
+  var sizeEl = document.getElementById('sizeManual');
+  function showFile(file) {
+    if (!file) { chip.classList.remove('show'); dz.style.display = 'block'; return; }
+    nameEl.textContent = file.name;
+    nameEl.title = file.name;
+    sizeEl.textContent = fmtSize(file.size);
+    chip.classList.add('show');
+    dz.style.display = 'none';
+  }
+  dz.addEventListener('click', function(e) { if (!e.target.closest('.file-chip')) input.click(); });
+  input.addEventListener('change', function() { if (input.files[0]) showFile(input.files[0]); });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; showFile(input.files[0]); }
+  });
+  document.querySelector('.fc-remove[data-target="Manual"]').addEventListener('click', function() {
+    input.value = ''; dz.style.display = 'block'; chip.classList.remove('show');
+  });
+})();
+
+// Tombol "Pakai contoh ini" -> isi input teks dengan contoh, siap diedit
+document.querySelectorAll('.ex-fill').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var target = document.getElementById(btn.dataset.target);
+    var exampleText = btn.previousElementSibling.textContent;
+    if (target) { target.value = exampleText; target.focus(); }
+  });
+});
+
+// Nilai Investasi: format ribuan otomatis pakai titik saat mengetik (200000000 -> 200.000.000)
+document.querySelectorAll('.money-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    var digits = input.value.replace(/\D/g, '');
+    input.value = digits ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : '';
+  });
+});
+
+// NPWP: kunci hanya boleh angka, titik, dan strip (format resmi: 01.234.567.8-901.000)
+document.querySelectorAll('.npwp-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    input.value = input.value.replace(/[^0-9.\-]/g, '');
+  });
+});
+
+// Nomor Telepon Selular: kunci hanya boleh angka
+document.querySelectorAll('.digits-only-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    input.value = input.value.replace(/\D/g, '');
+  });
+});
+
+// Field desimal (persentase, luas area, dsb): angka + maksimal 1 titik desimal
+document.querySelectorAll('.decimal-only-input').forEach(function(input) {
+  input.addEventListener('input', function() {
+    var v = input.value.replace(/[^0-9.]/g, '');
+    var parts = v.split('.');
+    if (parts.length > 2) { v = parts[0] + '.' + parts.slice(1).join(''); }
+    input.value = v;
+  });
+});
+
+// Auto-klasifikasi kondisi ekosistem (mangrove/lamun/karang) berdasarkan
+// persentase yang diinput, sesuai kriteria baku resmi (KRITERIA_KONDISI).
+// User tetap bisa ubah manual kalau perlu -- ini cuma bantu isi otomatis.
+(function() {
+  var KRITERIA = {
+    'prop__mangrove_persen': { select: 'prop__mangrove_kondisi', rules: [[75,999,'Sangat Padat'],[50,75,'Sedang'],[0,50,'Jarang']] },
+    'lamun_persen': { select: 'lamun_kondisi', rules: [[60,999,'Baik (Kaya/Sehat)'],[30,60,'Rusak (Kurang Kaya/Kurang Sehat)'],[0,30,'Rusak (Miskin)']] },
+    'karang_persen_manual': { select: 'karang_kondisi', rules: [[75,999,'Baik Sekali'],[50,75,'Baik'],[25,50,'Sedang'],[0,25,'Buruk']] },
+  };
+  Object.keys(KRITERIA).forEach(function(inputId) {
+    var input = document.getElementById(inputId);
+    var cfg = KRITERIA[inputId];
+    var select = document.getElementById(cfg.select);
+    if (!input || !select) return;
+    input.addEventListener('input', function() {
+      var v = parseFloat(input.value.replace(',', '.'));
+      if (isNaN(v)) return;
+      for (var i = 0; i < cfg.rules.length; i++) {
+        var lo = cfg.rules[i][0], hi = cfg.rules[i][1], label = cfg.rules[i][2];
+        if (v >= lo && v < hi) {
+          select.value = label;
+          break;
+        }
+      }
+    });
+  });
+})();
+
+// Tanggal Penyusunan: pilih lewat kalender, otomatis dikonversi ke format Indonesia (DD Bulan YYYY)
+document.querySelectorAll('.date-picker-input').forEach(function(picker) {
+  var hidden = document.getElementById(picker.id.replace('_picker', ''));
+  var BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+  picker.addEventListener('change', function() {
+    if (!picker.value) { hidden.value = ''; return; }
+    var parts = picker.value.split('-'); // YYYY-MM-DD
+    var y = parts[0], m = parseInt(parts[1], 10) - 1, d = parseInt(parts[2], 10);
+    hidden.value = d + ' ' + BULAN_ID[m] + ' ' + y;
+  });
+  // Pastikan kalender selalu muncul walau yang diklik bagian kosong kolom
+  // (bukan cuma ikon kalender kecil di ujung), baik klik tunggal maupun ganda.
+  function openPicker() {
+    if (typeof picker.showPicker === 'function') {
+      try { picker.showPicker(); } catch (e) { /* diam-diam gagal, biarkan perilaku bawaan browser */ }
+    }
+  }
+  picker.addEventListener('click', openPicker);
+  picker.addEventListener('dblclick', openPicker);
+});
+
+// Dokumen Data Dukung: munculkan otomatis kolom Link Drive & Upload saat dicentang
+document.querySelectorAll('.dukung-cb').forEach(function(cb) {
+  var detail = document.getElementById(cb.dataset.target);
+  if (!detail) return;
+  cb.addEventListener('change', function() {
+    detail.style.display = cb.checked ? 'block' : 'none';
+  });
+});
+
+// Tombol "+ Tambah Dokumen Lainnya": tambah baris dokumen custom (bisa lebih dari 1)
+(function() {
+  var wrap = document.getElementById('dukungLainnyaWrap');
+  var btn = document.getElementById('btnTambahDukung');
+  if (!wrap || !btn) return;
+  var counter = 0;
+  btn.addEventListener('click', function() {
+    counter++;
+    var row = document.createElement('div');
+    row.className = 'dukung-custom-row';
+    row.innerHTML =
+      '<input type="text" name="dukung_custom_nama[]" placeholder="Nama dokumen (ketik manual)">' +
+      '<input type="text" name="dukung_custom_drive[]" placeholder="Link Google Drive (opsional)">' +
+      '<button type="button" class="dukung-remove">Hapus</button>';
+    row.querySelector('.dukung-remove').addEventListener('click', function() { row.remove(); });
+    wrap.appendChild(row);
+  });
+})();
+
+// Kunci/buka otomatis field turunan (spesies/persentase/kondisi) berdasarkan
+// pilihan "Keberadaan Ekosistem" -- terkunci sampai user pilih "Terdapat ekosistem..."
+document.querySelectorAll('[data-eco-trigger]').forEach(function(sel) {
+  var childWrap = document.querySelector('.eco-children[data-for="' + sel.id + '"]');
+  if (!childWrap) return;
+  var note = document.createElement('div');
+  note.className = 'eco-lock-note';
+  note.textContent = 'Pilih "Terdapat ekosistem..." di atas untuk mengisi bagian ini.';
+  childWrap.insertBefore(note, childWrap.firstChild);
+
+  function update() {
+    var unlocked = sel.value.indexOf('Terdapat ekosistem') === 0;
+    childWrap.classList.toggle('locked', !unlocked);
+    note.style.display = unlocked ? 'none' : 'block';
+    childWrap.querySelectorAll('input, select').forEach(function(el) { el.disabled = !unlocked; });
+  }
+  sel.addEventListener('change', update);
+  update();
+});
+
+// Kotak pencarian di daftar pilihan spesies mangrove/lamun/karang --
+// mengetik akan menyaring baris checkbox yang namanya cocok saja.
+document.querySelectorAll('.species-search').forEach(function(inp) {
+  inp.addEventListener('input', function() {
+    var q = inp.value.trim().toLowerCase();
+    var grid = document.getElementById(inp.dataset.filterFor + '_grid');
+    if (!grid) return;
+    grid.querySelectorAll('.species-row').forEach(function(row) {
+      var txt = row.textContent.toLowerCase();
+      row.classList.toggle('species-hide', q !== '' && txt.indexOf(q) === -1);
+    });
+  });
+});
+
+// Pasangan checkbox status kegiatan yang saling eksklusif (centang salah
+// satu otomatis melepas centang pasangannya, supaya tidak kontradiktif).
+[["non_reklamasi", "reklamasi"], ["kegiatan_berusaha", "non_berusaha"]].forEach(function(pair) {
+  var a = document.querySelector('input[name="' + pair[0] + '"]');
+  var b = document.querySelector('input[name="' + pair[1] + '"]');
+  if (!a || !b) return;
+  a.addEventListener('change', function() { if (a.checked) b.checked = false; });
+  b.addEventListener('change', function() { if (b.checked) a.checked = false; });
+});
+
+// Jenis Permohonan (Persetujuan/Konfirmasi): Konfirmasi KKPRL pada dasarnya
+// untuk kegiatan Non Berusaha (bukan pelaku usaha), jadi kolom KBLI (kode
+// klasifikasi usaha) tidak relevan dan otomatis disembunyikan, dan pilihan
+// "Kegiatan Berusaha" pun ikut disembunyikan -- tersisa "Kegiatan Non
+// Berusaha" saja yang otomatis tercentang (tapi tetap checkbox biasa yang
+// bisa diubah manual, tidak dikunci/disabled). Balik ke Persetujuan akan
+// menampilkan semuanya lagi seperti semula.
+window.applyJenisPermohonan = function() {
+  var selected = document.querySelector('input[name="jenis_permohonan"]:checked');
+  var isKonfirmasi = !!selected && selected.value === 'Konfirmasi';
+  var kbliSelect = document.getElementById('prop__KBLI');
+  var kbliRow = kbliSelect ? kbliSelect.closest('.field-row') : null;
+  var berusahaCb = document.getElementById('cb2');
+  var berusahaRow = berusahaCb ? berusahaCb.closest('.checkbox-row') : null;
+  var nonBerusahaCb = document.getElementById('cb2b');
+  if (kbliRow) kbliRow.style.display = isKonfirmasi ? 'none' : '';
+  if (berusahaRow) berusahaRow.style.display = isKonfirmasi ? 'none' : '';
+  if (isKonfirmasi && nonBerusahaCb && !nonBerusahaCb.checked) {
+    nonBerusahaCb.checked = true;
+    if (berusahaCb) berusahaCb.checked = false;
+  }
+};
+document.getElementsByName('jenis_permohonan').forEach(function(r) {
+  r.addEventListener('change', window.applyJenisPermohonan);
+});
+window.applyJenisPermohonan();
+
+// Dropdown dengan opsi "Lainnya..." -> munculkan input teks tambahan
+document.querySelectorAll('select[data-allow-other="true"]').forEach(function(sel) {
+  var otherInput = document.getElementById(sel.id + '_other');
+  sel.addEventListener('change', function() {
+    if (sel.value === '__other__') { otherInput.classList.add('show'); otherInput.focus(); }
+    else { otherInput.classList.remove('show'); otherInput.value = ''; }
+  });
+});
+
+// Saat submit: kalau dropdown "Lainnya..." dipilih, kirim teks isian bebas-nya, bukan "__other__"
+document.getElementById('manualForm').addEventListener('submit', function() {
+  document.querySelectorAll('select[data-allow-other="true"]').forEach(function(sel) {
+    if (sel.value === '__other__') {
+      var otherInput = document.getElementById(sel.id + '_other');
+      var hidden = document.createElement('input');
+      hidden.type = 'hidden';
+      hidden.name = sel.name;
+      hidden.value = otherInput.value;
+      sel.removeAttribute('name');
+      sel.parentNode.appendChild(hidden);
+    }
+  });
+});
+
+// Datalist bertingkat Provinsi -> Kabupaten -> Kecamatan -> Desa/Kelurahan
+// menggunakan API publik https://kodewilayah.web.id (punya demo interaktif serupa di situsnya sendiri)
+(function() {
+  var WILAYAH_API = '/api/wilayah';
+  var provSel = document.getElementById('prop_loc__3');
+  var kabInput = document.getElementById('prop_loc__2');
+  var kecInput = document.getElementById('prop_loc__1');
+  var desaInput = document.getElementById('prop_loc__0');
+  var dlKabupaten = document.getElementById('dl_kabupaten');
+  var dlKecamatan = document.getElementById('dl_kecamatan');
+  var dlDesa = document.getElementById('dl_desa');
+  if (!provSel || !kabInput || !kecInput || !desaInput) return;
+
+  var cacheRegencies = [];
+  var cacheDistricts = [];
+
+  function titleCase(s) {
+    return s.toLowerCase().replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+  }
+
+  function fillDatalist(dl, items) {
+    dl.innerHTML = '';
+    items.forEach(function(txt) {
+      var opt = document.createElement('option');
+      opt.value = txt;
+      dl.appendChild(opt);
+    });
+  }
+
+  function clearFrom(level) {
+    if (level <= 2) { cacheRegencies = []; fillDatalist(dlKabupaten, []); }
+    if (level <= 1) { cacheDistricts = []; fillDatalist(dlKecamatan, []); }
+    if (level <= 0) { fillDatalist(dlDesa, []); }
+  }
+
+  provSel.addEventListener('change', function() {
+    clearFrom(2);
+    kabInput.value = ''; kecInput.value = ''; desaInput.value = '';
+    var opt = provSel.selectedOptions[0];
+    var bpsId = opt ? opt.dataset.bpsId : '';
+    if (!bpsId) return;
+    fetch(WILAYAH_API + '/regencies/' + bpsId)
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        if (!res.success) return;
+        cacheRegencies = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
+        fillDatalist(dlKabupaten, cacheRegencies.map(function(d) { return d.name; }));
+      })
+      .catch(function() { /* diam-diam gagal; pengguna tetap bisa isi manual */ });
+  });
+
+  kabInput.addEventListener('change', function() {
+    clearFrom(1);
+    kecInput.value = ''; desaInput.value = '';
+    var match = cacheRegencies.find(function(d) { return d.name.toLowerCase() === kabInput.value.trim().toLowerCase(); });
+    if (!match) return;
+    fetch(WILAYAH_API + '/districts/' + match.code)
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        if (!res.success) return;
+        cacheDistricts = res.data.map(function(d) { return { code: d.code, name: titleCase(d.name) }; });
+        fillDatalist(dlKecamatan, cacheDistricts.map(function(d) { return d.name; }));
+      })
+      .catch(function() {});
+  });
+
+  kecInput.addEventListener('change', function() {
+    clearFrom(0);
+    desaInput.value = '';
+    var match = cacheDistricts.find(function(d) { return d.name.toLowerCase() === kecInput.value.trim().toLowerCase(); });
+    if (!match) return;
+    fetch(WILAYAH_API + '/villages/' + match.code)
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        if (!res.success) return;
+        fillDatalist(dlDesa, res.data.map(function(d) { return titleCase(d.name); }));
+      })
+      .catch(function() {});
+  });
+})();
+
+
+// Field gambar: area Paste (khusus Ctrl+V + drag-drop, TIDAK membuka file browser saat diklik)
+// terpisah dari tombol Upload File (eksplisit membuka file browser). Kedua cara SELALU menambah
+// (accumulate), tidak pernah saling mengganti file yang sudah ada di field yang sama.
+document.querySelectorAll('.img-paste-target').forEach(function(target) {
+  var fieldName = target.dataset.field;
+  var input = document.getElementById(fieldName);
+  var previewList = document.getElementById(fieldName + '_preview');
+  var uploadBtn = document.querySelector('.img-upload-btn[data-field="' + fieldName + '"]');
+  var files = [];
+
+  function refreshInput() {
+    var dt = new DataTransfer();
+    files.forEach(function(f) { dt.items.add(f); });
+    input.files = dt.files;
+  }
+
+  function renderPreviews() {
+    previewList.innerHTML = '';
+    files.forEach(function(file, idx) {
+      var thumb = document.createElement('div');
+      thumb.className = 'img-thumb';
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'img-remove';
+      removeBtn.innerHTML = '&times;';
+      removeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        files.splice(idx, 1);
+        refreshInput();
+        renderPreviews();
+      });
+      thumb.appendChild(img);
+      thumb.appendChild(removeBtn);
+      previewList.appendChild(thumb);
+    });
+  }
+
+  function addFile(file) {
+    if (!file) return;
+    var allowed = ['image/png', 'image/jpeg'];
+    if (allowed.indexOf(file.type) === -1) {
+      alert('Format file tidak didukung. Hanya PNG dan JPG/JPEG yang diperbolehkan.');
+      return;
+    }
+    files.push(file);
+    refreshInput();
+    renderPreviews();
+  }
+
+  // Area Paste: fokus + Ctrl+V + drag-drop SEPERTI SEBELUMNYA, DITAMBAH klik
+  // langsung mencoba ambil gambar dari clipboard lewat Clipboard API -- supaya
+  // "paste" tidak cuma bisa lewat keyboard shortcut Ctrl+V (mis. di HP/tablet
+  // yang tidak ada tombol Ctrl, atau pengguna yang lebih familiar klik tombol).
+  target.addEventListener('paste', function(e) {
+    var items = (e.clipboardData || window.clipboardData).items;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image/') === 0) { addFile(items[i].getAsFile()); }
+    }
+  });
+  target.addEventListener('click', async function() {
+    if (!navigator.clipboard || !navigator.clipboard.read) { target.focus(); return; }
+    try {
+      var clipItems = await navigator.clipboard.read();
+      var found = false;
+      for (var ci = 0; ci < clipItems.length; ci++) {
+        var item = clipItems[ci];
+        for (var ti = 0; ti < item.types.length; ti++) {
+          var type = item.types[ti];
+          if (type.indexOf('image/') === 0) {
+            var blob = await item.getType(type);
+            addFile(new File([blob], 'clipboard-image.' + type.split('/')[1], { type: type }));
+            found = true;
+          }
+        }
+      }
+      if (!found) target.focus();
+    } catch (err) {
+      target.focus();
+    }
+  });
+  target.addEventListener('dragover', function(e) { e.preventDefault(); target.classList.add('dragover'); });
+  target.addEventListener('dragleave', function() { target.classList.remove('dragover'); });
+  target.addEventListener('drop', function(e) {
+    e.preventDefault(); target.classList.remove('dragover');
+    for (var i = 0; i < e.dataTransfer.files.length; i++) { addFile(e.dataTransfer.files[i]); }
+  });
+
+  // Tombol Upload File: eksplisit membuka file browser
+  uploadBtn.addEventListener('click', function() { input.click(); });
+  input.addEventListener('change', function() {
+    for (var i = 0; i < input.files.length; i++) { addFile(input.files[i]); }
+  });
+});
+
+// Hapus gambar TERSIMPAN (dari isian/draft sebelumnya) -- tandai lewat hidden
+// input supaya server tahu field ini harus DIKOSONGKAN, bukan cuma disembunyikan
+// di tampilan. Beda dari tombol hapus gambar baru di atas (yang cuma perlu
+// menghapus dari array `files` di memori karena belum tersimpan di server).
+document.querySelectorAll('.img-remove-saved').forEach(function(btn) {
+  btn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    var fieldName = btn.dataset.field;
+    var thumb = btn.closest('.img-thumb');
+    if (thumb) thumb.remove();
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'hapus_gambar_tersimpan';
+    hidden.value = fieldName;
+    document.getElementById('manualForm').appendChild(hidden);
+  });
+});
+
+// ====================== Tabel Titik Koordinat Batas Area ======================
+(function() {
+  var rows = [];   // tiap row: [longitude, latitude, keterangan]
+
+  var tbody = document.getElementById('koordTableBody');
+  var hidden = document.getElementById('koordinat_table_json');
+
+  function renderBody() {
+    tbody.innerHTML = '';
+    rows.forEach(function(row, idx) {
+      var tr = document.createElement('tr');
+      var tdNo = document.createElement('td');
+      tdNo.className = 'jt-row-num';
+      tdNo.textContent = idx + 1;
+      tr.appendChild(tdNo);
+
+      for (var c = 0; c < 3; c++) {
+        var td = document.createElement('td');
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = row[c] || '';
+        inp.placeholder = c === 0 ? '122.650194' : (c === 1 ? '-3.934945' : 'mis. Dermaga, Intake, Outlet, KJA');
+        (function(rIdx, cIdx) {
+          inp.addEventListener('input', function() { rows[rIdx][cIdx] = inp.value; });
+          inp.addEventListener('paste', function(e) {
+            var text = (e.clipboardData || window.clipboardData).getData('text');
+            if (!text || (text.indexOf('\\t') === -1 && text.indexOf('\\n') === -1)) return;
+            e.preventDefault();
+            var grid = text.trim().split('\\n').map(function(line) { return line.split('\\t').length > 1 ? line.split('\\t') : line.trim().split(/\\s+/); });
+            grid.forEach(function(gridRow, gi) {
+              var targetIdx = rIdx + gi;
+              while (rows.length <= targetIdx) rows.push(['', '', '']);
+              for (var gc = 0; gc < gridRow.length && (cIdx + gc) < 3; gc++) {
+                rows[targetIdx][cIdx + gc] = gridRow[gc].trim();
+              }
+            });
+            renderBody();
+          });
+        })(idx, c);
+        td.appendChild(inp);
+        tr.appendChild(td);
+      }
+
+      var tdDel = document.createElement('td');
+      var btnDel = document.createElement('button');
+      btnDel.type = 'button';
+      btnDel.className = 'tbl-btn tbl-btn-danger';
+      btnDel.textContent = '\u2715';
+      btnDel.addEventListener('click', function() { rows.splice(idx, 1); renderBody(); });
+      tdDel.appendChild(btnDel);
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function addRow(values) {
+    var row = values || ['', '', ''];
+    while (row.length < 3) row.push('');
+    rows.push(row);
+    renderBody();
+  }
+
+  window.koordTableSetData = function(header, dataRows) {
+    // header: ["Nomor Titik","Longitude (X)","Latitude (Y)","Keterangan", ...]; dataRows: [[no,lon,lat,ket,...],...]
+    rows = (dataRows || []).map(function(r) { return [r[1] || '', r[2] || '', r[3] || '']; });
+    renderBody();
+  };
+
+  document.getElementById('koordAddRow').addEventListener('click', function() { addRow(); });
+  document.getElementById('koordUseExample').addEventListener('click', function() {
+    rows = [
+      ['122.650194', '-3.934945', 'Dermaga'],
+      ['122.649197', '-3.935361', 'Intake'],
+      ['122.649261', '-3.935530', 'Outlet'],
+      ['122.650258', '-3.935114', 'Rumpon'],
+    ];
+    renderBody();
+  });
+
+  window.koordTableSync = function() {
+    var cleanRows = rows.filter(function(r) { return r.some(function(v) { return (v || '').toString().trim(); }); });
+    hidden.value = JSON.stringify({ columns: ['Keterangan'], rows: cleanRows });
+  };
+
+  addRow(); addRow(); addRow(); addRow();
+})();
+
+// ====================== Tabel Deskripsi Jadwal Kegiatan ======================
+(function() {
+  var BULAN = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+  var rows = [];   // {nama, tahun_mulai, bulan_mulai, minggu_mulai, tahun_selesai, bulan_selesai, minggu_selesai}
+  var tbody = document.getElementById('jadwalTableBody');
+  var hidden = document.getElementById('jadwal_table_json');
+  var thisYear = new Date().getFullYear();
+
+  function bulanOptions(selected) {
+    var html = '<option value="">-</option>';
+    BULAN.forEach(function(b, i) {
+      var v = i + 1;
+      html += '<option value="' + v + '"' + (String(v) === String(selected) ? ' selected' : '') + '>' + b + '</option>';
+    });
+    return html;
+  }
+  function mingguOptions(selected) {
+    var html = '<option value="">-</option>';
+    for (var i = 1; i <= 4; i++) {
+      html += '<option value="' + i + '"' + (String(i) === String(selected) ? ' selected' : '') + '>Minggu ' + i + '</option>';
+    }
+    return html;
+  }
+
+  function renderBody() {
+    tbody.innerHTML = '';
+    rows.forEach(function(row, idx) {
+      var tr = document.createElement('tr');
+
+      var tdNo = document.createElement('td');
+      tdNo.className = 'jt-row-num';
+      tdNo.textContent = idx + 1;
+      tr.appendChild(tdNo);
+
+      var tdNama = document.createElement('td');
+      var inpNama = document.createElement('input');
+      inpNama.type = 'text';
+      inpNama.value = row.nama || '';
+      inpNama.placeholder = 'Nama kegiatan';
+      inpNama.addEventListener('input', function() { row.nama = inpNama.value; });
+      tdNama.appendChild(inpNama);
+      tr.appendChild(tdNama);
+
+      function yearInput(key, placeholder) {
+        var td = document.createElement('td');
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.inputMode = 'numeric';
+        inp.value = row[key] || '';
+        inp.placeholder = placeholder;
+        inp.maxLength = 4;
+        inp.addEventListener('input', function() { inp.value = inp.value.replace(/\\D/g, '').slice(0, 4); row[key] = inp.value; });
+        td.appendChild(inp);
+        return td;
+      }
+      function selectCell(key, opts, extraClass) {
+        var td = document.createElement('td');
+        if (extraClass) td.className = extraClass;
+        var sel = document.createElement('select');
+        sel.innerHTML = opts(row[key]);
+        sel.addEventListener('change', function() { row[key] = sel.value; });
+        td.appendChild(sel);
+        return td;
+      }
+
+      tr.appendChild(yearInput('tahun_mulai', String(thisYear)));
+      tr.appendChild(selectCell('bulan_mulai', bulanOptions));
+      tr.appendChild(selectCell('minggu_mulai', mingguOptions, 'jt-minggu-col'));
+      tr.appendChild(yearInput('tahun_selesai', String(thisYear)));
+      tr.appendChild(selectCell('bulan_selesai', bulanOptions));
+      tr.appendChild(selectCell('minggu_selesai', mingguOptions, 'jt-minggu-col'));
+
+      var tdDel = document.createElement('td');
+      var btnDel = document.createElement('button');
+      btnDel.type = 'button';
+      btnDel.className = 'tbl-btn tbl-btn-danger';
+      btnDel.textContent = '\\u2715';
+      btnDel.addEventListener('click', function() { rows.splice(idx, 1); renderBody(); });
+      tdDel.appendChild(btnDel);
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function addRow(vals) {
+    rows.push(vals || { nama: '', tahun_mulai: '', bulan_mulai: '', minggu_mulai: '', tahun_selesai: '', bulan_selesai: '', minggu_selesai: '' });
+    renderBody();
+  }
+
+  window.jadwalTableSetData = function(dataRows) {
+    rows = (dataRows || []).map(function(r) {
+      return {
+        nama: r.nama || '', tahun_mulai: r.tahun_mulai || '', bulan_mulai: r.bulan_mulai || '',
+        minggu_mulai: r.minggu_mulai || '', tahun_selesai: r.tahun_selesai || '',
+        bulan_selesai: r.bulan_selesai || '', minggu_selesai: r.minggu_selesai || '',
+      };
+    });
+    var adaMinggu = rows.some(function(r) { return r.minggu_mulai || r.minggu_selesai; });
+    if (adaMinggu && typeof setMingguVisible === 'function') setMingguVisible(true);
+    renderBody();
+  };
+
+  document.getElementById('jadwalAddRow').addEventListener('click', function() { addRow(); });
+  var jadwalTableEl = document.getElementById('jadwalTable');
+  var toggleMingguBtn = document.getElementById('jadwalToggleMinggu');
+  function setMingguVisible(visible) {
+    jadwalTableEl.classList.toggle('jt-minggu-visible', visible);
+    toggleMingguBtn.textContent = visible ? '\u2212 Sembunyikan Detail Minggu' : '+ Detail Minggu';
+  }
+  toggleMingguBtn.addEventListener('click', function() {
+    setMingguVisible(!jadwalTableEl.classList.contains('jt-minggu-visible'));
+  });
+  document.getElementById('jadwalUseExample').addEventListener('click', function() {
+    rows = [
+      { nama: 'Pengurusan PKKPRL', tahun_mulai: String(thisYear), bulan_mulai: '1', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '3', minggu_selesai: '' },
+      { nama: 'Pemasangan Keramba Jaring Apung', tahun_mulai: String(thisYear), bulan_mulai: '3', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '5', minggu_selesai: '' },
+      { nama: 'Operasional Keramba Jaring Apung', tahun_mulai: String(thisYear), bulan_mulai: '5', minggu_mulai: '', tahun_selesai: String(thisYear), bulan_selesai: '12', minggu_selesai: '' },
+    ];
+    renderBody();
+  });
+
+  window.jadwalTableSync = function() {
+    var clean = rows.filter(function(r) { return r.nama.trim() && r.tahun_mulai && r.bulan_mulai && r.tahun_selesai && r.bulan_selesai; });
+    hidden.value = JSON.stringify(clean);
+  };
+
+  addRow();
+})();
+
+// Sinkronkan tabel Koordinat & Jadwal Kegiatan ke hidden input JSON sebelum form dikirim
+document.getElementById('manualForm').addEventListener('submit', function() {
+  if (window.koordTableSync) window.koordTableSync();
+  if (window.jadwalTableSync) window.jadwalTableSync();
+});
+</script>
+""" + (f"""
+<script>
+// Isi ulang form otomatis dari draft riwayat pengisian sebelumnya ("Lanjutkan")
+(function() {{
+  var data = {json.dumps(prefill_data)};
+
+  function setField(name, val) {{
+    if (typeof val !== 'string') return;
+    var els = document.getElementsByName(name);
+    if (!els.length) {{
+      var byId = document.getElementById(name);
+      if (byId) els = [byId];
+    }}
+    Array.prototype.forEach.call(els, function(el) {{
+      if (el.type === 'checkbox') {{ el.checked = (val === true || val === 'true'); }}
+      else if (el.type === 'radio') {{ el.checked = (el.value === val); if (el.checked) el.dispatchEvent(new Event('change')); }}
+      else if (el.tagName === 'SELECT') {{
+        el.value = val;
+        if (el.value !== val) {{
+          // Nilai tersimpan tidak cocok opsi manapun di dropdown -- ini
+          // hasil isian "Lainnya..." sebelumnya (custom text). Kalau
+          // dropdown ini mendukungnya, pindah ke opsi "Lainnya..." dan isi
+          // teks bebasnya, supaya tidak diam-diam kosong/hilang.
+          if (el.dataset.allowOther === 'true') {{
+            el.value = '__other__';
+            var otherInput = document.getElementById(el.id + '_other');
+            if (otherInput) {{
+              otherInput.value = val;
+              otherInput.classList.add('show');
+            }}
+          }}
+        }}
+        el.dispatchEvent(new Event('change'));
+        el.dispatchEvent(new Event('input'));
+        // Field tanggal: input asli yang terlihat adalah <input type="date"
+        // id="{{name}}_picker">, sedangkan {{name}} sendiri cuma hidden input
+        // penyimpan nilai -- keduanya perlu disamakan supaya terlihat terisi.
+        var picker = document.getElementById(el.id + '_picker');
+        if (picker) picker.value = val;
+      }}
+      else if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+        el.value = val;
+        el.dispatchEvent(new Event('change'));
+        el.dispatchEvent(new Event('input'));
+        var picker2 = document.getElementById(el.id + '_picker');
+        if (picker2) picker2.value = val;
+      }}
+    }});
+  }}
+
+  // "_lokasi_parts" (Desa/Kecamatan/Kabupaten/Provinsi) diproses LEBIH DULU,
+  // sebelum aturan umum "key.startsWith('_') -> lewati" di bawah -- kalau
+  // tidak, field ini akan ikut terlewati juga karena namanya diawali "_".
+  //
+  // PENTING soal urutan: skrip datalist bertingkat (Provinsi -> Kabupaten ->
+  // Kecamatan -> Desa) otomatis MENGOSONGKAN semua level di BAWAHNYA setiap
+  // kali sebuah level berubah (supaya user tidak salah pilih kombinasi usang).
+  // Kalau kita isi dari Desa ke Provinsi (searah array), mengisi Provinsi
+  // PALING AKHIR akan langsung menghapus Kabupaten/Kecamatan/Desa yang baru
+  // saja diisi. Maka isi SEARAH CASCADE: Provinsi -> Kabupaten -> Kecamatan
+  // -> Desa, supaya tiap pengisian terjadi SETELAH pengosongan level di
+  // bawahnya oleh level sebelumnya, bukan sebelum.
+  if (Array.isArray(data._lokasi_parts)) {{
+    var lp = data._lokasi_parts; // [desa, kecamatan, kabupaten, provinsi]
+    setField('prop_loc__3', lp[3]);
+    setField('prop_loc__2', lp[2]);
+    setField('prop_loc__1', lp[1]);
+    setField('prop_loc__0', lp[0]);
+  }}
+
+  // "instalasi_posisi" disimpan sebagai satu string gabungan (mis. "Permukaan
+  // Laut dan Dasar Laut"), tapi elemennya sekarang berupa beberapa checkbox
+  // terpisah (name="instalasi_posisi[]") -- pecah lagi jadi per-checkbox.
+  if (typeof data.instalasi_posisi === 'string' && data.instalasi_posisi) {{
+    var posisiTerpilih = data.instalasi_posisi.split(/,\\s*| dan /);
+    document.querySelectorAll('input[name="instalasi_posisi[]"]').forEach(function(cb) {{
+      cb.checked = posisiTerpilih.indexOf(cb.value) !== -1;
+    }});
+  }}
+
+  // Field spesies mangrove/lamun/karang disimpan sebagai satu string gabungan
+  // (mis. "Rhizophora mucronata, Avicennia alba dan Nypa fruticans"), tapi
+  // elemennya sekarang berupa checkbox per-spesies (name="{{field}}[]") plus
+  // satu input teks "Lainnya" -- pecah lagi: yang cocok dengan daftar acuan
+  // dicentang, sisanya (tidak dikenali) masuk ke kolom "Lainnya".
+  function restoreSpeciesField(fieldName, value) {{
+    if (typeof value !== 'string' || !value) return;
+    var items = value.split(/,\\s*| dan /).map(function(s) {{ return s.trim(); }}).filter(Boolean);
+    var boxes = document.querySelectorAll('input[name="' + fieldName + '[]"]');
+    var sisa = [];
+    items.forEach(function(item) {{
+      var cocok = false;
+      boxes.forEach(function(cb) {{
+        if (cb.value.toLowerCase() === item.toLowerCase()) {{ cb.checked = true; cocok = true; }}
+      }});
+      if (!cocok) sisa.push(item);
+    }});
+    if (sisa.length) {{
+      var lainnyaInput = document.getElementById(fieldName + '_lainnya');
+      if (lainnyaInput) lainnyaInput.value = sisa.join(', ');
+    }}
+  }}
+  restoreSpeciesField('prop__mangrove_spesies', data.mangrove_spesies);
+  restoreSpeciesField('lamun_spesies', data.lamun_spesies);
+  restoreSpeciesField('karang_spesies', data.karang_spesies);
+
+  Object.keys(data).forEach(function(key) {{
+    if (key.startsWith('_')) return;
+    var val = data[key];
+    if (key === 'koordinat' && Array.isArray(val)) {{
+      if (window.koordTableSetData) {{
+        window.koordTableSetData(data.koordinat_header || ['Nomor Titik', 'Longitude (X)', 'Latitude (Y)'], val);
+      }}
+      return;
+    }}
+    if (key === 'koordinat_header') {{ return; }}
+    if (key === 'jadwal_table' && Array.isArray(val) && val.length) {{
+      if (window.jadwalTableSetData) {{ window.jadwalTableSetData(val); }}
+      return;
+    }}
+    if (typeof val === 'boolean') {{
+      var cb = document.getElementsByName(key)[0];
+      if (cb && cb.type === 'checkbox') cb.checked = val;
+      return;
+    }}
+    if (typeof val !== 'string') return;
+    // Field dari FIELD_GROUPS (mis. "Nama Pemohon") pakai nama HTML "prop__Nama_Pemohon"
+    // (spasi/garis-miring diganti underscore) -- coba key asli dulu, baru varian ini.
+    setField(key, val);
+    var transformed = 'prop__' + key.replace(/[ /]/g, '_');
+    if (transformed !== key) setField(transformed, val);
+  }});
+  document.querySelectorAll('details.acc-item').forEach(function(d) {{ d.open = true; }});
+}})();
+</script>
+""" if prefill_data else "") + """
+<script>
+(function() {
+  var form = document.getElementById('manualForm');
+  if (!form) return;
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.step-tab'));
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.step-panel'));
+  var current = 0;
+  function goStep(n, noScroll) {
+    n = Math.max(0, Math.min(panels.length - 1, parseInt(n, 10) || 0));
+    current = n;
+    panels.forEach(function(p, i) { p.classList.toggle('active', i === n); });
+    tabs.forEach(function(t, i) { t.classList.toggle('active', i === n); });
+    if (!noScroll) {
+      var nav = document.getElementById('stepNav');
+      if (nav) nav.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+    var at = tabs[n]; if (at && at.scrollIntoView) at.scrollIntoView({block: 'nearest', inline: 'center'});
+  }
+  document.querySelectorAll('[data-step-go]').forEach(function(b) {
+    b.addEventListener('click', function() { goStep(b.getAttribute('data-step-go')); });
+  });
+  function panelHasData(p) {
+    var els = p.querySelectorAll('input, textarea, select');
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (e.type === 'radio' || e.type === 'hidden' || e.disabled) continue;
+      if (e.type === 'checkbox') { if (e.checked) return true; continue; }
+      if (e.type === 'file') { if (e.files && e.files.length) return true; continue; }
+      if (e.tagName === 'SELECT') { if (e.value) return true; continue; }
+      if ((e.value || '').trim()) return true;
+    }
+    return false;
+  }
+  function refreshDots() {
+    panels.forEach(function(p, i) { if (tabs[i]) tabs[i].classList.toggle('has-data', panelHasData(p)); });
+  }
+  form.addEventListener('input', refreshDots);
+  form.addEventListener('change', refreshDots);
+  setTimeout(refreshDots, 400); setTimeout(refreshDots, 1500);
+  // Setelah Simpan (halaman dimuat ulang), kembali ke langkah yang sedang dibuka
+  form.addEventListener('submit', function() {
+    try { sessionStorage.setItem('mfStepRestore', String(current)); } catch (e) {}
+  });
+  try {
+    var saved = sessionStorage.getItem('mfStepRestore');
+    if (saved !== null) { sessionStorage.removeItem('mfStepRestore'); goStep(saved, true); }
+  } catch (e) {}
+})();
+</script>
+</body></html>"""
+
+
+def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
+    # Amankan dari karakter yang mirip sintaks Jinja ({{ }}, {% %}) kalau kebetulan
+    # muncul di konten dokumen asli pengguna -- supaya tidak salah dievaluasi
+    # sebagai template saat halaman ini dibungkus render_template_string().
+    preview_html = (
+        preview_html.replace("{{", "&#123;&#123;")
+        .replace("}}", "&#125;&#125;")
+        .replace("{%", "&#123;%")
+        .replace("%}", "%&#125;")
+    )
+    groups_html = []
+    for i, (group_title, fields) in enumerate(FIELD_GROUPS):
+        rows = []
+        for source, key, label in fields:
+            value = get_value(source, key, prop_data, lap_data)
+            fname = form_field_name(source, key)
+            value_escaped = (value or "").replace('"', "&quot;")
+            rows.append(
+                f'<div class="field-row"><label>{label}</label>'
+                f'<input type="text" name="{fname}" value="{value_escaped}"></div>'
+            )
+        groups_html.append(
+            f'<details class="acc-item"{" open" if i == 0 else ""}>'
+            f"<summary>{group_title}</summary>"
+            f'<div class="acc-body">{"".join(rows)}</div></details>'
+        )
+
+    error_html = f'<div class="error-banner" style="margin-bottom:16px;">\u26A0 {error}</div>' if error else ""
+    koordinat_pesan = prop_data.get("_koordinat_file_pesan", "")
+    if koordinat_pesan:
+        icon = "\u2705" if "Berhasil" in koordinat_pesan else "\u2139\ufe0f"
+        error_html += f'<div class="error-banner" style="margin-bottom:16px;background:#eaf6ec;border-color:#b7e4c7;">{icon} {koordinat_pesan}</div>'
+
+    return """<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tinjau &amp; Koreksi Data &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>\U0001F4DD Tinjau &amp; Koreksi Data</h1>
+  <p>Periksa hasil ekstraksi di bawah, lalu bandingkan dengan pratinjau dokumen di sebelah kanan.
+  Koreksi kolom yang salah, lalu klik "Generate Dokumen Final &amp; Unduh".</p>
+</section>
+
+<div class="review-wrap">
+  """ + error_html + """
+  <form method="POST" action="/finalize">
+    <input type="hidden" name="job_id" value=\"""" + job_id + """\">
+    <div class="review-grid">
+      <div>
+        <div class="sticky-bar">
+          <button type="submit">""" + ICONS["check-circle"] + """ Generate Dokumen Final &amp; Unduh</button>
+        </div>
+        <div class="review-card">
+          <h3>""" + ICONS["doc"] + """ Data Hasil Ekstraksi (bisa dikoreksi)</h3>
+          """ + "".join(groups_html) + """
+        </div>
+      </div>
+
+      <div class="preview-panel">
+        <div class="review-card">
+          <h3>""" + ICONS["doc"] + """ Pratinjau Dokumen Lengkap</h3>
+          <div class="preview-box">""" + preview_html + """</div>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <a href="/" class="back-link">&larr; Unggah ulang dokumen lain</a>
+</div>
+</body></html>"""
+
+
+PUBLIC_PATHS = {"/login-pegawai", "/login", "/auth/callback", "/logout", "/health", "/asisten", "/api/asisten-chat"}
+PUBLIC_PREFIXES = ("/static/", "/api/v1/")
+
+
+@app.before_request
+def require_login_pegawai():
+    """Seluruh aplikasi WAJIB login dulu (Kode Nama + Kode Petugas) sebelum
+    bisa dipakai -- kecuali halaman login itu sendiri, logout, file statis,
+    dan health check (dipakai Railway untuk cek server hidup/tidak)."""
+    if request.path in PUBLIC_PATHS or request.path.startswith(PUBLIC_PREFIXES):
+        return None
+    if not session.get("user"):
+        return render_login_pegawai_page()
+    return None
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template_string(UPLOAD_HTML, error=None)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return {"status": "ok"}
+
+
+@app.route("/asisten", methods=["GET"])
+def asisten_page():
+    return render_template_string(render_asisten_page())
+
+
+@app.route("/api/asisten-chat", methods=["POST"])
+def api_asisten_chat():
+    payload = request.get_json(silent=True) or {}
+    messages = payload.get("messages") or []
+
+    # Validasi ringan: hanya loloskan role/content yang diharapkan API,
+    # supaya input dari browser tidak bisa menyuntikkan field lain.
+    clean_messages = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean_messages.append({"role": role, "content": content[:4000]})
+
+    reply = asisten_kkprl.chat_reply(clean_messages)
+    return jsonify({"reply": reply})
+
+
+@app.route("/api/wilayah/<level>/<code>")
+def api_wilayah_proxy(level, code):
+    """Proxy server-side ke api.kodewilayah.web.id supaya request datalist
+    Kabupaten/Kecamatan/Desa tidak terhalang CORS di browser (fetch dilakukan
+    dari server, browser cuma bicara dengan server sendiri)."""
+    import urllib.request
+    import json as _json
+
+    if level not in ("regencies", "districts", "villages"):
+        return {"success": False, "message": "level tidak valid", "data": []}, 400
+
+    url = f"https://api.kodewilayah.web.id/{level}/{code}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+        return payload
+    except Exception as e:
+        traceback.print_exc()
+        return {"success": False, "message": str(e), "data": []}, 502
+
+
+@app.route("/login-pegawai", methods=["GET"])
+def login_pegawai_form():
+    return render_login_pegawai_page()
+
+
+@app.route("/login-pegawai", methods=["POST"])
+def login_pegawai_submit():
+    kode_nama = _clean_cell(request.form.get("kode_nama"))
+    kode_petugas = _clean_cell(request.form.get("kode_petugas"))
+    staff = fetch_staff_list()
+    entry = staff.get(kode_nama)
+    if entry and entry["password"] == kode_petugas:
+        session["user"] = {
+            "name": entry["nama"], "email": "", "picture": "", "kode": kode_nama,
+            "is_admin": entry.get("is_admin", False) or kode_nama in ADMIN_KODE_HARDCODED,
+            "is_analis": entry.get("is_analis", False) or kode_nama in ANALIS_KODE_HARDCODED,
+        }
+        session.permanent = True
+        return redirect(url_for("index"))
+    return render_login_pegawai_page(
+        error="Kode Nama atau Kode Petugas salah. Mohon periksa kembali."
+    )
+
+
+@app.route("/login")
+def login():
+    try:
+        redirect_uri = url_for("auth_callback", _external=True)
+        return google_oauth.authorize_redirect(redirect_uri)
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(UPLOAD_HTML, error=(
+            "Login Google belum bisa diproses. Kemungkinan GOOGLE_CLIENT_ID / "
+            "GOOGLE_CLIENT_SECRET belum diisi di environment variable server."
+        ))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    try:
+        token = google_oauth.authorize_access_token()
+        user_info = token.get("userinfo") or {}
+        session["user"] = {
+            "name": user_info.get("name", "Pengguna"),
+            "email": user_info.get("email", ""),
+            "picture": user_info.get("picture", ""),
+        }
+    except Exception:
+        traceback.print_exc()
+    return redirect(url_for("index"))
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("index"))
+
+
+@app.route("/history")
+def history_page():
+    return render_template_string(render_history_page())
+
+
+@app.route("/riwayat-saya")
+def riwayat_saya_page():
+    return render_template_string(render_riwayat_saya_page())
+
+
+@app.route("/riwayat-saya/lanjutkan/<job_id>")
+def riwayat_saya_lanjutkan(job_id):
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    draft = load_draft(user["kode"], job_id)
+    if not draft:
+        return render_template_string(render_riwayat_saya_page())
+    return render_template_string(render_manual_form_page(
+        prefill_data=draft.get("prop_data", {}),
+        job_id=job_id,
+        saved_images_meta=draft.get("prop_images_meta", []),
+        saved_laporan_meta=draft.get("laporan_meta"),
+    ))
+
+
+def _require_admin():
+    """Helper guard untuk rute admin -- return response penolakan kalau
+    bukan admin, atau None kalau boleh lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    if not user.get("is_admin"):
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["chart-bar"] + """ Akses Ditolak</h3>
+<p>Halaman ini hanya bisa diakses oleh akun admin.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
+def _require_analis():
+    """Helper guard untuk rute Analisis Proposal -- hanya petugas yang
+    ditunjuk untuk Analisis (kolom 'Analis' di Google Sheet bernilai Ya/
+    TRUE/1, kode nama di ANALIS_KODE_HARDCODED, atau akun admin) yang boleh
+    mengakses. Return response penolakan kalau tidak berhak, atau None
+    kalau boleh lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    if not (user.get("is_analis") or user.get("is_admin")):
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["lock"] + """ Akses Ditolak</h3>
+<p>Halaman Analisis &amp; Koreksi Proposal hanya bisa diakses oleh petugas yang ditunjuk untuk melakukan Analisis. Hubungi admin jika Anda seharusnya memiliki akses ini.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
+def _require_riwayat_semua_analisis():
+    """Helper guard untuk halaman Riwayat Analisis Semua Petugas -- HANYA
+    petugas dengan "Kode Petugas" (kolom password di Google Sheet, mis.
+    101/114) yang terdaftar di RIWAYAT_ANALISIS_SEMUA_KODE yang boleh
+    mengakses (lihat catatan di konstanta itu).
+
+    PENTING: ini SENGAJA dicocokkan ke "Kode Petugas" (password), BUKAN
+    "Kode Nama" (username login yang disimpan di session.user.kode) --
+    angka semacam 101/114 (tiga digit) adalah pola "Kode Petugas" di
+    Google Sheet, beda dari "Kode Nama" yang dua digit (01, 02, ...).
+    Karena password TIDAK disimpan di session setelah login, kode petugas
+    pengguna yang sedang login dicari ulang lewat fetch_staff_list()
+    berdasarkan Kode Nama-nya (session.user.kode) setiap kali guard ini
+    dipanggil.
+
+    Return response penolakan kalau tidak berhak, atau None kalau boleh
+    lanjut."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+    entry = fetch_staff_list().get(user.get("kode")) or {}
+    kode_petugas_user = entry.get("password", "")
+    if kode_petugas_user not in RIWAYAT_ANALISIS_SEMUA_KODE:
+        return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><title>Akses Ditolak</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """</style></head><body>""" + HEADER_HTML + """
+<div class="review-wrap"><div class="review-card history-login-gate">
+<h3 style="justify-content:center;">""" + ICONS["lock"] + """ Akses Ditolak</h3>
+<p>Halaman Riwayat Analisis Semua Petugas hanya bisa diakses oleh petugas tertentu yang ditunjuk.</p>
+</div></div></body></html>"""), 403
+    return None
+
+
+@app.route("/admin/refresh-staff", methods=["POST"])
+def admin_refresh_staff():
+    """Paksa ambil ulang daftar petugas dari Google Sheet saat itu juga --
+    supaya perubahan (mis. menandai kolom Admin/Analisis = "Ya" untuk
+    petugas tertentu) langsung berlaku tanpa perlu menunggu cache
+    kedaluwarsa (lihat STAFF_CACHE_TTL) atau redeploy. Khusus admin."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    fetch_staff_list(force=True)
+    tujuan = request.form.get("next") or url_for("admin_riwayat_list")
+    return redirect(tujuan)
+
+
+@app.route("/admin/riwayat")
+def admin_riwayat_list():
+    denied = _require_admin()
+    if denied:
+        return denied
+    return render_template_string(render_admin_riwayat_list_page())
+
+
+@app.route("/admin/riwayat/<kode>")
+def admin_riwayat_staff(kode):
+    denied = _require_admin()
+    if denied:
+        return denied
+    return render_template_string(render_admin_riwayat_staff_page(kode))
+
+
+@app.route("/admin/riwayat/<kode>/lanjutkan/<job_id>")
+def admin_riwayat_lanjutkan(kode, job_id):
+    denied = _require_admin()
+    if denied:
+        return denied
+    draft = load_draft(kode, job_id)
+    if not draft:
+        return render_template_string(render_admin_riwayat_staff_page(kode))
+    staff_list = fetch_staff_list()
+    owner_nama = (staff_list.get(kode) or {}).get("nama") or kode
+    return render_template_string(render_manual_form_page(
+        prefill_data=draft.get("prop_data", {}),
+        job_id=job_id,
+        saved_images_meta=draft.get("prop_images_meta", []),
+        saved_laporan_meta=draft.get("laporan_meta"),
+        draft_owner_kode=kode,
+        draft_owner_nama=owner_nama,
+    ))
+
+
+@app.route("/analisis-proposal", methods=["GET"])
+def analisis_proposal_form():
+    denied = _require_analis()
+    if denied:
+        return denied
+    return render_template_string(render_analisis_proposal_page())
+
+
+ALLOWED_ANALISIS_EXT = (".pdf", ".docx", ".xlsx", ".xlsm")
+MAX_ANALISIS_FILES = 10  # batas jumlah berkas per slot, supaya wajar & tidak membebani API
+
+
+@app.route("/analisis-proposal", methods=["POST"])
+def analisis_proposal_submit():
+    denied = _require_analis()
+    if denied:
+        return denied
+    proposal_files = [f for f in request.files.getlist("proposal") if f and f.filename]
+    laporan_files = [f for f in request.files.getlist("laporan") if f and f.filename]
+
+    if not proposal_files:
+        return render_template_string(render_analisis_proposal_page(
+            error="Mohon unggah dokumen Proposal Teknis PKKPRL yang ingin diperiksa (bisa lebih dari satu berkas)."
+        ))
+    if len(proposal_files) > MAX_ANALISIS_FILES or len(laporan_files) > MAX_ANALISIS_FILES:
+        return render_template_string(render_analisis_proposal_page(
+            error=f"Maksimum {MAX_ANALISIS_FILES} berkas per kolom unggahan."
+        ))
+
+    tmp_dir = os.path.join(UPLOAD_DIR, f"analisis_{uuid.uuid4().hex[:12]}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        # validasi format semua berkas dulu sebelum menyimpan apa pun
+        for f in proposal_files + laporan_files:
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in ALLOWED_ANALISIS_EXT:
+                return render_template_string(render_analisis_proposal_page(
+                    error=f"Format berkas '{f.filename}' tidak didukung. Mohon unggah file PDF, .docx, atau .xlsx."
+                ))
+
+        proposal_paths = []
+        for i, f in enumerate(proposal_files):
+            ext = os.path.splitext(f.filename)[1].lower()
+            safe_name = f"proposal_{i}_{secure_filename(f.filename) or ('berkas' + ext)}"
+            path = os.path.join(tmp_dir, safe_name)
+            f.save(path)
+            proposal_paths.append(path)
+
+        laporan_paths = []
+        for i, f in enumerate(laporan_files):
+            ext = os.path.splitext(f.filename)[1].lower()
+            safe_name = f"laporan_{i}_{secure_filename(f.filename) or ('berkas' + ext)}"
+            path = os.path.join(tmp_dir, safe_name)
+            f.save(path)
+            laporan_paths.append(path)
+
+        teks_proposal = extract_full_text_multi(proposal_paths)
+        teks_laporan = extract_full_text_multi(laporan_paths) if laporan_paths else ""
+
+        if not teks_proposal.strip():
+            return render_template_string(render_analisis_proposal_page(
+                error="Tidak ada teks yang berhasil dibaca dari dokumen Proposal. Pastikan filenya valid dan bukan hasil scan gambar."
+            ))
+
+        hasil = analisis_konsistensi_proposal(teks_proposal, teks_laporan)
+        if isinstance(hasil, dict) and hasil.get("error"):
+            return render_template_string(render_analisis_proposal_page(error=hasil["error"]))
+
+        nama_proposal = ", ".join(f.filename for f in proposal_files)
+        nama_laporan = ", ".join(f.filename for f in laporan_files) if laporan_files else ""
+
+        return render_template_string(render_analisis_hasil_page(
+            hasil, nama_proposal, nama_laporan
+        ))
+    except Exception as e:
+        traceback.print_exc()
+        return render_template_string(render_analisis_proposal_page(
+            error=f"Terjadi kesalahan saat memproses dokumen. (Detail teknis: {_err_detail(e)})"
+        ))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _analisis_docx_download_name(nama_proposal):
+    base = (nama_proposal or "Proposal").split(",")[0].strip()
+    base = os.path.splitext(base)[0]
+    base = re.sub(r"[^A-Za-z0-9_\-]+", "_", base).strip("_") or "Proposal"
+    return f"Hasil_Analisis_{base}.docx"
+
+
+@app.route("/analisis-proposal/unduh", methods=["POST"])
+def analisis_proposal_unduh():
+    """Unduh hasil analisis (yang baru saja ditampilkan di halaman preview)
+    langsung sebagai dokumen Word, tanpa perlu disimpan dulu di server."""
+    denied = _require_analis()
+    if denied:
+        return denied
+    hasil_markdown = request.form.get("hasil_markdown", "")
+    nama_proposal = request.form.get("nama_proposal", "")
+    nama_laporan = request.form.get("nama_laporan", "")
+    if not hasil_markdown.strip():
+        return render_template_string(render_analisis_proposal_page(
+            error="Tidak ada hasil analisis untuk diunduh. Silakan lakukan analisis dokumen terlebih dahulu."
+        ))
+
+    subjudul = f"Proposal: {nama_proposal}" + (f" &middot; Laporan pembanding: {nama_laporan}" if nama_laporan else "")
+    try:
+        docx_bytes = markdown_report_to_docx_bytes(hasil_markdown, subjudul=subjudul)
+    except Exception as e:
+        traceback.print_exc()
+        return render_template_string(render_analisis_proposal_page(
+            error=f"Gagal membuat dokumen Word dari hasil analisis. (Detail teknis: {_err_detail(e)})"
+        ))
+
+    return send_file(
+        io.BytesIO(docx_bytes),
+        as_attachment=True,
+        download_name=_analisis_docx_download_name(nama_proposal),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/analisis-proposal/simpan", methods=["POST"])
+def analisis_proposal_simpan():
+    """Simpan hasil analisis yang baru saja ditampilkan ke Riwayat Tersimpan
+    milik petugas yang sedang login, supaya bisa dibuka/diunduh lagi nanti."""
+    denied = _require_analis()
+    if denied:
+        return denied
+    hasil_markdown = request.form.get("hasil_markdown", "")
+    nama_proposal = request.form.get("nama_proposal", "")
+    nama_laporan = request.form.get("nama_laporan", "")
+    if not hasil_markdown.strip():
+        return render_template_string(render_analisis_proposal_page(
+            error="Tidak ada hasil analisis untuk disimpan. Silakan lakukan analisis dokumen terlebih dahulu."
+        ))
+
+    user = session.get("user") or {}
+    entry_id = analisis_store.simpan_hasil_analisis(
+        ANALISIS_STORE_DIR, hasil_markdown, nama_proposal, nama_laporan,
+        disimpan_oleh=user.get("kode", ""),
+    )
+    return render_template_string(render_analisis_hasil_page(
+        hasil_markdown, nama_proposal, nama_laporan,
+        entry_id=entry_id, saved_notice="Hasil analisis berhasil disimpan ke Riwayat Tersimpan.",
+    ))
+
+
+@app.route("/analisis-riwayat", methods=["GET"])
+def analisis_riwayat_list():
+    denied = _require_analis()
+    if denied:
+        return denied
+    user = session.get("user") or {}
+    items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR, disimpan_oleh=user.get("kode", ""))
+    kode_petugas_user = (fetch_staff_list().get(user.get("kode")) or {}).get("password", "")
+    boleh_lihat_semua = kode_petugas_user in RIWAYAT_ANALISIS_SEMUA_KODE
+    if items:
+        rows = "".join(
+            f"<tr><td>{it['waktu']}</td><td>{it['nama_proposal']}</td>"
+            f"<td>{it['nama_laporan'] or '<i>(tanpa laporan pembanding)</i>'}</td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}\" class=\"riwayat-link\">Lihat</a></td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}/unduh\" class=\"riwayat-link\">Unduh</a></td></tr>"
+            for it in items
+        )
+        table_html = ("""<table class="history-table"><thead><tr>
+          <th>Waktu Disimpan</th><th>Proposal</th><th>Laporan Pembanding</th><th></th><th></th>
+        </tr></thead><tbody>""" + rows + """</tbody></table>""")
+    else:
+        table_html = '<p style="color:var(--muted);font-size:13.5px;">Belum ada hasil analisis yang disimpan.</p>'
+
+    semua_petugas_link = (
+        '<p style="margin-top:6px;"><a href="/analisis-riwayat-semua-petugas" style="color:var(--blue);font-weight:700;font-size:13px;">'
+        + ICONS["chart-bar"] + " Lihat Riwayat Analisis Semua Petugas &rarr;</a></p>"
+    ) if boleh_lihat_semua else ""
+
+    body = ("""<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + """ Riwayat Analisis Tersimpan</h3>
+    """ + table_html + """
+    <p style="margin-top:10px;"><a href="/analisis-proposal" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Analisis Proposal</a></p>
+    """ + semua_petugas_link + """
+  </div>
+</div>""")
+
+    return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Analisis Tersimpan &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.riwayat-link { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  padding:6px 12px; border-radius:8px; text-decoration:none; display:inline-block; }
+.riwayat-link:hover { background:#dcebfa; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Analisis Tersimpan</h1>
+  <p>Daftar hasil Analisis &amp; Koreksi Proposal yang pernah Anda simpan.</p>
+</section>
+""" + body + """
+</body></html>""")
+
+
+@app.route("/analisis-riwayat-semua-petugas", methods=["GET"])
+def analisis_riwayat_semua_petugas():
+    """Riwayat Analisis & Koreksi Proposal dari SEMUA petugas (bukan cuma
+    punya sendiri) -- akses dibatasi ketat lewat _require_riwayat_semua_analisis()
+    ke kode nama yang terdaftar di RIWAYAT_ANALISIS_SEMUA_KODE saja."""
+    denied = _require_riwayat_semua_analisis()
+    if denied:
+        return denied
+    items = analisis_store.list_hasil_analisis(ANALISIS_STORE_DIR)
+    staff_list = fetch_staff_list()
+    if items:
+        rows = "".join(
+            f"<tr><td>{it['waktu']}</td>"
+            f"<td>{(staff_list.get(it.get('disimpan_oleh', '')) or {}).get('nama') or it.get('disimpan_oleh') or '<i>tidak diketahui</i>'}</td>"
+            f"<td>{it['nama_proposal']}</td>"
+            f"<td>{it['nama_laporan'] or '<i>(tanpa laporan pembanding)</i>'}</td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}\" class=\"riwayat-link\">Lihat</a></td>"
+            f"<td><a href=\"/analisis-riwayat/{it['id']}/unduh\" class=\"riwayat-link\">Unduh</a></td></tr>"
+            for it in items
+        )
+        table_html = ("""<table class="history-table"><thead><tr>
+          <th>Waktu Disimpan</th><th>Disimpan Oleh</th><th>Proposal</th><th>Laporan Pembanding</th><th></th><th></th>
+        </tr></thead><tbody>""" + rows + """</tbody></table>""")
+    else:
+        table_html = '<p style="color:var(--muted);font-size:13.5px;">Belum ada hasil analisis yang disimpan oleh petugas manapun.</p>'
+
+    body = ("""<div class="review-wrap">
+  <div class="review-card">
+    <h3>""" + ICONS["chart-bar"] + """ Riwayat Analisis Semua Petugas <span style="font-weight:400;color:var(--muted);font-size:12px;">(""" + str(len(items)) + """ hasil)</span></h3>
+    """ + table_html + """
+    <p style="margin-top:10px;"><a href="/analisis-riwayat" style="color:var(--muted);font-size:13px;">&larr; Kembali ke Riwayat Saya</a></p>
+  </div>
+</div>""")
+
+    return render_template_string("""<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Analisis Semua Petugas &mdash; e-GerAI KKPRL</title>
+<style>""" + LANDING_CSS + REVIEW_CSS + """
+.riwayat-link { font-size:12.5px; font-weight:700; color:var(--blue); background:#eaf1fc;
+  padding:6px 12px; border-radius:8px; text-decoration:none; display:inline-block; }
+.riwayat-link:hover { background:#dcebfa; }
+</style></head>
+<body>
+""" + HEADER_HTML + """
+
+<section class="review-hero">
+  <h1>""" + ICONS["chart-bar"] + """ Riwayat Analisis Semua Petugas</h1>
+  <p>Daftar hasil Analisis &amp; Koreksi Proposal yang disimpan oleh seluruh petugas analisis.</p>
+</section>
+""" + body + """
+</body></html>""")
+
+
+@app.route("/analisis-riwayat/<entry_id>", methods=["GET"])
+def analisis_riwayat_lihat(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
+    loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return render_template_string(render_analisis_proposal_page(
+            error="Hasil analisis tersimpan ini tidak ditemukan (mungkin sudah dihapus)."
+        )), 404
+    meta, hasil_markdown = loaded
+    return render_template_string(render_analisis_hasil_page(
+        hasil_markdown, meta.get("nama_proposal", ""), meta.get("nama_laporan", ""),
+        entry_id=entry_id,
+    ))
+
+
+@app.route("/analisis-riwayat/<entry_id>/unduh", methods=["GET"])
+def analisis_riwayat_unduh(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
+    loaded = analisis_store.load_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    if not loaded:
+        return render_template_string(render_analisis_proposal_page(
+            error="Hasil analisis tersimpan ini tidak ditemukan (mungkin sudah dihapus)."
+        )), 404
+    meta, hasil_markdown = loaded
+    subjudul = f"Proposal: {meta.get('nama_proposal','')}" + (
+        f" &middot; Laporan pembanding: {meta.get('nama_laporan')}" if meta.get("nama_laporan") else "")
+    docx_bytes = markdown_report_to_docx_bytes(hasil_markdown, subjudul=subjudul)
+    return send_file(
+        io.BytesIO(docx_bytes),
+        as_attachment=True,
+        download_name=_analisis_docx_download_name(meta.get("nama_proposal", "")),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/analisis-riwayat/<entry_id>/hapus", methods=["POST"])
+def analisis_riwayat_hapus(entry_id):
+    denied = _require_analis()
+    if denied:
+        return denied
+    analisis_store.delete_hasil_analisis(ANALISIS_STORE_DIR, entry_id)
+    return redirect(url_for("analisis_riwayat_list"))
+
+
+@app.route("/review", methods=["POST"])
+def review():
+    proposal_file = request.files.get("proposal")
+    laporan_file = request.files.get("laporan")
+
+    if not proposal_file or not laporan_file or proposal_file.filename == "" or laporan_file.filename == "":
+        return render_template_string(UPLOAD_HTML, error="Mohon unggah kedua file (proposal & laporan)."), 400
+    if not proposal_file.filename.lower().endswith((".pdf", ".docx")):
+        return render_template_string(UPLOAD_HTML, error="File Draft Proposal harus berformat PDF atau Word (.docx)."), 400
+    proposal_ext = ".docx" if proposal_file.filename.lower().endswith(".docx") else ".pdf"
+    laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+    if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
+        return render_template_string(UPLOAD_HTML, error="File Laporan harus berformat PDF atau Word (.docx)."), 400
+
+    job_store.cleanup_old_jobs(JOBS_DIR)
+
+    job_id = uuid.uuid4().hex[:12]
+    tmp_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(tmp_dir, exist_ok=True)
+    proposal_path = os.path.join(tmp_dir, "proposal" + proposal_ext)
+    laporan_path = os.path.join(tmp_dir, "laporan" + laporan_ext)
+    proposal_file.save(proposal_path)
+    laporan_file.save(laporan_path)
+
+    try:
+        prop_data, prop_images = extract_proposal_with_fallback(proposal_path, log=lambda *_: None)
+        lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+
+        job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
+
+        preview_docx_path = os.path.join(tmp_dir, "preview.docx")
+        build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
+        with open(preview_docx_path, "rb") as f:
+            preview_html = mammoth.convert_to_html(f).value
+    except Exception:
+        traceback.print_exc()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        job_store.delete_job(JOBS_DIR, job_id)
+        return render_template_string(
+            UPLOAD_HTML,
+            error="Terjadi kesalahan saat memproses dokumen. Pastikan file Proposal dan Laporan adalah PDF/Word yang valid.",
+        ), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return render_template_string(render_review_page(job_id, prop_data, lap_data, preview_html))
+
+
+@app.route("/proposal-manual", methods=["GET"])
+def proposal_manual_form():
+    return render_template_string(render_manual_form_page())
+
+
+def build_prop_data_from_manual_form(form, files):
+    """Bangun prop_data & prop_images dari form isian manual (dipakai baik
+    untuk alur submit-ke-review biasa maupun unduh-draft-langsung)."""
+    def file_ext(filename):
+        ext = os.path.splitext(filename)[1].lstrip(".").lower()
+        return "jpg" if ext == "jpeg" else ext
+
+    ALLOWED_IMAGE_EXT = ("jpg", "jpeg", "png")
+    prop_images = []
+
+    prop_data = {}
+    prop_data, _ = apply_form_values(form, prop_data, {})
+    prop_data["jenis_permohonan"] = form.get("jenis_permohonan", "Persetujuan").strip() or "Persetujuan"
+    prop_data["non_reklamasi"] = "non_reklamasi" in form
+    prop_data["reklamasi"] = "reklamasi" in form
+    prop_data["kegiatan_berusaha"] = "kegiatan_berusaha" in form
+    prop_data["non_berusaha"] = "non_berusaha" in form
+    prop_data["non_strategis"] = "non_strategis" in form
+    prop_data["kegiatan_status"] = form.get("kegiatan_status", "")
+    prop_data["sumber_peta"] = form.get("sumber_peta", "")
+    prop_data["deskripsi_kegiatan"] = form.get("deskripsi_kegiatan", "")
+    prop_data["manfaat_kegiatan"] = form.get("manfaat_kegiatan", "")
+    prop_data["tujuan_kegiatan"] = form.get("tujuan_kegiatan", "")
+    prop_data["instalasi_bangunan"] = form.get("instalasi_bangunan", "")
+    prop_data["instalasi_posisi"] = join_dan(form.getlist("instalasi_posisi[]"))
+    prop_data["jadwal_kegiatan"] = form.get("jadwal_kegiatan", "")
+
+    BULAN_NAMA = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                  "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    jadwal_table_raw = form.get("jadwal_table_json", "").strip()
+    jadwal_table = []
+    if jadwal_table_raw:
+        try:
+            parsed = json.loads(jadwal_table_raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            for row in parsed:
+                if not isinstance(row, dict):
+                    continue
+                nama = str(row.get("nama", "")).strip()
+                th1, bl1 = str(row.get("tahun_mulai", "")).strip(), str(row.get("bulan_mulai", "")).strip()
+                th2, bl2 = str(row.get("tahun_selesai", "")).strip(), str(row.get("bulan_selesai", "")).strip()
+                mg1 = str(row.get("minggu_mulai", "")).strip()
+                mg2 = str(row.get("minggu_selesai", "")).strip()
+                if not (nama and th1 and bl1 and th2 and bl2):
+                    continue
+                jadwal_table.append({
+                    "nama": nama, "tahun_mulai": th1, "bulan_mulai": bl1, "minggu_mulai": mg1,
+                    "tahun_selesai": th2, "bulan_selesai": bl2, "minggu_selesai": mg2,
+                })
+    prop_data["jadwal_table"] = jadwal_table
+    if jadwal_table and not prop_data["jadwal_kegiatan"]:
+        # ringkasan teks otomatis dari tabel, untuk kompatibilitas alur lama yang masih baca teks polos
+        ringkasan = []
+        for r in jadwal_table:
+            try:
+                bl1n, bl2n = BULAN_NAMA[int(r["bulan_mulai"])], BULAN_NAMA[int(r["bulan_selesai"])]
+            except (ValueError, IndexError):
+                bl1n, bl2n = r["bulan_mulai"], r["bulan_selesai"]
+            mg1_txt = f" (Minggu {r['minggu_mulai']})" if r["minggu_mulai"] else ""
+            mg2_txt = f" (Minggu {r['minggu_selesai']})" if r["minggu_selesai"] else ""
+            ringkasan.append(
+                f"{r['nama']} : {bl1n}{mg1_txt} {r['tahun_mulai']} - {bl2n}{mg2_txt} {r['tahun_selesai']}."
+            )
+        prop_data["jadwal_kegiatan"] = " ".join(ringkasan)
+    DUKUNG_ITEMS = [
+        ("dukung_nib", "NIB"),
+        ("dukung_sertifikat", "Sertifikat Kepemilikan Lahan Darat"),
+        ("dukung_izin_lingkungan", "Surat Izin Lingkungan"),
+        ("dukung_ba_sosialisasi", "Berita Acara Sosialisasi"),
+        ("dukung_identitas", "Dokumen Identitas dan Legalitas Pemohon/Perusahaan"),
+        ("dukung_survei", "Dokumentasi Survei Lapangan Kondisi Eksisting Lokasi"),
+        ("dukung_peta", "Peta Pendukung (Peta Lokasi, Site Plan, Pola Ruang Wilayah)"),
+        ("dukung_dipa", "DIPA/RKAKL (Sumber Anggaran APBD/APBN) / Lainnya"),
+        ("dukung_sk_kkprl", "SK Penetapan KNMP"),
+    ]
+    dukung_list = []
+    dukung_detail = []
+    for field_name, label in DUKUNG_ITEMS:
+        if field_name in form:
+            entry = {"label": label, "drive": form.get(f"{field_name}_drive", "").strip(), "file": ""}
+            f = files.get(f"{field_name}_file")
+            if f and f.filename:
+                entry["file"] = f.filename
+                ext = os.path.splitext(f.filename)[1].lstrip(".").lower()
+                file_bytes = f.read()
+                if ext in ("png", "jpg", "jpeg"):
+                    prop_images.append({
+                        "tag": "dukung_dokumen", "bytes": file_bytes, "ext": file_ext(f.filename),
+                        "caption": f"Dokumen {label} ({f.filename}).",
+                    })
+                elif ext == "pdf":
+                    halaman_list = render_pdf_pages_to_images(file_bytes)
+                    total = len(halaman_list)
+                    for idx, png_bytes in enumerate(halaman_list, start=1):
+                        cap = f"Dokumen {label} ({f.filename}), halaman {idx}" + (f" dari {total}" if total > 1 else "") + "."
+                        prop_images.append({"tag": "dukung_dokumen", "bytes": png_bytes, "ext": "png", "caption": cap})
+            dukung_list.append(label)
+            dukung_detail.append(entry)
+    for nama_custom, drive_custom in zip(form.getlist("dukung_custom_nama[]"), form.getlist("dukung_custom_drive[]")):
+        nama_custom = nama_custom.strip()
+        if nama_custom:
+            dukung_list.append(nama_custom)
+            dukung_detail.append({"label": nama_custom, "drive": drive_custom.strip(), "file": ""})
+    prop_data["dokumen_data_dukung"] = ", ".join(dukung_list)
+    prop_data["dokumen_data_dukung_detail"] = dukung_detail
+
+    prop_data["mangrove_ada"] = form.get("mangrove_ada", "")
+    prop_data["mangrove_spesies"] = spesies_terpilih(form, "prop__mangrove_spesies")
+    prop_data["mangrove_persen"] = form.get("prop__mangrove_persen", "")
+    prop_data["mangrove_kondisi"] = form.get("prop__mangrove_kondisi", "")
+    prop_data["lamun_ada_manual"] = form.get("lamun_ada_manual", "")
+    prop_data["lamun_spesies"] = spesies_terpilih(form, "lamun_spesies")
+    prop_data["lamun_persen"] = form.get("lamun_persen", "")
+    prop_data["lamun_kondisi"] = form.get("lamun_kondisi", "")
+    prop_data["karang_ada"] = form.get("karang_ada", "")
+    prop_data["karang_spesies"] = spesies_terpilih(form, "karang_spesies")
+    prop_data["karang_persen_manual"] = form.get("karang_persen_manual", "")
+    prop_data["karang_kondisi"] = form.get("karang_kondisi", "")
+
+    prop_data["batas_utara"] = form.get("batas_utara", "")
+    prop_data["batas_timur"] = form.get("batas_timur", "")
+    prop_data["batas_selatan"] = form.get("batas_selatan", "")
+    prop_data["batas_barat"] = form.get("batas_barat", "")
+    prop_data["deskripsi_pemanfaatan_sekitar"] = form.get("deskripsi_pemanfaatan_sekitar", "")
+    prop_data["mata_pencaharian"] = form.get("mata_pencaharian", "")
+    prop_data["sumber_data_sosek"] = form.get("sumber_data_sosek", "")
+    prop_data["tahun_data_sosek"] = form.get("tahun_data_sosek", "")
+    prop_data["aksesibilitas_lokasi"] = form.get("aksesibilitas_lokasi", "")
+
+    koordinat = []
+    koordinat_header = ["Nomor Titik", "Longitude (X)", "Latitude (Y)"]
+    koordinat_file_pesan = None
+    koordinat_file = files.get("upload_koordinat")
+    if koordinat_file and koordinat_file.filename:
+        hasil_file, koordinat_file_pesan = parse_koordinat_file(koordinat_file)
+        koordinat.extend(hasil_file)
+
+    koordinat_table_raw = form.get("koordinat_table_json", "").strip()
+    if koordinat_table_raw:
+        try:
+            koordinat_table = json.loads(koordinat_table_raw)
+        except Exception:
+            koordinat_table = None
+        if isinstance(koordinat_table, dict):
+            extra_cols = [c for c in (koordinat_table.get("columns") or []) if str(c).strip()]
+            koordinat_header = ["Nomor Titik", "Longitude (X)", "Latitude (Y)"] + extra_cols
+            # samakan panjang baris yang sudah ada dari file upload dengan kolom tambahan (isi kosong)
+            koordinat = [row + [""] * len(extra_cols) for row in koordinat]
+            for row in (koordinat_table.get("rows") or []):
+                if not isinstance(row, list):
+                    continue
+                row = [str(c).strip() for c in row]
+                x = row[0] if len(row) > 0 else ""
+                y = row[1] if len(row) > 1 else ""
+                extras = row[2:2 + len(extra_cols)]
+                extras += [""] * (len(extra_cols) - len(extras))
+                if not (x or y or any(extras)):
+                    continue
+                koordinat.append([str(len(koordinat) + 1), x, y] + extras)
+    else:
+        # fallback lama: textarea "Longitude Latitude" per baris (kompatibel dengan draft lama)
+        for line in form.get("koordinat_manual", "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "|" in line:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 3 and any(parts):
+                    koordinat.append([str(len(koordinat) + 1), parts[1], parts[2]])
+            else:
+                parts = line.split()
+                if len(parts) == 2:
+                    koordinat.append([str(len(koordinat) + 1), parts[0], parts[1]])
+    prop_data["koordinat"] = koordinat
+    prop_data["koordinat_header"] = koordinat_header
+    if koordinat_file_pesan:
+        prop_data["_koordinat_file_pesan"] = koordinat_file_pesan
+
+    for field_name, tag in IMAGE_FIELD_TAGS:
+        for f in files.getlist(field_name):
+            if f and f.filename and os.path.splitext(f.filename)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXT:
+                prop_images.append({"tag": tag, "bytes": f.read(), "ext": file_ext(f.filename)})
+
+    return prop_data, prop_images
+
+
+EMPTY_LAP_DATA = {}  # dipakai saat generate draft tanpa Laporan Hidro-Oseanografi
+
+
+@app.route("/proposal-manual/draft-image/<owner_kode>/<job_id>/<path:filename>")
+def proposal_manual_draft_image(owner_kode, job_id, filename):
+    """Sajikan kembali satu file gambar yang sudah tersimpan lewat tombol
+    \"Simpan\", supaya bisa ditampilkan sebagai thumbnail preview di form.
+    Bisa diakses oleh pemilik draft itu sendiri, ATAU oleh admin (untuk
+    keperluan membuka & melanjutkan draft milik petugas lain)."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return "", 403
+    if user["kode"] != owner_kode and not user.get("is_admin"):
+        return "", 403
+    safe_kode = _safe_kode(owner_kode)
+    # Cegah path traversal -- filename harus persis nama file, tanpa "/" atau "..".
+    filename = os.path.basename(filename)
+    img_dir = _draft_images_dir(safe_kode, job_id)
+    fpath = os.path.join(img_dir, filename)
+    if not os.path.isfile(fpath) or not os.path.abspath(fpath).startswith(os.path.abspath(img_dir)):
+        return "", 404
+    return send_file(fpath)
+
+
+def _effective_draft_owner_kode(user, form):
+    """Tentukan kode_nama mana yang jadi 'pemilik' draft untuk operasi
+    simpan/proses saat ini. Staf biasa SELALU memakai kode_nama miliknya
+    sendiri (tidak bisa dioverride lewat form -- kalau tidak, staf lain bisa
+    saja iseng mengubah field 'draft_owner_kode' dan menimpa draft/gambar
+    milik orang lain). HANYA admin yang boleh menimpa nilai ini, dipakai
+    saat admin membuka & melanjutkan draft milik petugas lain."""
+    own_kode = (user or {}).get("kode", "")
+    if user and user.get("is_admin"):
+        requested = (form.get("draft_owner_kode") or "").strip()
+        if requested:
+            return requested
+    return own_kode
+
+
+@app.route("/proposal-manual/simpan", methods=["POST"])
+def proposal_manual_simpan():
+    """Simpan isian form (SEMUA field + gambar yang sudah diunggah) sebagai
+    draft, TANPA memproses/menggabungkan dokumen apa pun -- supaya pengguna
+    bisa berhenti sejenak dan melanjutkan isian nanti tanpa kehilangan apa
+    yang sudah dikerjakan. Beda dari \"Unduh Draft\" yang langsung membuat
+    file Word; tombol ini murni menyimpan progres isian."""
+    user = session.get("user")
+    if not user or not user.get("kode"):
+        return render_template_string(render_login_pegawai_page())
+
+    laporan_file = request.files.get("laporan")
+    laporan_ext = None
+    laporan_bytes = None
+    laporan_filename = None
+    if laporan_file and laporan_file.filename:
+        if laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+            laporan_bytes = laporan_file.read()
+            laporan_filename = laporan_file.filename
+
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        owner_kode = _effective_draft_owner_kode(user, request.form)
+        existing_job_id = request.form.get("existing_job_id", "").strip()
+        job_id = existing_job_id or uuid.uuid4().hex[:12]
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
+        prop_images = merge_draft_images(owner_kode, job_id, prop_images, hapus_tags=hapus_tags)
+        save_draft(owner_kode, job_id, prop_data, prop_images,
+                   laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
+    except Exception as e:
+        traceback.print_exc()
+        return render_template_string(render_manual_form_page(
+            error=f"Terjadi kesalahan saat menyimpan draft. Silakan coba lagi. (Detail teknis: {_err_detail(e)})",
+        )), 500
+
+    n_img = len(prop_images)
+    pesan = f"Draft tersimpan ({n_img} gambar ikut tersimpan)." if n_img else "Draft tersimpan."
+    # Baca ulang metadata gambar & laporan dari draft yang baru saja disimpan
+    # supaya thumbnail/indikatornya langsung tampil di halaman ini juga
+    # (bukan cuma setelah reload lewat "Lanjutkan").
+    saved_draft = load_draft(owner_kode, job_id)
+    saved_images_meta = (saved_draft or {}).get("prop_images_meta", [])
+    saved_laporan_meta = (saved_draft or {}).get("laporan_meta")
+    owner_nama = (fetch_staff_list().get(owner_kode) or {}).get("nama") if owner_kode != user.get("kode") else None
+    return render_template_string(render_manual_form_page(
+        prefill_data=prop_data,
+        job_id=job_id,
+        saved_msg=pesan,
+        saved_images_meta=saved_images_meta,
+        saved_laporan_meta=saved_laporan_meta,
+        draft_owner_kode=owner_kode,
+        draft_owner_nama=owner_nama,
+    ))
+
+
+@app.route("/proposal-manual", methods=["POST"])
+def proposal_manual_submit():
+    laporan_file = request.files.get("laporan")
+    laporan_ext = None
+    uploaded_laporan_bytes = None
+    uploaded_laporan_filename = None
+    if laporan_file and laporan_file.filename:
+        if not laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            return render_template_string(render_manual_form_page(error="File Laporan harus berformat PDF atau Word (.docx).")), 400
+        laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+        uploaded_laporan_bytes = laporan_file.read()
+        uploaded_laporan_filename = laporan_file.filename
+
+    job_store.cleanup_old_jobs(JOBS_DIR)
+
+    job_id = uuid.uuid4().hex[:12]
+    tmp_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(tmp_dir, exist_ok=True)
+    laporan_path = None
+
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        current_user = session.get("user")
+        draft_job_id = request.form.get("existing_job_id", "").strip() or job_id
+        owner_kode = _effective_draft_owner_kode(current_user, request.form)
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
+        if owner_kode:
+            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images, hapus_tags=hapus_tags)
+
+        # File Laporan yang dipakai untuk generate dokumen sekarang: file
+        # baru kalau diunggah, atau file Laporan tersimpan sebelumnya untuk
+        # draft yang sama kalau tidak ada upload baru -- supaya tidak perlu
+        # unggah ulang tiap kali melanjutkan isian (konsisten dengan
+        # Lampiran Gambar yang sudah lebih dulu berperilaku begini).
+        effective_laporan_bytes, effective_laporan_ext = uploaded_laporan_bytes, laporan_ext
+        if not effective_laporan_bytes and owner_kode:
+            reused = load_draft_laporan(owner_kode, draft_job_id)
+            if reused:
+                effective_laporan_bytes, effective_laporan_ext = reused
+
+        if effective_laporan_bytes:
+            laporan_path = os.path.join(tmp_dir, "laporan" + effective_laporan_ext)
+            with open(laporan_path, "wb") as lf:
+                lf.write(effective_laporan_bytes)
+            lap_data, lap_images = extract_laporan_with_fallback(laporan_path, log=lambda *_: None)
+        else:
+            lap_data, lap_images = dict(EMPTY_LAP_DATA), []
+
+        job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
+        if owner_kode:
+            save_draft(owner_kode, draft_job_id, prop_data, prop_images,
+                       laporan_bytes=uploaded_laporan_bytes, laporan_ext=laporan_ext,
+                       laporan_filename=uploaded_laporan_filename)
+
+        preview_docx_path = os.path.join(tmp_dir, "preview.docx")
+        build_document(prop_data, prop_images, lap_data, lap_images, preview_docx_path)
+        with open(preview_docx_path, "rb") as f:
+            preview_html = mammoth.convert_to_html(f).value
+    except Exception as e:
+        traceback.print_exc()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        job_store.delete_job(JOBS_DIR, job_id)
+        return render_template_string(render_manual_form_page(
+            error=f"Terjadi kesalahan saat memproses. Pastikan file Laporan adalah PDF/Word yang valid. (Detail teknis: {_err_detail(e)})"
+        )), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return render_template_string(render_review_page(job_id, prop_data, lap_data, preview_html))
+
+
+@app.route("/proposal-manual/draft", methods=["POST"])
+def proposal_manual_draft():
+    """Unduh draft Proposal langsung (TANPA menunggu/menggabung Laporan
+    Hidro-Oseanografi) -- untuk staf yang ingin cepat mengunduh draft
+    berisi data yang sudah diisi sejauh ini, sebelum melengkapi Laporan
+    di kesempatan berikutnya."""
+    try:
+        prop_data, prop_images = build_prop_data_from_manual_form(request.form, request.files)
+        lap_data, lap_images = dict(EMPTY_LAP_DATA), []
+
+        laporan_file = request.files.get("laporan")
+        laporan_ext = None
+        laporan_bytes = None
+        laporan_filename = None
+        if laporan_file and laporan_file.filename and laporan_file.filename.lower().endswith((".pdf", ".docx")):
+            laporan_ext = ".docx" if laporan_file.filename.lower().endswith(".docx") else ".pdf"
+            laporan_bytes = laporan_file.read()
+            laporan_filename = laporan_file.filename
+
+        current_user = session.get("user")
+        draft_job_id = request.form.get("existing_job_id", "").strip() or uuid.uuid4().hex[:12]
+        owner_kode = _effective_draft_owner_kode(current_user, request.form)
+        hapus_tags = _hapus_field_names_to_tags(request.form.getlist("hapus_gambar_tersimpan"))
+        if owner_kode:
+            prop_images = merge_draft_images(owner_kode, draft_job_id, prop_images, hapus_tags=hapus_tags)
+            save_draft(owner_kode, draft_job_id, prop_data, prop_images,
+                       laporan_bytes=laporan_bytes, laporan_ext=laporan_ext, laporan_filename=laporan_filename)
+
+        tmp_path = os.path.join(OUTPUT_DIR, f"Draft_{uuid.uuid4().hex[:12]}.docx")
+        build_document(prop_data, prop_images, lap_data, lap_images, tmp_path)
+        log_history_entry(
+            nama_pemohon=prop_data.get("Nama Pemohon", ""),
+            nama_perusahaan=prop_data.get("Nama Perusahaan/Instansi", ""),
+            sumber="Unduh Draft (Tanpa Laporan)",
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return render_template_string(render_manual_form_page(
+            error=f"Terjadi kesalahan saat membuat draft. Silakan coba lagi. (Detail teknis: {_err_detail(e)})"
+        )), 500
+
+    @after_this_request
+    def cleanup(response):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return response
+
+    perusahaan = prop_data.get("Nama Perusahaan/Instansi", "PKKPRL").replace(" ", "_").replace(".", "")
+    download_name = f"Draft_Proposal_PKKPRL_{perusahaan}.docx"
+    return send_file(
+        tmp_path,
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/finalize", methods=["POST"])
+def finalize():
+    job_id = request.form.get("job_id", "")
+    loaded = job_store.load_job(JOBS_DIR, job_id)
+    if not loaded:
+        return render_template_string(
+            UPLOAD_HTML,
+            error="Sesi review sudah kedaluwarsa atau tidak ditemukan. Mohon unggah ulang dokumennya.",
+        ), 400
+
+    prop_data, prop_images, lap_data, lap_images = loaded
+    prop_data, lap_data = apply_form_values(request.form, prop_data, lap_data)
+
+    output_path = os.path.join(OUTPUT_DIR, f"Proposal_Final_{job_id}.docx")
+    try:
+        build_document(prop_data, prop_images, lap_data, lap_images, output_path)
+        log_history_entry(
+            nama_pemohon=prop_data.get("Nama Pemohon", ""),
+            nama_perusahaan=prop_data.get("Nama Perusahaan/Instansi", ""),
+            sumber="Generate Dokumen Final",
+        )
+    except Exception:
+        traceback.print_exc()
+        return render_template_string(
+            UPLOAD_HTML, error="Terjadi kesalahan saat membuat dokumen final. Silakan coba lagi."
+        ), 500
+    finally:
+        job_store.delete_job(JOBS_DIR, job_id)
+
+    @after_this_request
+    def cleanup(response):
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return response
+
+    perusahaan = prop_data.get("Nama Perusahaan/Instansi", "PKKPRL").replace(" ", "_").replace(".", "")
+    download_name = f"Proposal_Teknis_PKKPRL_{perusahaan}.docx"
+
+    return send_file(
+        output_path,
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
