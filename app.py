@@ -18,6 +18,7 @@ import re
 import io
 import uuid
 import shutil
+import zipfile
 import traceback
 import fitz  # PyMuPDF -- dipakai untuk merender halaman PDF dokumen dukung
             # (mis. Surat Izin Lingkungan, Berita Acara) jadi gambar, supaya
@@ -55,7 +56,7 @@ from werkzeug.utils import secure_filename
 import analisis_store
 from generate_docx import markdown_report_to_docx_bytes
 from llm_fallback import analisis_konsistensi_proposal, api_key_available as llm_api_key_available
-from generate_docx import build_document
+from generate_docx import build_document, split_document_by_bab
 from review_fields import FIELD_GROUPS, form_field_name, get_value, apply_form_values
 import job_store
 
@@ -2810,6 +2811,51 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
     <div class="review-card">
       <h3>""" + ICONS["doc"] + """ Rencana Bangunan dan Instalasi di Laut</h3>
       <details class="acc-item" open>
+        <summary>Titik Koordinat &amp; Peta Lokasi Geografis (N/E)</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <label>Upload File Koordinat (Excel/CSV/Word/Gambar)</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Kalau sudah punya file/screenshot berisi daftar titik koordinat, unggah di sini -- akan otomatis dibaca dan dianalisis, tidak perlu ketik ulang manual. Untuk format gambar (PNG/JPG), pembacaan otomatis pakai AI dan butuh beberapa detik.</div>
+            <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx,.png,.jpg,.jpeg">
+          </div>
+          <div class="field-row">
+            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris sesuai kebutuhan</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis.</div>
+            <div class="jt-table-wrap">
+              <table class="jt-table" id="koordTable">
+                <thead><tr id="koordTableHeadRow">
+                  <th style="width:30px;">No</th>
+                  <th>Longitude (X)</th>
+                  <th>Latitude (Y)</th>
+                  <th>Keterangan</th>
+                  <th style="width:36px;"></th>
+                </tr></thead>
+                <tbody id="koordTableBody"></tbody>
+              </table>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="tbl-btn" id="koordAddRow">+ Tambah Baris</button>
+              <button type="button" class="tbl-btn" id="koordUseExample">Pakai contoh ini</button>
+            </div>
+            <input type="hidden" name="koordinat_table_json" id="koordinat_table_json">
+          </div>
+
+          """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
+                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.",
+                                saved_previews=saved_previews_map.get("img_peta_lokasi")) + """
+
+          <div class="field-row">
+            <label>Sumber Peta</label>
+            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mencantumkan sumber peta yang diambil</div>
+            <input type="text" name="sumber_peta" id="sumber_peta" placeholder="Isi sumber peta">
+            <div class="field-example">Contoh: <span class="ex-text">Layar Pinisi, Arcgis, Google Earth dll</span>
+            <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
+          </div>
+
+        </div>
+      </details>
+
+      <details class="acc-item" open>
         <summary>Uraian Latar Belakang, Tujuan &amp; Manfaat Usaha</summary>
         <div class="acc-body">
           <div class="field-row">
@@ -2924,50 +2970,6 @@ def render_manual_form_page(error=None, prefill_data=None, job_id=None, saved_im
       </details>
 
       """ + acc_lokasi + """
-      <details class="acc-item" open>
-        <summary>Peta Lokasi &amp; Titik Koordinat Geografis (N/E)</summary>
-        <div class="acc-body">
-          """ + img_field_html("img_peta_lokasi", "Peta Lokasi",
-                                "Unggah visualisasi peta lokasi yang dimohonkan dalam bentuk citra satelit yang telah dilengkapi dengan poligon batas area permohonan. Maks. 10 MB.",
-                                saved_previews=saved_previews_map.get("img_peta_lokasi")) + """
-
-          <div class="field-row">
-            <label>Sumber Peta</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Mohon untuk mencantumkan sumber peta yang diambil</div>
-            <input type="text" name="sumber_peta" id="sumber_peta" placeholder="Isi sumber peta">
-            <div class="field-example">Contoh: <span class="ex-text">Layar Pinisi, Arcgis, Google Earth dll</span>
-            <button type="button" class="ex-fill" data-target="sumber_peta">Pakai contoh ini</button></div>
-          </div>
-
-          <div class="field-row">
-            <label>Upload File Koordinat (Excel/CSV/Word/Gambar)</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Kalau sudah punya file/screenshot berisi daftar titik koordinat, unggah di sini -- akan otomatis dibaca dan dianalisis, tidak perlu ketik ulang manual. Untuk format gambar (PNG/JPG), pembacaan otomatis pakai AI dan butuh beberapa detik.</div>
-            <input type="file" name="upload_koordinat" id="upload_koordinat" accept=".xlsx,.xlsm,.csv,.docx,.png,.jpg,.jpeg">
-          </div>
-          <div class="field-row">
-            <label>Atau Isi Tabel Manual &mdash; Nomor titik otomatis, tambah baris sesuai kebutuhan</label>
-            <div class="ff-hint" style="margin-bottom:6px;">Bisa langsung paste beberapa baris data (misal dari Excel) ke sel pertama -- otomatis terbagi ke baris &amp; kolom tabel. Kalau file di atas juga diisi, hasilnya akan digabung otomatis.</div>
-            <div class="jt-table-wrap">
-              <table class="jt-table" id="koordTable">
-                <thead><tr id="koordTableHeadRow">
-                  <th style="width:30px;">No</th>
-                  <th>Longitude (X)</th>
-                  <th>Latitude (Y)</th>
-                  <th>Keterangan</th>
-                  <th style="width:36px;"></th>
-                </tr></thead>
-                <tbody id="koordTableBody"></tbody>
-              </table>
-            </div>
-            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-              <button type="button" class="tbl-btn" id="koordAddRow">+ Tambah Baris</button>
-              <button type="button" class="tbl-btn" id="koordUseExample">Pakai contoh ini</button>
-            </div>
-            <input type="hidden" name="koordinat_table_json" id="koordinat_table_json">
-          </div>
-        </div>
-      </details>
-
       """ + acc_lain + """
     </div>
     <div class="step-footer"><button type="button" class="step-btn" data-step-go="0">&larr; Informasi Pemohon</button><button type="button" class="step-btn step-btn-next" data-step-go="2">Dokumen 2 &rarr;</button></div>
@@ -4121,7 +4123,7 @@ def render_review_page(job_id, prop_data, lap_data, preview_html, error=None):
 <section class="review-hero">
   <h1>\U0001F4DD Tinjau &amp; Koreksi Data</h1>
   <p>Periksa hasil ekstraksi di bawah, lalu bandingkan dengan pratinjau dokumen di sebelah kanan.
-  Koreksi kolom yang salah, lalu klik "Generate Dokumen Final &amp; Unduh".</p>
+  Koreksi kolom yang salah, lalu klik "Generate Dokumen Final &amp; Unduh". Hasilnya berupa 1 file ZIP berisi Dokumen 1, 2, 3, 4 (terpisah) dan dokumen lengkapnya.</p>
 </section>
 
 <div class="review-wrap">
@@ -5217,6 +5219,7 @@ def finalize():
     prop_data, lap_data = apply_form_values(request.form, prop_data, lap_data)
 
     output_path = os.path.join(OUTPUT_DIR, f"Proposal_Final_{job_id}.docx")
+    pkg_dir = os.path.join(OUTPUT_DIR, f"Paket_{job_id}")
     try:
         build_document(prop_data, prop_images, lap_data, lap_images, output_path)
         log_history_entry(
@@ -5232,21 +5235,47 @@ def finalize():
     finally:
         job_store.delete_job(JOBS_DIR, job_id)
 
+    perusahaan = prop_data.get("Nama Perusahaan/Instansi", "PKKPRL").replace(" ", "_").replace(".", "")
+    # Nama aman untuk dipakai di nama file (tanpa karakter pemisah path, dst.).
+    slug = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_\-]+", "_", perusahaan)).strip("_")[:60] or "PKKPRL"
+
+    # Selain dokumen lengkap, buat juga 4 file terpisah (Dokumen 1-4) lalu
+    # kemas dalam satu ZIP supaya cukup satu kali unduh. Bila pemecahan gagal,
+    # tetap kirim dokumen lengkap seperti sebelumnya.
+    zip_path = None
+    try:
+        bagian = split_document_by_bab(output_path, pkg_dir, slug)
+        if bagian:
+            zip_path = os.path.join(pkg_dir, f"Dokumen_1-4_PKKPRL_{slug}.zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for _no, _judul, path in bagian:
+                    zf.write(path, os.path.basename(path))
+                zf.write(output_path, f"Proposal_Teknis_PKKPRL_{slug}_LENGKAP.docx")
+    except Exception:
+        traceback.print_exc()
+        zip_path = None
+
     @after_this_request
     def cleanup(response):
         try:
             os.remove(output_path)
         except OSError:
             pass
+        shutil.rmtree(pkg_dir, ignore_errors=True)
         return response
 
-    perusahaan = prop_data.get("Nama Perusahaan/Instansi", "PKKPRL").replace(" ", "_").replace(".", "")
-    download_name = f"Proposal_Teknis_PKKPRL_{perusahaan}.docx"
+    if zip_path:
+        return send_file(
+            zip_path,
+            as_attachment=True,
+            download_name=f"Dokumen_1-4_PKKPRL_{slug}.zip",
+            mimetype="application/zip",
+        )
 
     return send_file(
         output_path,
         as_attachment=True,
-        download_name=download_name,
+        download_name=f"Proposal_Teknis_PKKPRL_{perusahaan}.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 

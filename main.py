@@ -26,10 +26,31 @@ Jalankan (lokal):
 Jalankan (produksi, lihat Procfile):
     uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4
 """
+import sys
+import traceback
+
 from asgiref.wsgi import WsgiToAsgi
 
-from api_fastapi import app as api_app
-from app import app as flask_app
+
+def _fatal(tahap, e):
+    """Cetak penyebab gagal-start dalam SATU baris (mudah dicari di Deploy Logs
+    Railway), lalu lempar ulang error aslinya supaya perilaku tidak berubah."""
+    tb = traceback.extract_tb(e.__traceback__)
+    lokasi = " <- ".join(f"{f.filename.split('/')[-1]}:{f.lineno}" for f in reversed(tb[-4:]))
+    print(f"[FATAL-STARTUP] gagal saat {tahap}: {type(e).__name__}: {e} | di {lokasi}",
+          file=sys.stderr, flush=True)
+    raise e
+
+
+try:
+    from api_fastapi import app as api_app
+except Exception as e:
+    _fatal("import api_fastapi.py", e)
+
+try:
+    from app import app as flask_app
+except Exception as e:
+    _fatal("import app.py", e)
 
 # Mount Flask sebagai child terakhir: semua request yang TIDAK cocok dengan
 # route /api/v1/* di atas diteruskan ke aplikasi Flask.

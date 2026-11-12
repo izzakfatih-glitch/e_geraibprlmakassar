@@ -790,6 +790,7 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
         f"perairan {perairan} dengan total kebutuhan luas ruang laut sebesar {luas}.{status_sentence} Pengajuan PKKPRL dilakukan "
         f"dalam rangka pemenuhan perizinan dasar di lokasi yang dimohonkan sebelum mengajukan perizinan lanjutan.")
     img_no = 1
+    tbl_no = 1  # penomoran Tabel otomatis (urut sesuai kemunculan di dokumen)
     siteplan_list = [im for im in prop_imgs if im["tag"] == "siteplan"]
     for idx, im in enumerate(siteplan_list):
         b.image(im["bytes"], width_cm=13)
@@ -819,16 +820,18 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     posisi_txt2 = f" yang berada di {instalasi_posisi.lower()}" if instalasi_posisi else ""
     if activities:
         b.p(f"Adapun kegiatan utama yang akan dilakukan ialah pembangunan dan pengembangan lokasi {jenis_kegiatan} "
-            f"akan dilakukan sebagaimana ditampilkan pada Tabel 1. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
+            f"akan dilakukan sebagaimana ditampilkan pada Tabel {tbl_no}. Seluruh bangunan merupakan {bangunan_txt2}{posisi_txt2}.")
         if rincian:
             b.data_table(["Nama Kegiatan", "Mulai", "Selesai"], rincian)
-            b.caption("Tabel 1. Rincian Waktu Pelaksanaan Kegiatan Utama dan Pendukungnya.")
+            b.caption(f"Tabel {tbl_no}. Rincian Waktu Pelaksanaan Kegiatan Utama dan Pendukungnya.")
+            tbl_no += 1
         if ada_minggu:
             max_bulan = max(a[2] for a in activities)
             build_gantt_table_weekly(b, activities_mgu, anchor_bt, max_bulan)
         else:
             build_gantt_table(b, activities, anchor_bt)
-        b.caption(("Tabel 2. " if rincian else "Tabel 1. ") + "Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya (Gantt Chart).")
+        b.caption(f"Tabel {tbl_no}. Rencana Jadwal Pelaksanaan Kegiatan Utama dan Pendukungnya (Gantt Chart).")
+        tbl_no += 1
     else:
         jadwal = prop.get("jadwal_kegiatan", "")
         if jadwal:
@@ -871,7 +874,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
     if koord:
         b.p("Peta lokasi/plotting batas-batas area yang dimohonkan PKKPRL ditunjukkan oleh titik koordinat berikut:")
         b.data_table(koord_header, koord)
-        b.caption("Tabel 1. Titik Koordinat Batas Area Permohonan PKKPRL.")
+        b.caption(f"Tabel {tbl_no}. Titik Koordinat Batas Area Permohonan PKKPRL.")
+        tbl_no += 1
     else:
         b.p(NA)
 
@@ -1028,7 +1032,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
                 ["Total Area Kajian", total_ha, "100,0"],
             ],
         )
-        b.caption("Tabel 2. Rincian Tutupan Ekosistem pada Area Kajian Spasial di Sekitar Titik Pusat Rencana Kegiatan.")
+        b.caption(f"Tabel {tbl_no}. Rincian Tutupan Ekosistem pada Area Kajian Spasial di Sekitar Titik Pusat Rencana Kegiatan.")
+        tbl_no += 1
     else:
         b.p("Berdasarkan data sekunder perairan di sekitar lokasi kegiatan, tidak teridentifikasi keberadaan "
             "ekosistem terumbu karang pada area yang dimohonkan.")
@@ -1102,7 +1107,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             ["Kecepatan Arus", f"{g(lap,'arus_rata')} m/detik", f"{g(lap,'arus_maks')} m/detik", f"{g(lap,'arus_arah')}\u00b0"],
         ],
     )
-    b.caption("Tabel 3. Ringkasan Parameter Gelombang dan Arus pada Titik Pusat Rencana Kegiatan.")
+    b.caption(f"Tabel {tbl_no}. Ringkasan Parameter Gelombang dan Arus pada Titik Pusat Rencana Kegiatan.")
+    tbl_no += 1
 
     b.h3("3. Pasang Surut")
     b.p(f"Perairan ini memiliki tipe pasang surut {g(lap,'tipe_pasut')} (Bilangan Formzahl {g(lap,'formzahl')}), "
@@ -1120,7 +1126,8 @@ def build_document(prop, prop_imgs, lap, lap_imgs, output_path):
             ["Bilangan Formzahl", f"{g(lap,'formzahl')} ({g(lap,'tipe_pasut')})"],
         ],
     )
-    b.caption("Tabel 4. Parameter Pasang Surut pada Lokasi Kegiatan.")
+    b.caption(f"Tabel {tbl_no}. Parameter Pasang Surut pada Lokasi Kegiatan.")
+    tbl_no += 1
     pasut_img = get_image_bytes(lap_imgs, "siklus_pasut")
     if pasut_img:
         b.image(pasut_img, width_cm=13)
@@ -1361,3 +1368,165 @@ def markdown_report_to_docx_bytes(markdown_text, judul="Hasil Analisis & Koreksi
     doc.save(bio)
     bio.seek(0)
     return bio.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Pecah dokumen final menjadi 4 file terpisah (Dokumen 1-4) sesuai format
+# proposal KKPRL, supaya tiap dokumen bisa disimpan/diunggah sendiri-sendiri.
+#
+# Dokumen lengkap dibangun SEKALI oleh build_document() (satu kali proses AI,
+# isi persis sama dengan versi lengkap), lalu dipecah per bab berdasarkan
+# judul bab (heading level-1). Tiap file memuat halaman sampul (judul +
+# data pemohon) ditambah satu bab. Nomor gambar & tabel tiap file dimulai dari 1.
+# Gambar & tautan yang tidak dipakai di file itu dibuang supaya ukuran
+# file tidak membengkak.
+# ---------------------------------------------------------------------------
+BAB_DOKUMEN = [
+    # (teks judul bab di build_document, judul dokumen, nama untuk file)
+    ("I. RENCANA BANGUNAN DAN INSTALASI LAUT",
+     "Rencana Bangunan dan Instalasi di Laut", "Rencana_Bangunan_dan_Instalasi_di_Laut"),
+    ("II. INFORMASI PEMANFAATAN RUANG LAUT",
+     "Informasi Pemanfaatan Ruang Laut", "Informasi_Pemanfaatan_Ruang_Laut"),
+    ("III. DATA KONDISI TERKINI LOKASI DAN SEKITARNYA",
+     "Data Kondisi Terkini Lokasi dan Sekitarnya", "Data_Kondisi_Terkini_Lokasi"),
+    ("IV. DOKUMEN PERSYARATAN LAINNYA",
+     "Persyaratan Lainnya", "Persyaratan_Lainnya"),
+]
+
+
+def _para_text(el):
+    return "".join(t.text or "" for t in el.iter(qn("w:t")))
+
+
+def _is_blank_para(el):
+    """Paragraf tanpa teks & tanpa gambar (mis. paragraf pemisah halaman)."""
+    if el.tag != qn("w:p"):
+        return False
+    if _para_text(el).strip():
+        return False
+    if el.findall(".//" + qn("w:drawing")) or el.findall(".//" + qn("w:pict")):
+        return False
+    return True
+
+
+_RE_KET = re.compile(r"^(\s*)(Gambar|Tabel)(\s+)(\d+)(\.)")
+_RE_RUJUKAN = re.compile(r"\b(Gambar|Tabel)(\s+)(\d+)\b")
+
+
+def _nomori_ulang_keterangan(body):
+    """Nomori ulang keterangan "Gambar N. ..." dan "Tabel N. ..." di `body`
+    mulai dari 1 (masing-masing jenis), berurutan sesuai kemunculannya. Dipakai
+    pada tiap file Dokumen 1-4 supaya nomor gambar & tabel tiap dokumen mulai
+    dari 1. Kalimat lain yang merujuk ke nomor itu (mis. "ditampilkan pada
+    Tabel 1") ikut disesuaikan memakai pemetaan nomor lama -> nomor baru.
+    Mengembalikan {"Gambar": jumlah, "Tabel": jumlah}."""
+    hitung = {"Gambar": 0, "Tabel": 0}
+    peta = {"Gambar": {}, "Tabel": {}}
+    paragraf = [el for el in body.iterchildren() if el.tag == qn("w:p")]
+
+    # Lewat 1: keterangan -> nomor baru berurutan.
+    keterangan = set()
+    for el in paragraf:
+        m = _RE_KET.match(_para_text(el))
+        if not m:
+            continue
+        jenis, lama = m.group(2), int(m.group(4))
+        hitung[jenis] += 1
+        baru = hitung[jenis]
+        peta[jenis].setdefault(lama, baru)
+        keterangan.add(id(el))
+        for t in el.iter(qn("w:t")):
+            if t.text and _RE_KET.match(t.text):
+                t.text = _RE_KET.sub(
+                    lambda mm: f"{mm.group(1)}{mm.group(2)}{mm.group(3)}{baru}{mm.group(5)}",
+                    t.text, count=1)
+                break
+
+    # Lewat 2: rujukan di kalimat lain ("... pada Tabel 1") ikut disesuaikan.
+    def _ganti(mm):
+        baru = peta[mm.group(1)].get(int(mm.group(3)))
+        return mm.group(0) if baru is None else f"{mm.group(1)}{mm.group(2)}{baru}"
+
+    for el in paragraf:
+        if id(el) in keterangan:
+            continue
+        for t in el.iter(qn("w:t")):
+            if t.text and _RE_RUJUKAN.search(t.text):
+                t.text = _RE_RUJUKAN.sub(_ganti, t.text)
+    return hitung
+
+
+def split_document_by_bab(full_path, out_dir, file_suffix=""):
+    """Pecah dokumen final `full_path` jadi 4 file .docx di `out_dir`.
+
+    Mengembalikan list [(nomor, judul, path_file), ...] berurutan Dokumen 1-4.
+    Mengembalikan list kosong bila judul bab tidak ditemukan lengkap (pemanggil
+    sebaiknya jatuh kembali ke dokumen lengkap saja)."""
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+
+    probe = Document(full_path)
+    kids = list(probe.element.body.iterchildren())
+    starts = {}
+    for i, el in enumerate(kids):
+        if el.tag == qn("w:p"):
+            txt = _para_text(el).strip()
+            for k, (judul_bab, _j, _s) in enumerate(BAB_DOKUMEN):
+                if txt == judul_bab and k not in starts:
+                    starts[k] = i
+    n = len(BAB_DOKUMEN)
+    if len(starts) != n or any(starts[k] >= starts[k + 1] for k in range(n - 1)):
+        return []
+
+    suffix = f"_{file_suffix}" if file_suffix else ""
+    hasil = []
+    for k, (_jb, judul, slug) in enumerate(BAB_DOKUMEN):
+        doc = Document(full_path)
+        body = doc.element.body
+        kids = list(body.iterchildren())
+        sect = kids[-1] if kids and kids[-1].tag == qn("w:sectPr") else None
+        end_all = len(kids) - (1 if sect is not None else 0)
+        lo = starts[k]
+        hi = starts[k + 1] if k + 1 < n else end_all
+
+        # Sisakan: sampul (sebelum bab I) + bab ke-k saja.
+        for i, el in enumerate(kids):
+            if el is sect:
+                continue
+            if i < starts[0] or lo <= i < hi:
+                continue
+            body.remove(el)
+
+        # Buang paragraf kosong / pemisah halaman di ujung akhir file.
+        sisa = [el for el in body.iterchildren() if el is not sect]
+        while len(sisa) > starts[0] + 1 and _is_blank_para(sisa[-1]):
+            body.remove(sisa.pop())
+        # Word menghendaki badan dokumen berakhir dengan paragraf, bukan tabel.
+        if sisa and sisa[-1].tag != qn("w:p"):
+            doc.add_paragraph()
+
+        # Nomor gambar & tabel tiap dokumen mulai dari 1 (dokumen gabungan tetap 1..N).
+        _nomori_ulang_keterangan(body)
+
+        # Penanda "DOKUMEN n" di sampul, tepat di bawah judul utama.
+        judul_p = next((el for el in body.iterchildren() if el.tag == qn("w:p")), None)
+        if judul_p is not None:
+            lab = doc.add_paragraph()
+            lab.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            lab.paragraph_format.space_after = Pt(6)
+            r = lab.add_run(f"DOKUMEN {k + 1} \u2014 {judul.upper()}")
+            set_font(r, size=13, bold=True, color=NAVY)
+            judul_p.addnext(lab._p)
+
+        # Lepas relasi gambar/tautan yang sudah tidak dipakai di file ini.
+        for rid, rel in list(doc.part.rels.items()):
+            if rel.reltype.endswith(("/image", "/hyperlink")):
+                try:
+                    doc.part.drop_rel(rid)
+                except Exception:
+                    pass
+
+        path = os.path.join(out_dir, f"Dokumen_{k + 1}_{slug}{suffix}.docx")
+        doc.save(path)
+        hasil.append((k + 1, judul, path))
+    return hasil
