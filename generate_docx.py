@@ -1394,6 +1394,11 @@ BAB_DOKUMEN = [
 ]
 
 
+# Dokumen yang memuat tabel Informasi Pemohon di sampulnya.
+DOKUMEN_DENGAN_PEMOHON = {1, 4}
+_NS_RELASI = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
 def _para_text(el):
     return "".join(t.text or "" for t in el.iter(qn("w:t")))
 
@@ -1497,6 +1502,18 @@ def split_document_by_bab(full_path, out_dir, file_suffix=""):
                 continue
             body.remove(el)
 
+        # Informasi Pemohon (tabel di sampul) hanya ditampilkan di Dokumen 1 dan 4.
+        # Di Dokumen 2 dan 3 tabel itu dibuang, berikut pemisah halaman sesudahnya
+        # supaya tidak tersisa halaman sampul yang nyaris kosong.
+        if (k + 1) not in DOKUMEN_DENGAN_PEMOHON:
+            sampul = [el for i, el in enumerate(kids) if i < starts[0] and el is not sect]
+            for el in list(sampul):
+                if el.tag == qn("w:tbl"):
+                    body.remove(el)
+                    sampul.remove(el)
+            while sampul and _is_blank_para(sampul[-1]):
+                body.remove(sampul.pop())
+
         # Buang paragraf kosong / pemisah halaman di ujung akhir file.
         sisa = [el for el in body.iterchildren() if el is not sect]
         while len(sisa) > starts[0] + 1 and _is_blank_para(sisa[-1]):
@@ -1519,10 +1536,19 @@ def split_document_by_bab(full_path, out_dir, file_suffix=""):
             judul_p.addnext(lab._p)
 
         # Lepas relasi gambar/tautan yang sudah tidak dipakai di file ini.
+        # PENTING: gambar dirujuk lewat atribut r:embed (bukan r:id), jadi kumpulkan
+        # SEMUA atribut ber-namespace relasi (r:embed, r:id, r:link, ...) -- jangan
+        # pakai Part.drop_rel() karena ia hanya menghitung r:id dan akan membuang
+        # semua gambar.
+        dipakai = set()
+        for node in doc.element.iter():
+            for atribut, nilai in node.attrib.items():
+                if atribut.startswith("{" + _NS_RELASI + "}"):
+                    dipakai.add(nilai)
         for rid, rel in list(doc.part.rels.items()):
-            if rel.reltype.endswith(("/image", "/hyperlink")):
+            if rel.reltype.endswith(("/image", "/hyperlink")) and rid not in dipakai:
                 try:
-                    doc.part.drop_rel(rid)
+                    doc.part.rels.pop(rid)
                 except Exception:
                     pass
 
