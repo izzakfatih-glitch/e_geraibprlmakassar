@@ -56,9 +56,11 @@ Autentikasi (opsional tapi disarankan untuk API publik):
     (cocok untuk uji coba lokal saja -- JANGAN dipakai begitu saja di
     produksi publik tanpa API_KEY).
 """
+import io
 import os
 import re
 import uuid
+import zipfile
 import shutil
 import traceback
 from typing import List, Optional
@@ -355,6 +357,157 @@ async def dokumen_ekstrak(
     })
 
 
+_BULAN_ID = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
+             "Agustus", "September", "Oktober", "November", "Desember"]
+_MANUAL_CHECKBOX_KEYS = {"non_reklamasi", "reklamasi", "kegiatan_berusaha",
+                         "non_berusaha", "strategis", "non_strategis"}
+
+
+def _tanggal_indonesia(raw):
+    """Y-m-d (nilai input date) -> 'DD Bulan YYYY'; kosong -> hari ini."""
+    raw = (raw or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return f"{m.group(3)} {_BULAN_ID[int(m.group(2)) - 1]} {m.group(1)}"
+    if not raw:
+        import datetime
+        t = datetime.date.today()
+        return f"{t.day:02d} {_BULAN_ID[t.month - 1]} {t.year}"
+    return raw
+
+
+class _ManualForm:
+    """Antarmuka form minimal (get/getlist/in) yang diharapkan
+    app.build_prop_data_from_manual_form, dibangun dari multipart FastAPI."""
+
+    def __init__(self, items):
+        self._d = {}
+        for k, v in items:
+            self._d.setdefault(k, []).append(v)
+
+    def get(self, key, default=None):
+        vals = self._d.get(key)
+        return vals[0] if vals else default
+
+    def getlist(self, key):
+        return list(self._d.get(key, []))
+
+    def __contains__(self, key):
+        return key in self._d
+
+
+class _ManualFile:
+    def __init__(self, filename, data):
+        self.filename = filename
+        self._data = data
+
+    def read(self):
+        return self._data
+
+
+class _ManualFiles(_ManualForm):
+    def get(self, key, default=None):
+        vals = self._d.get(key.rstrip("[]") if key.endswith("[]") else key)
+        return vals[0] if vals else default
+
+    def getlist(self, key):
+        return list(self._d.get(key.rstrip("[]") if key.endswith("[]") else key, []))
+
+
+@app.post("/api/v1/dokumen/manual")
+async def dokumen_manual(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    """
+    Multipart/form-data dengan nama field yang sama persis seperti formulir
+    manual e-GerAI (prop__Nama_Pemohon, deskripsi_kegiatan,
+    instalasi_posisi[], jadwal_table_json, img_siteplan, dst.), plus
+    'laporan' (opsional, PDF/.docx Hidro-Oseanografi).
+
+    Server yang menormalisasi seluruh isian + gambar jadi prop_data, lalu
+    menyimpannya sebagai job sama seperti /dokumen/ekstrak. Response sama
+    bentuknya: { job_id, prop_data, lap_data, expires_in_seconds }.
+    """
+    denied = check_api_key(x_api_key)
+    if denied is not None:
+        return denied
+
+    raw_form = await request.form()
+    text_items, file_items = [], []
+    laporan = None
+    for key, value in raw_form.multi_items():
+        if isinstance(value, str):
+            is_checkbox = key in _MANUAL_CHECKBOX_KEYS or (
+                key.startswith("dukung_") and not key.endswith("_drive") and not key.endswith("[]")
+            )
+            if is_checkbox and value.strip().lower() in ("", "0", "false"):
+                continue
+            text_items.append((key, value))
+            continue
+        if not getattr(value, "filename", None):
+            continue
+        data = await value.read()
+        if key == "laporan":
+            laporan = _ManualFile(value.filename, data)
+        else:
+            file_items.append((key[:-2] if key.endswith("[]") else key, _ManualFile(value.filename, data)))
+
+    if laporan and not laporan.filename.lower().endswith(ALLOWED_EXT):
+        return err("invalid_file_type", "File 'laporan' harus berformat PDF atau Word (.docx).")
+
+    form = _ManualForm(text_items)
+    files = _ManualFiles(file_items)
+    form._d["prop__Tanggal_Penyusunan"] = [_tanggal_indonesia(form.get("prop__Tanggal_Penyusunan"))]
+
+    # Tabel koordinat dari React mengirim 'columns' lengkap (termasuk
+    # Longitude/Latitude); builder mengharapkan hanya kolom tambahan.
+    koordinat_raw = form.get("koordinat_table_json")
+    if koordinat_raw:
+        try:
+            import json
+            tbl = json.loads(koordinat_raw)
+            if isinstance(tbl, dict) and isinstance(tbl.get("columns"), list):
+                tbl["columns"] = tbl["columns"][2:]
+                form._d["koordinat_table_json"] = [json.dumps(tbl)]
+        except ValueError:
+            pass
+
+    job_store.cleanup_old_jobs(JOBS_DIR)
+    job_id = uuid.uuid4().hex[:12]
+    tmp_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    try:
+        import app as web_app  # lazy: menarik seluruh modul Flask hanya saat dibutuhkan
+
+        prop_data, prop_images = await run_in_threadpool(web_app.build_prop_data_from_manual_form, form, files)
+
+        if laporan:
+            laporan_path = os.path.join(tmp_dir, "laporan" + (".docx" if laporan.filename.lower().endswith(".docx") else ".pdf"))
+            with open(laporan_path, "wb") as f:
+                f.write(laporan.read())
+            lap_data, lap_images = await run_in_threadpool(extract_laporan_with_fallback, laporan_path, log=lambda *_: None)
+        else:
+            lap_data, lap_images = {}, []
+
+        job_store.save_job(JOBS_DIR, job_id, prop_data, prop_images, lap_data, lap_images)
+    except Exception:
+        traceback.print_exc()
+        job_store.delete_job(JOBS_DIR, job_id)
+        return err(
+            "manual_failed",
+            "Terjadi kesalahan saat memproses isian manual. Pastikan file Laporan adalah PDF/Word yang valid.",
+            500,
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return ok({
+        "job_id": job_id,
+        "prop_data": prop_data,
+        "lap_data": lap_data,
+        "expires_in_seconds": job_store.JOB_MAX_AGE_SECONDS,
+    })
+
+
 @app.post("/api/v1/dokumen/generate")
 async def dokumen_generate(request: Request, x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     """
@@ -421,18 +574,42 @@ async def dokumen_generate(request: Request, x_api_key: Optional[str] = Header(d
         job_store.delete_job(JOBS_DIR, job_id)
 
     perusahaan = (prop_data.get("Nama Perusahaan/Instansi") or "PKKPRL").replace(" ", "_").replace(".", "")
-    download_name = f"Proposal_Teknis_PKKPRL_{perusahaan}.docx"
+    slug = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_\-]+", "_", perusahaan)).strip("_")[:60] or "PKKPRL"
+    download_name = f"Proposal_Teknis_PKKPRL_{slug}_LENGKAP.docx"
+    pkg_dir = os.path.join(OUTPUT_DIR, f"Paket_API_{job_id}")
+    bundle_path = os.path.join(pkg_dir, f"Dokumen_1-4_PKKPRL_{slug}.zip")
 
-    def _cleanup():
+    def _build_bundle() -> None:
+        from generate_docx import split_document_by_bab
+
+        os.makedirs(pkg_dir, exist_ok=True)
+        with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            try:
+                bagian = split_document_by_bab(output_path, pkg_dir, slug)
+                for _no, _judul, part_path in bagian or []:
+                    zf.write(part_path, os.path.basename(part_path))
+            except Exception:
+                traceback.print_exc()
+            zf.write(output_path, download_name)
+
+    def _cleanup() -> None:
+        shutil.rmtree(pkg_dir, ignore_errors=True)
         try:
             os.remove(output_path)
         except OSError:
             pass
 
+    try:
+        await run_in_threadpool(_build_bundle)
+    except Exception:
+        traceback.print_exc()
+        _cleanup()
+        return err("generate_failed", "Terjadi kesalahan saat menyusun paket dokumen. Silakan coba lagi.", 500)
+
     return FileResponse(
-        output_path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=download_name,
+        bundle_path,
+        media_type="application/zip",
+        filename=f"Dokumen_1-4_PKKPRL_{slug}.zip",
         background=BackgroundTask(_cleanup),
     )
 
