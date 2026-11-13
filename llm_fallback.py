@@ -86,13 +86,15 @@ ATURAN KETAT:
         client = _client()
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=6000,
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
-            timeout=130.0,
+            timeout=280.0,
         )
         hasil = "".join(b.text for b in resp.content if b.type == "text").strip()
         if not hasil:
             return {"error": "Claude API mengembalikan respons kosong. Silakan coba lagi."}
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            hasil += "\n\n> **Catatan:** hasil analisis terpotong karena melebihi batas panjang keluaran. Pecah dokumen menjadi bagian lebih kecil lalu analisis ulang."
         return hasil
     except Exception as e:
         return {"error": f"Gagal memproses analisis: {type(e).__name__}: {str(e)[:300]}"}
